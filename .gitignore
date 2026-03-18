@@ -42,3 +42,11 @@ yarn-error.log*
 # Database
 *.db
 *.sqlite3
+
+# Raw crawled reference docs (large, auto-generated, may contain example credentials from AWS docs)
+backend/docs/aws-reference/
+backend/docs/oci-reference/
+
+# Dev team run logs
+logs/
+backend/logs/
