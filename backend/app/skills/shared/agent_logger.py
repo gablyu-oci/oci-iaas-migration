@@ -475,7 +475,12 @@ class AgentLogger:
         # Final result
         lines.append(f"## Final Result")
         lines.append(f"")
-        decision_icon = "OK" if self.session.final_decision in [ReviewDecision.APPROVED, ReviewDecision.APPROVED_WITH_NOTES] else "FAIL"
+        _icon_map = {
+            ReviewDecision.APPROVED: "✅",
+            ReviewDecision.APPROVED_WITH_NOTES: "⚠️",
+            ReviewDecision.NEEDS_FIXES: "❌",
+        }
+        decision_icon = _icon_map.get(self.session.final_decision, "❌")
         lines.append(f"**Decision:** {decision_icon} {self.session.final_decision.value if self.session.final_decision else 'N/A'}")
 
         if self.session.final_confidence:
@@ -502,21 +507,26 @@ class AgentLogger:
         lines.append(f"")
 
         # Token usage stats -- sourced from real API response.usage
-        if stats.get('total_tokens'):
-            lines.append(f"### Token Usage")
+        lines.append(f"### Token Usage")
+        lines.append(f"")
+        lines.append(f"- **Total tokens:** {stats.get('total_tokens', 0):,}")
+        lines.append(f"- **Input tokens:** {stats.get('total_tokens_input', 0):,}")
+        lines.append(f"- **Output tokens:** {stats.get('total_tokens_output', 0):,}")
+        lines.append(f"- **Cache read tokens:** {stats.get('total_tokens_cache_read', 0):,}")
+        lines.append(f"- **Cache write tokens:** {stats.get('total_tokens_cache_write', 0):,}")
+        lines.append(f"- **Total cost:** ${stats.get('total_cost_usd', 0):.6f}")
+        if stats.get('tokens_by_agent_type'):
             lines.append(f"")
-            lines.append(f"- **Total tokens:** {stats.get('total_tokens', 0):,}")
-            lines.append(f"- **Input tokens:** {stats.get('total_tokens_input', 0):,}")
-            lines.append(f"- **Output tokens:** {stats.get('total_tokens_output', 0):,}")
-            if stats.get('total_cost_usd'):
-                lines.append(f"- **Total cost:** ${stats.get('total_cost_usd', 0):.4f}")
-            if stats.get('tokens_by_agent_type'):
-                lines.append(f"")
-                lines.append(f"**By Agent Type:**")
-                for agent_type, tokens in stats['tokens_by_agent_type'].items():
-                    if tokens:
-                        lines.append(f"- **{agent_type}:** {tokens:,} tokens")
+            lines.append(f"**By Agent Type:**")
+            for agent_type, tokens in stats['tokens_by_agent_type'].items():
+                if tokens:
+                    lines.append(f"- **{agent_type}:** {tokens:,} tokens")
+        if stats.get('tokens_by_model'):
             lines.append(f"")
+            lines.append(f"**By Model:**")
+            for model, mdata in stats['tokens_by_model'].items():
+                lines.append(f"- **{model}:** {mdata.get('total', 0):,} tokens (${mdata.get('cost', 0):.4f}, {mdata.get('calls', 0)} calls)")
+        lines.append(f"")
 
         # Confidence progression
         if stats.get('confidence_progression'):

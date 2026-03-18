@@ -1,6 +1,9 @@
 """ARQ worker task for running skill jobs asynchronously."""
 
+import asyncio
 import json
+import re
+import threading
 from datetime import datetime
 from uuid import UUID
 
@@ -57,10 +60,58 @@ async def run_skill_job(ctx, skill_run_id: str):
                 if not input_content:
                     raise ValueError("No input content available")
 
-                # 4. Build a sync progress callback
-                # The skills run synchronously; DB updates happen after the run.
+                # 4. Build a sync progress callback that updates current_phase in the DB
+                # Uses asyncpg directly in a fire-and-forget thread so the orchestrator
+                # isn't blocked, but the SSE stream shows live phase updates.
+                _db_url = settings.DATABASE_URL
+                _run_id = skill_run_id
+
+                def _write_phase(phase, iteration, confidence):
+                    """Fire-and-forget DB phase update via asyncpg."""
+                    m = re.match(
+                        r'postgresql\+asyncpg://([^:]+):([^@]+)@([^:/]+):(\d+)/(.+)',
+                        _db_url,
+                    )
+                    if not m:
+                        return
+                    user, password, host, port, db_name = m.groups()
+
+                    async def _do():
+                        import asyncpg
+                        conn = await asyncpg.connect(
+                            user=user, password=password,
+                            host=host, port=int(port), database=db_name,
+                        )
+                        try:
+                            if confidence is not None:
+                                await conn.execute(
+                                    "UPDATE skill_runs SET current_phase=$1, "
+                                    "current_iteration=$2, confidence=$3 WHERE id=$4",
+                                    phase, iteration, float(confidence), UUID(_run_id),
+                                )
+                            else:
+                                await conn.execute(
+                                    "UPDATE skill_runs SET current_phase=$1, "
+                                    "current_iteration=$2 WHERE id=$3",
+                                    phase, iteration, UUID(_run_id),
+                                )
+                        finally:
+                            await conn.close()
+
+                    def _thread():
+                        loop = asyncio.new_event_loop()
+                        try:
+                            loop.run_until_complete(_do())
+                        except Exception:
+                            pass
+                        finally:
+                            loop.close()
+
+                    t = threading.Thread(target=_thread, daemon=True)
+                    t.start()
+
                 def progress_callback(phase, iteration, confidence, decision):
-                    pass
+                    _write_phase(phase, iteration, confidence)
 
                 # 5. Get client
                 client = get_anthropic_client()
@@ -123,10 +174,16 @@ async def run_skill_job(ctx, skill_run_id: str):
                         else:
                             file_type = "dependency_json"
                         ct = "application/json"
-                    elif filename == "report.md":
+                    elif filename in ("report.md", "migration-guide.md"):
                         file_type, ct = "run_report_md", "text/markdown"
-                    elif filename == "translation_log.md":
+                    elif filename in ("translation_log.md", "ORCHESTRATION-SUMMARY.md"):
                         file_type, ct = "translation_log_md", "text/markdown"
+                    elif filename == "migration-runbook.md":
+                        file_type, ct = "migration_runbook_md", "text/markdown"
+                    elif filename == "anomaly-analysis.md":
+                        file_type, ct = "anomaly_analysis_md", "text/markdown"
+                    elif filename == "README.md":
+                        file_type, ct = "readme_md", "text/markdown"
                     elif filename.endswith(".md"):
                         file_type, ct = "run_report_md", "text/markdown"
                     elif filename.endswith(".mmd"):

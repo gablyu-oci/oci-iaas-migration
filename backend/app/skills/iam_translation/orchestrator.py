@@ -917,15 +917,26 @@ def run(
     if current_translation:
         # Paste-ready OCI statements (no AWS metadata)
         artifacts["oci_policies.txt"] = generate_paste_ready_policies(current_translation)
-        # Full machine-readable translation
-        artifacts["oci_policies.json"] = json.dumps(current_translation, indent=2)
+        # Full machine-readable translation with metadata
+        oci_json_with_meta = {
+            "policy_name": current_translation.get("policy_name", "translated-policy"),
+            "source": "AWS IAM",
+            "target": "OCI IAM",
+            "translation_version": "1.0",
+            "final_confidence": round(final_confidence, 4),
+            "review_confidence": round(final_confidence, 4),
+            "iterations": iteration,
+            "status": final_decision.value,
+            **{k: v for k, v in current_translation.items() if k != "policy_name"},
+        }
+        artifacts["oci_policies.json"] = json.dumps(oci_json_with_meta, indent=2)
         # Rich migration guide
-        artifacts["report.md"] = generate_rich_report_md(
+        artifacts["migration-guide.md"] = generate_rich_report_md(
             current_translation, gap_analysis, last_review,
             final_decision, final_confidence, iteration,
         )
     # Orchestration log (what the agents actually did)
-    artifacts["translation_log.md"] = md_report
+    artifacts["ORCHESTRATION-SUMMARY.md"] = md_report
 
     total_cost = sum(r.get("cost_usd", 0) or 0 for r in interaction_records)
 

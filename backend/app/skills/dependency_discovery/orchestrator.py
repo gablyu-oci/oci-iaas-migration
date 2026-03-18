@@ -54,95 +54,54 @@ Decision guidelines:
   NEEDS_FIXES         -- Critical gaps or unresolvable cycles that block safe migration
 """
 
+RUNBOOK_SYSTEM = """\
+You are an expert AWS-to-OCI migration engineer. Generate a comprehensive migration runbook
+for moving the discovered AWS infrastructure to Oracle Cloud Infrastructure (OCI).
 
-def _build_discovery_translation_log(
-    session_start: float,
-    event_count: int,
-    node_count: int,
-    edge_count: int,
-    step_count: int,
-    has_cycles: bool,
-    flowlog_provided: bool,
-    review: dict,
-    final_confidence: float,
-    final_decision: str,
-    review_cost: float,
-) -> str:
-    """Build orchestration log for the dependency discovery run."""
-    duration = time.time() - session_start
-    now = datetime.utcnow()
-    session_id = f"discovery-{now.strftime('%Y%m%d-%H%M%S')}"
+The runbook must be production-grade and include:
 
-    decision_icon = {"APPROVED": "✅", "APPROVED_WITH_NOTES": "⚠️", "NEEDS_FIXES": "❌"}.get(final_decision, "❓")
+1. **Document Control** — maintenance window estimate, risk level, estimated downtime, rollback time
+2. **Executive Summary** — what is being migrated, key risks, critical dependencies
+3. **Pre-Migration Checklist** — prerequisites, validation steps, team notifications
+4. **Migration Phases** (organize by dependency order — foundation first, compute last):
+   - Phase name and timing (e.g., T+0→T+2h)
+   - OCI service equivalents for each AWS service
+   - Step-by-step migration commands/procedures
+   - Validation checkpoints after each phase
+   - Rollback procedure for each phase
+5. **Cutover Procedure** — traffic switch, DNS updates, monitoring
+6. **Post-Migration Validation** — smoke tests, performance checks
+7. **Rollback Plan** — full rollback sequence if migration fails
 
-    issues = review.get("issues", [])
-    issue_lines = []
-    for iss in issues:
-        sev = iss.get("severity", "?")
-        desc = iss.get("description", "")
-        rec = iss.get("recommendation", "")
-        issue_lines.append(f"- **[{sev}]** {desc}")
-        if rec:
-            issue_lines.append(f"  - *Recommendation:* {rec}")
+Use concrete OCI service names (OCI Compute, OCI Object Storage, OCI NoSQL, OCI Database,
+OCI Functions, OCI API Gateway, OCI Queue, OCI Notifications, VCN, NSG, etc.).
 
-    lines = [
-        f"# Orchestration Report: {session_id}",
-        "",
-        f"**Project:** Dependency Discovery",
-        f"**Started:** {now.isoformat()}Z",
-        f"**Duration:** {duration:.1f}s",
-        f"**Review Cost:** ${review_cost:.4f}",
-        "",
-        "---",
-        "",
-        "## Final Result",
-        "",
-        f"**Decision:** {decision_icon} **{final_decision}**",
-        f"**Final Confidence:** {final_confidence:.2f}",
-        "**Total Iterations:** 2 (pipeline + LLM review)",
-        "",
-        "---",
-        "",
-        "## Summary Statistics",
-        "",
-        f"- **Pipeline:** Deterministic graph build + LLM review",
-        f"- **CloudTrail events ingested:** {event_count}",
-        f"- **Flow logs included:** {'Yes' if flowlog_provided else 'No'}",
-        f"- **Duration:** {duration:.1f}s",
-        "",
-        "---",
-        "",
-        "## Detailed Interactions",
-        "",
-        "### [0] INGESTION",
-        f"**Time:** {now.isoformat()}Z",
-        "**Agent:** deterministic pipeline (no LLM)",
-        "",
-        f"**Input:** CloudTrail JSON ({event_count} events)" + (", VPC flow logs" if flowlog_provided else ""),
-        "",
-        "### [1] GRAPH BUILD",
-        "",
-        f"**Nodes discovered:** {node_count}",
-        f"**Edges (dependencies):** {edge_count}",
-        f"**Cycles detected:** {'Yes' if has_cycles else 'No'}",
-        f"**Migration steps computed:** {step_count}",
-        "",
-        "### [2] LLM REVIEW",
-        "",
-        f"**Model:** {REVIEW_MODEL}",
-        f"**Decision:** {final_decision}",
-        f"**Confidence:** {final_confidence:.2f}",
-        "",
-        f"**Review Summary:** {review.get('review_summary', 'N/A')}",
-        "",
-    ]
+Format as Markdown with clear headers, tables, and code blocks.
+Make it detailed enough for an on-call engineer to execute without additional context.
+"""
 
-    if issue_lines:
-        lines += ["**Issues Found:**", ""] + issue_lines + [""]
-    else:
-        lines += ["**Issues Found:** None", ""]
+ANOMALY_SYSTEM = """\
+You are an expert AWS infrastructure security and reliability analyst.
+Analyze the discovered dependency graph for anomalies, risks, and migration concerns.
 
-    return "\n".join(lines)
+Focus on:
+1. **Data Quality Issues** — sample size limitations, collapsed/ambiguous edges, missing services
+2. **Ghost Dependencies** — IP addresses with no CloudTrail attribution, unknown internal services
+3. **Single Points of Failure** — resources accessed by 3+ services, god services, bottlenecks
+4. **Security Concerns** — cross-account roles, unencrypted paths, unlogged services, stale data
+5. **Data Consistency Risks** — dual-writes, lack of transaction patterns, cache invalidation
+6. **Migration Sequencing Risks** — circular dependencies, undocumented external services
+7. **Observability Gaps** — services with insufficient logging to understand traffic patterns
+
+For each anomaly:
+- Describe what was detected and why it's concerning
+- Assess severity (CRITICAL / HIGH / MEDIUM / LOW)
+- Provide specific recommendations
+
+End with a prioritized migration sequencing recommendation (Phase 0 through Phase N).
+
+Format as Markdown with clear sections and a summary risk table.
+"""
 
 
 def _call_review(
@@ -205,6 +164,365 @@ def _call_review(
     review = json.loads(raw[start_idx:end_idx]) if start_idx >= 0 else {}
 
     return review, usage
+
+
+def _call_runbook(
+    client,
+    nodes_data: list,
+    edges_data: list,
+    migration_steps: list,
+    event_count: int,
+    has_cycles: bool,
+    flowlog_provided: bool,
+    report_md: str,
+) -> tuple[str, dict]:
+    """Call LLM to generate a detailed migration runbook. Returns (runbook_md, usage_dict)."""
+    # Build context for the runbook agent
+    node_summary = "\n".join(
+        f"- {n.get('id', n.get('name', 'unknown'))} ({n.get('service_type', n.get('type', 'unknown'))})"
+        for n in nodes_data[:40]
+    )
+    if len(nodes_data) > 40:
+        node_summary += f"\n- ... and {len(nodes_data) - 40} more resources"
+
+    # Group migration steps by phase
+    phase_summary = []
+    for i, step in enumerate(migration_steps[:20], 1):
+        if isinstance(step, dict):
+            resources = step.get("resources", step.get("nodes", [step.get("node", "unknown")]))
+            if isinstance(resources, str):
+                resources = [resources]
+            phase_summary.append(f"Phase {i}: {', '.join(str(r) for r in resources[:5])}")
+        elif isinstance(step, (list, tuple)):
+            phase_summary.append(f"Phase {i}: {', '.join(str(r) for r in step[:5])}")
+        else:
+            phase_summary.append(f"Phase {i}: {step}")
+
+    context = (
+        f"## Discovered Infrastructure\n\n"
+        f"- Total resources: {len(nodes_data)}\n"
+        f"- Total dependencies: {len(edges_data)}\n"
+        f"- Migration phases: {len(migration_steps)}\n"
+        f"- CloudTrail events analyzed: {event_count}\n"
+        f"- VPC flow logs included: {'Yes' if flowlog_provided else 'No'}\n"
+        f"- Circular dependencies: {'Yes' if has_cycles else 'No'}\n\n"
+        f"## Resources Discovered\n\n{node_summary}\n\n"
+        f"## Proposed Migration Order\n\n" + "\n".join(phase_summary) + "\n\n"
+        f"## Dependency Analysis (excerpt)\n\n{report_md[:4000]}\n\n"
+        f"Generate a comprehensive migration runbook for moving this AWS infrastructure to OCI."
+    )
+
+    start = time.perf_counter()
+    response = client.messages.create(
+        model=REVIEW_MODEL,
+        max_tokens=8192,
+        system=RUNBOOK_SYSTEM,
+        messages=[{"role": "user", "content": context}],
+    )
+    duration = time.perf_counter() - start
+
+    u = response.usage
+    usage = {
+        "tokens_input": u.input_tokens,
+        "tokens_output": u.output_tokens,
+        "tokens_cache_read": getattr(u, "cache_read_input_tokens", 0) or 0,
+        "tokens_cache_write": getattr(u, "cache_creation_input_tokens", 0) or 0,
+        "duration_seconds": duration,
+    }
+
+    runbook_md = response.content[0].text.strip()
+    return runbook_md, usage
+
+
+def _call_anomaly(
+    client,
+    nodes_data: list,
+    edges_data: list,
+    event_count: int,
+    has_cycles: bool,
+    cycles: list,
+    flowlog_provided: bool,
+    report_md: str,
+) -> tuple[str, dict]:
+    """Call LLM to generate anomaly and risk analysis. Returns (anomaly_md, usage_dict)."""
+    # Summarize edges for anomaly detection
+    edge_summary = "\n".join(
+        f"- {e.get('source', '?')} → {e.get('target', '?')} ({e.get('type', e.get('dependency_type', 'unknown'))})"
+        for e in edges_data[:50]
+    )
+    if len(edges_data) > 50:
+        edge_summary += f"\n- ... and {len(edges_data) - 50} more dependencies"
+
+    node_types: dict[str, int] = {}
+    for n in nodes_data:
+        svc = n.get("service_type", n.get("type", "unknown"))
+        node_types[svc] = node_types.get(svc, 0) + 1
+
+    context = (
+        f"## Infrastructure Overview\n\n"
+        f"- Total resources discovered: {len(nodes_data)}\n"
+        f"- Total dependencies: {len(edges_data)}\n"
+        f"- CloudTrail events analyzed: {event_count}\n"
+        f"- VPC flow logs included: {'Yes' if flowlog_provided else 'No'}\n"
+        f"- Circular dependencies detected: {'Yes' if has_cycles else 'No'}\n"
+    )
+    if has_cycles and cycles:
+        cycle_strs = "; ".join(" → ".join(c) for c in cycles[:5])
+        context += f"- Cycles: {cycle_strs}\n"
+
+    context += f"\n## Service Type Distribution\n\n"
+    for svc, count in sorted(node_types.items(), key=lambda x: -x[1]):
+        context += f"- {svc}: {count} resource(s)\n"
+
+    context += f"\n## Dependency Edges\n\n{edge_summary}\n\n"
+    context += f"## Dependency Report (excerpt)\n\n{report_md[:4000]}\n\n"
+    context += "Analyze this infrastructure for anomalies, risks, and migration concerns."
+
+    start = time.perf_counter()
+    response = client.messages.create(
+        model=REVIEW_MODEL,
+        max_tokens=6144,
+        system=ANOMALY_SYSTEM,
+        messages=[{"role": "user", "content": context}],
+    )
+    duration = time.perf_counter() - start
+
+    u = response.usage
+    usage = {
+        "tokens_input": u.input_tokens,
+        "tokens_output": u.output_tokens,
+        "tokens_cache_read": getattr(u, "cache_read_input_tokens", 0) or 0,
+        "tokens_cache_write": getattr(u, "cache_creation_input_tokens", 0) or 0,
+        "duration_seconds": duration,
+    }
+
+    anomaly_md = response.content[0].text.strip()
+    return anomaly_md, usage
+
+
+def _build_readme(
+    node_count: int,
+    edge_count: int,
+    step_count: int,
+    event_count: int,
+    has_cycles: bool,
+    flowlog_provided: bool,
+    final_decision: str,
+    final_confidence: float,
+    total_cost: float,
+    session_start: float,
+    review: dict,
+) -> str:
+    """Build an executive summary README for the discovery run."""
+    duration = time.time() - session_start
+    decision_icon = {"APPROVED": "✅", "APPROVED_WITH_NOTES": "⚠️", "NEEDS_FIXES": "❌"}.get(final_decision, "❓")
+    issues = review.get("issues", [])
+    high_issues = [i for i in issues if i.get("severity") in ("CRITICAL", "HIGH")]
+
+    lines = [
+        "# AWS → OCI Migration: Dependency Discovery Results",
+        "",
+        "## Summary",
+        "",
+        f"| Field | Value |",
+        f"|-------|-------|",
+        f"| Input | {event_count} CloudTrail events{', VPC Flow Logs' if flowlog_provided else ''} |",
+        f"| Resources discovered | {node_count} |",
+        f"| Dependencies mapped | {edge_count} |",
+        f"| Migration phases | {step_count} |",
+        f"| Circular dependencies | {'Yes' if has_cycles else 'No'} |",
+        f"| Review decision | {decision_icon} {final_decision} |",
+        f"| Confidence | {final_confidence:.0%} |",
+        f"| Total cost | ${total_cost:.4f} |",
+        f"| Analysis time | {duration:.0f}s |",
+        "",
+        "## Output Files",
+        "",
+        "| File | Description |",
+        "|------|-------------|",
+        "| `dependency.json` | Machine-readable dependency graph (nodes, edges, migration order) |",
+        "| `graph.mmd` | Mermaid diagram for visualization |",
+        "| `graph.dot` | Graphviz DOT format for rendering |",
+        "| `migration-runbook.md` | Step-by-step migration runbook with OCI equivalents |",
+        "| `anomaly-analysis.md` | Risk assessment and anomaly detection report |",
+        "| `ORCHESTRATION-SUMMARY.md` | Agent execution log with token counts and costs |",
+        "",
+    ]
+
+    if high_issues:
+        lines += [
+            "## Critical Risks",
+            "",
+        ]
+        for issue in high_issues:
+            lines.append(f"- **[{issue.get('severity')}]** {issue.get('description', '')}")
+        lines.append("")
+
+    review_summary = review.get("review_summary", "")
+    if review_summary:
+        lines += [
+            "## Review Summary",
+            "",
+            review_summary,
+            "",
+        ]
+
+    lines += [
+        "## Next Steps",
+        "",
+        "1. Review `anomaly-analysis.md` to understand risks before proceeding",
+        "2. Execute `migration-runbook.md` phases in order, validating after each",
+        "3. Address all CRITICAL and HIGH issues before production cutover",
+        "",
+    ]
+
+    return "\n".join(lines)
+
+
+def _build_orchestration_summary(
+    session_start: float,
+    event_count: int,
+    node_count: int,
+    edge_count: int,
+    step_count: int,
+    has_cycles: bool,
+    flowlog_provided: bool,
+    review: dict,
+    final_confidence: float,
+    final_decision: str,
+    review_cost: float,
+    runbook_cost: float,
+    anomaly_cost: float,
+    review_usage: dict,
+    runbook_usage: dict,
+    anomaly_usage: dict,
+) -> str:
+    """Build orchestration summary log for the dependency discovery run."""
+    duration = time.time() - session_start
+    now = datetime.utcnow()
+    session_id = f"discovery-{now.strftime('%Y%m%d-%H%M%S')}"
+    total_cost = review_cost + runbook_cost + anomaly_cost
+
+    def _tok(usage: dict) -> int:
+        return (usage.get("tokens_input", 0) + usage.get("tokens_output", 0)
+                + usage.get("tokens_cache_read", 0) + usage.get("tokens_cache_write", 0))
+
+    total_tokens = _tok(review_usage) + _tok(runbook_usage) + _tok(anomaly_usage)
+
+    decision_icon = {"APPROVED": "✅", "APPROVED_WITH_NOTES": "⚠️", "NEEDS_FIXES": "❌"}.get(final_decision, "❓")
+
+    issues = review.get("issues", [])
+    issue_lines = []
+    for iss in issues:
+        sev = iss.get("severity", "?")
+        desc = iss.get("description", "")
+        rec = iss.get("recommendation", "")
+        issue_lines.append(f"- **[{sev}]** {desc}")
+        if rec:
+            issue_lines.append(f"  - *Recommendation:* {rec}")
+
+    lines = [
+        f"# ORCHESTRATION-SUMMARY: {session_id}",
+        "",
+        f"**Project:** AWS → OCI Dependency Discovery",
+        f"**Date:** {now.strftime('%Y-%m-%d %H:%M:%S')} UTC",
+        f"**Duration:** {duration:.1f}s (~{duration/60:.0f} min)",
+        f"**Total Cost:** ${total_cost:.4f}",
+        f"**Total Tokens:** {total_tokens:,}",
+        "",
+        "---",
+        "",
+        "## Final Status",
+        "",
+        f"**Decision:** {decision_icon} **{final_decision}**",
+        f"**Confidence:** {final_confidence:.0%}",
+        f"**Agent Calls:** 3 (Review, Runbook, Anomaly) + 1 deterministic pipeline",
+        "",
+        "---",
+        "",
+        "## Infrastructure Metrics",
+        "",
+        f"| Metric | Value |",
+        f"|--------|-------|",
+        f"| CloudTrail events ingested | {event_count:,} |",
+        f"| VPC Flow Logs included | {'Yes' if flowlog_provided else 'No'} |",
+        f"| Resources (nodes) | {node_count} |",
+        f"| Dependencies (edges) | {edge_count} |",
+        f"| Migration phases | {step_count} |",
+        f"| Circular dependencies | {'Yes' if has_cycles else 'No'} |",
+        "",
+        "---",
+        "",
+        "## Agent Execution Log",
+        "",
+        "### [0] INGESTION + GRAPH BUILD",
+        "**Type:** Deterministic pipeline (no LLM)",
+        f"**Input:** CloudTrail JSON ({event_count} events)" + (", VPC flow logs" if flowlog_provided else ""),
+        f"**Output:** {node_count} nodes, {edge_count} edges, {step_count} migration phases",
+        "",
+        "### [1] REVIEW Agent",
+        f"**Model:** {REVIEW_MODEL}",
+        f"**Decision:** {final_decision}",
+        f"**Confidence:** {final_confidence:.0%}",
+        f"**Input tokens:** {review_usage.get('tokens_input', 0):,}",
+        f"**Output tokens:** {review_usage.get('tokens_output', 0):,}",
+        f"**Cache read:** {review_usage.get('tokens_cache_read', 0):,}",
+        f"**Total tokens:** {_tok(review_usage):,}",
+        f"**Cost:** ${review_cost:.4f}",
+        f"**Duration:** {review_usage.get('duration_seconds', 0):.1f}s",
+        "",
+        "### [2] RUNBOOK Agent",
+        f"**Model:** {REVIEW_MODEL}",
+        "**Output:** migration-runbook.md",
+        f"**Input tokens:** {runbook_usage.get('tokens_input', 0):,}",
+        f"**Output tokens:** {runbook_usage.get('tokens_output', 0):,}",
+        f"**Cache read:** {runbook_usage.get('tokens_cache_read', 0):,}",
+        f"**Total tokens:** {_tok(runbook_usage):,}",
+        f"**Cost:** ${runbook_cost:.4f}",
+        f"**Duration:** {runbook_usage.get('duration_seconds', 0):.1f}s",
+        "",
+        "### [3] ANOMALY Agent",
+        f"**Model:** {REVIEW_MODEL}",
+        "**Output:** anomaly-analysis.md",
+        f"**Input tokens:** {anomaly_usage.get('tokens_input', 0):,}",
+        f"**Output tokens:** {anomaly_usage.get('tokens_output', 0):,}",
+        f"**Cache read:** {anomaly_usage.get('tokens_cache_read', 0):,}",
+        f"**Total tokens:** {_tok(anomaly_usage):,}",
+        f"**Cost:** ${anomaly_cost:.4f}",
+        f"**Duration:** {anomaly_usage.get('duration_seconds', 0):.1f}s",
+        "",
+        "---",
+        "",
+        "## Token Usage Summary",
+        "",
+        f"| Agent | Tokens | Cost |",
+        f"|-------|--------|------|",
+        f"| Review Agent | {_tok(review_usage):,} | ${review_cost:.4f} |",
+        f"| Runbook Agent | {_tok(runbook_usage):,} | ${runbook_cost:.4f} |",
+        f"| Anomaly Agent | {_tok(anomaly_usage):,} | ${anomaly_cost:.4f} |",
+        f"| **Total** | **{total_tokens:,}** | **${total_cost:.4f}** |",
+        "",
+        "---",
+        "",
+        "## Review Issues",
+        "",
+    ]
+
+    if issue_lines:
+        lines += issue_lines + [""]
+    else:
+        lines += ["None identified.", ""]
+
+    lines += [
+        "---",
+        "",
+        "## Quality Assessment",
+        "",
+    ]
+    if review.get("review_summary"):
+        lines += [review["review_summary"], ""]
+
+    return "\n".join(lines)
 
 
 def run(
@@ -289,7 +607,7 @@ def run(
 
         progress_callback("analysis", 1, 0.3, None)
 
-        # Generate reports
+        # Generate dependency analysis report (used as context for LLM agents)
         report_md = format_report(
             dependencies, migration_steps,
             limit=50, has_cycles=has_cycles, cycles=cycles,
@@ -305,7 +623,7 @@ def run(
             indent=2,
         )
 
-        # LLM review step
+        # LLM Review step
         progress_callback("review", 1, 0.5, None)
         review, review_usage = _call_review(
             client=anthropic_client,
@@ -342,8 +660,51 @@ def run(
             tokens_cache_write=review_usage["tokens_cache_write"],
         ) or 0.0
 
-        # Build orchestration log
-        translation_log = _build_discovery_translation_log(
+        # LLM Runbook Agent
+        progress_callback("enhancement", 1, final_confidence, None)
+        runbook_md, runbook_usage = _call_runbook(
+            client=anthropic_client,
+            nodes_data=nodes_data,
+            edges_data=edges_data,
+            migration_steps=migration_steps,
+            event_count=event_count,
+            has_cycles=has_cycles,
+            flowlog_provided=bool(flowlog_content),
+            report_md=report_md,
+        )
+
+        runbook_cost = calculate_cost(
+            REVIEW_MODEL,
+            tokens_input=runbook_usage["tokens_input"],
+            tokens_output=runbook_usage["tokens_output"],
+            tokens_cache_read=runbook_usage["tokens_cache_read"],
+            tokens_cache_write=runbook_usage["tokens_cache_write"],
+        ) or 0.0
+
+        # LLM Anomaly Agent
+        anomaly_md, anomaly_usage = _call_anomaly(
+            client=anthropic_client,
+            nodes_data=nodes_data,
+            edges_data=edges_data,
+            event_count=event_count,
+            has_cycles=has_cycles,
+            cycles=cycles,
+            flowlog_provided=bool(flowlog_content),
+            report_md=report_md,
+        )
+
+        anomaly_cost = calculate_cost(
+            REVIEW_MODEL,
+            tokens_input=anomaly_usage["tokens_input"],
+            tokens_output=anomaly_usage["tokens_output"],
+            tokens_cache_read=anomaly_usage["tokens_cache_read"],
+            tokens_cache_write=anomaly_usage["tokens_cache_write"],
+        ) or 0.0
+
+        total_cost = review_cost + runbook_cost + anomaly_cost
+
+        # Build orchestration summary
+        orchestration_summary = _build_orchestration_summary(
             session_start=session_start,
             event_count=event_count,
             node_count=len(nodes_data),
@@ -355,6 +716,26 @@ def run(
             final_confidence=final_confidence,
             final_decision=final_decision,
             review_cost=review_cost,
+            runbook_cost=runbook_cost,
+            anomaly_cost=anomaly_cost,
+            review_usage=review_usage,
+            runbook_usage=runbook_usage,
+            anomaly_usage=anomaly_usage,
+        )
+
+        # Build executive README
+        readme_md = _build_readme(
+            node_count=len(nodes_data),
+            edge_count=len(edges_data),
+            step_count=len(migration_steps),
+            event_count=event_count,
+            has_cycles=has_cycles,
+            flowlog_provided=bool(flowlog_content),
+            final_decision=final_decision,
+            final_confidence=final_confidence,
+            total_cost=total_cost,
+            session_start=session_start,
+            review=review,
         )
 
         progress_callback("complete", 1, final_confidence, final_decision)
@@ -363,34 +744,64 @@ def run(
             "dependency.json": dependency_json,
             "graph.mmd": graph_mmd,
             "graph.dot": graph_dot,
-            "report.md": report_md,
-            "translation_log.md": translation_log,
+            "migration-runbook.md": runbook_md,
+            "anomaly-analysis.md": anomaly_md,
+            "README.md": readme_md,
+            "ORCHESTRATION-SUMMARY.md": orchestration_summary,
         }
 
         db.close()
 
-        interaction = {
-            "agent_type": AgentType.REVIEW.value,
-            "model": REVIEW_MODEL,
-            "iteration": 1,
-            "tokens_input": review_usage["tokens_input"],
-            "tokens_output": review_usage["tokens_output"],
-            "tokens_cache_read": review_usage["tokens_cache_read"],
-            "tokens_cache_write": review_usage["tokens_cache_write"],
-            "cost_usd": review_cost,
-            "decision": final_decision,
-            "confidence": final_confidence,
-            "issues": issues,
-            "duration_seconds": review_usage["duration_seconds"],
-        }
+        interactions = [
+            {
+                "agent_type": AgentType.REVIEW.value,
+                "model": REVIEW_MODEL,
+                "iteration": 1,
+                "tokens_input": review_usage["tokens_input"],
+                "tokens_output": review_usage["tokens_output"],
+                "tokens_cache_read": review_usage["tokens_cache_read"],
+                "tokens_cache_write": review_usage["tokens_cache_write"],
+                "cost_usd": review_cost,
+                "decision": final_decision,
+                "confidence": final_confidence,
+                "issues": issues,
+                "duration_seconds": review_usage["duration_seconds"],
+            },
+            {
+                "agent_type": "runbook",
+                "model": REVIEW_MODEL,
+                "iteration": 1,
+                "tokens_input": runbook_usage["tokens_input"],
+                "tokens_output": runbook_usage["tokens_output"],
+                "tokens_cache_read": runbook_usage["tokens_cache_read"],
+                "tokens_cache_write": runbook_usage["tokens_cache_write"],
+                "cost_usd": runbook_cost,
+                "decision": None,
+                "confidence": None,
+                "duration_seconds": runbook_usage["duration_seconds"],
+            },
+            {
+                "agent_type": "anomaly",
+                "model": REVIEW_MODEL,
+                "iteration": 1,
+                "tokens_input": anomaly_usage["tokens_input"],
+                "tokens_output": anomaly_usage["tokens_output"],
+                "tokens_cache_read": anomaly_usage["tokens_cache_read"],
+                "tokens_cache_write": anomaly_usage["tokens_cache_write"],
+                "cost_usd": anomaly_cost,
+                "decision": None,
+                "confidence": None,
+                "duration_seconds": anomaly_usage["duration_seconds"],
+            },
+        ]
 
         return {
             "artifacts": artifacts,
             "confidence": final_confidence,
             "decision": final_decision,
             "iterations": 1,
-            "cost": review_cost,
-            "interactions": [interaction],
+            "cost": total_cost,
+            "interactions": interactions,
         }
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

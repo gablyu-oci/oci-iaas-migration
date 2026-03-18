@@ -790,12 +790,12 @@ def run(
     }
     artifacts = build_artifact_dict(current_translation or {}, summary_data)
     # Rich migration guide
-    artifacts["report.md"] = generate_rich_report_md(
+    artifacts["migration-guide.md"] = generate_rich_report_md(
         current_translation or {}, gap_analysis, last_review,
         final_decision, final_confidence, iteration,
     )
     # Orchestration log (what the agents actually did)
-    artifacts["translation_log.md"] = md_report
+    artifacts["ORCHESTRATION-SUMMARY.md"] = md_report
 
     # Calculate total cost
     total_cost = sum(r.get("cost_usd", 0) or 0 for r in interaction_records)

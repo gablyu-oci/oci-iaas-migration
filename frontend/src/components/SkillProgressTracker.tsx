@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { useSkillRunStream, useSkillRun } from '../api/hooks/useSkillRuns';
+import { useSkillRunStream, useSkillRun, useSkillRunInteractions } from '../api/hooks/useSkillRuns';
 import type { InteractionEvent } from '../api/hooks/useSkillRuns';
 
 interface Props {

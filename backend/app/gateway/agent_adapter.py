@@ -9,11 +9,12 @@ from typing import Any
 
 
 class _Usage:
-    def __init__(self):
-        self.input_tokens = 0
-        self.output_tokens = 0
-        self.cache_read_input_tokens = 0
-        self.cache_creation_input_tokens = 0
+    def __init__(self, usage_dict: dict | None = None):
+        d = usage_dict or {}
+        self.input_tokens = d.get("input_tokens", 0)
+        self.output_tokens = d.get("output_tokens", 0)
+        self.cache_read_input_tokens = d.get("cache_read_input_tokens", 0)
+        self.cache_creation_input_tokens = d.get("cache_creation_input_tokens", 0)
 
 
 class _ContentBlock:
@@ -25,9 +26,9 @@ class _ContentBlock:
 class _AgentMessage:
     """Mimics anthropic.types.Message for orchestrator compatibility."""
 
-    def __init__(self, text: str):
+    def __init__(self, text: str, usage_dict: dict | None = None):
         self.content = [_ContentBlock(text)]
-        self.usage = _Usage()
+        self.usage = _Usage(usage_dict)
         self.stop_reason = "end_turn"
 
 
@@ -80,25 +81,28 @@ class _MessagesResource:
 
         prompt = "\n\n".join(parts)
 
-        async def _run() -> str:
+        # Holder: [result_text, exception, usage_dict]
+        holder: list[Any] = [None, None, None]
+
+        async def _run() -> None:
             options = ClaudeAgentOptions(
                 allowed_tools=[],
                 model=model,
             )
             async for message in query(prompt=prompt, options=options):
                 if isinstance(message, ResultMessage):
-                    return message.result or ""
-            return ""
+                    holder[0] = message.result or ""
+                    holder[2] = message.usage  # dict with input_tokens etc.
+                    return
+            holder[0] = ""
 
         # Run in a fresh event loop in a new thread — avoids conflicts with
         # the caller's event loop (ARQ worker, FastAPI lifespan, etc.)
-        holder: list[Any] = [None, None]  # [result, exception]
-
         def _thread():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                holder[0] = loop.run_until_complete(_run())
+                loop.run_until_complete(_run())
             except Exception as exc:
                 holder[1] = exc
             finally:
@@ -113,7 +117,7 @@ class _MessagesResource:
         if holder[1] is not None:
             raise holder[1]
 
-        return _AgentMessage(holder[0] or "")
+        return _AgentMessage(holder[0] or "", holder[2])
 
 
 class AgentSDKClient:
