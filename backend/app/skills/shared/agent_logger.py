@@ -92,8 +92,8 @@ def _sum_tokens(*args: Optional[int]) -> Optional[int]:
 
 # Pricing per million tokens (as of 2026-03)
 _MODEL_PRICING = {
-    "claude-opus-4-6":    {"input": 15.0, "output": 75.0,  "cache_read": 1.50,  "cache_write": 18.75},
-    "claude-sonnet-4-6":  {"input":  3.0, "output": 15.0,  "cache_read": 0.30,  "cache_write":  3.75},
+    "claude-opus-4-6":    {"input":  5.0, "output": 25.0,  "cache_read": 0.50,  "cache_write": 6.25},
+    "claude-sonnet-4-6":  {"input":  3.0, "output": 15.0,  "cache_read": 0.30,  "cache_write": 3.75},
     "claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.0, "cache_read": 0.08, "cache_write": 1.0},
 }
 _MODEL_PRICING["claude-opus-4-5"]   = _MODEL_PRICING["claude-opus-4-6"]

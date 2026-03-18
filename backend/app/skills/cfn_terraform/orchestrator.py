@@ -25,7 +25,7 @@ from agent_logger import (
 
 # ── Model config ──────────────────────────────────────────────────────────────
 ENHANCEMENT_MODEL = "claude-opus-4-6"
-REVIEW_MODEL      = "claude-sonnet-4-6"
+REVIEW_MODEL = "claude-opus-4-6"
 FIX_MODEL         = "claude-opus-4-6"
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -371,6 +371,192 @@ def run_gap_analysis_from_text(template_text: str) -> dict:
     }
 
 
+# ── Report generators ────────────────────────────────────────────────────────
+
+def generate_rich_report_md(
+    translation: dict,
+    gap_analysis: dict,
+    last_review: dict,
+    final_decision,
+    final_confidence: float,
+    iteration_count: int,
+) -> str:
+    """Generate a rich human-readable CFN→Terraform migration guide."""
+    resource_mappings = translation.get("resource_mappings", [])
+    gaps = translation.get("gaps", [])
+    prerequisites = translation.get("migration_prerequisites", [])
+    arch_notes = translation.get("architecture_notes", "")
+    resource_count = translation.get("resource_count", len(resource_mappings))
+
+    review_issues = last_review.get("issues", [])
+    review_summary = last_review.get("review_summary", "")
+
+    total_resources = gap_analysis.get("total_resources", resource_count)
+    detected_types = gap_analysis.get("detected_resource_types", [])
+
+    decision_str = final_decision.value if hasattr(final_decision, "value") else str(final_decision)
+    approved = decision_str in ("APPROVED", "APPROVED_WITH_NOTES")
+    status_icon = "✅" if approved else "⚠️"
+
+    critical_cnt = sum(1 for i in review_issues if i.get("severity") in ("CRITICAL", "HIGH"))
+    med_low_cnt = sum(1 for i in review_issues if i.get("severity") in ("MEDIUM", "LOW"))
+    if critical_cnt:
+        issues_summary = f"{critical_cnt} critical/high issues require attention"
+    elif med_low_cnt:
+        issues_summary = f"{med_low_cnt} medium/low issues documented"
+    else:
+        issues_summary = "no issues"
+
+    complexity = "HIGH" if total_resources >= 15 else "MEDIUM" if total_resources >= 5 else "LOW"
+
+    lines = []
+
+    # ── Header ─────────────────────────────────────────────────────────────────
+    lines += [
+        "# OCI Terraform Translation",
+        "",
+        f"**Generated:** {datetime.utcnow().strftime('%Y-%m-%d')}",
+        f"**Status:** {status_icon} {decision_str} ({iteration_count} iteration{'s' if iteration_count != 1 else ''}, {issues_summary})",
+        "",
+        "---",
+        "",
+    ]
+
+    # ── Executive Summary ──────────────────────────────────────────────────────
+    lines += ["## Executive Summary", ""]
+    if review_summary:
+        lines.append(review_summary)
+        lines.append("")
+
+    lines += [
+        f"**Translation Complexity:** {complexity}",
+        f"**CloudFormation Resources:** {total_resources}",
+        f"**OCI Terraform Resources:** {resource_count}",
+        f"**CFN Resource Types:** {len(detected_types)}",
+        "",
+    ]
+
+    if arch_notes:
+        lines.append(f"**Architecture:** {arch_notes}")
+        lines.append("")
+
+    high_gaps = [g for g in gaps if g.get("severity") in ("CRITICAL", "HIGH")]
+    if high_gaps:
+        lines.append("**Key Challenges:**")
+        for gap in high_gaps:
+            lines.append(f"- {gap.get('gap', '')}")
+        lines.append("")
+
+    high_issues = [i for i in review_issues if i.get("severity") in ("CRITICAL", "HIGH")]
+    med_issues = [i for i in review_issues if i.get("severity") in ("MEDIUM", "LOW")]
+    if high_issues or med_issues:
+        lines.append("**Migration Impact:**")
+        for i in high_issues:
+            lines.append(f"- **High:** {i.get('description', '')}")
+        for i in med_issues[:5]:
+            sev = i.get("severity", "Low").title()
+            lines.append(f"- **{sev}:** {i.get('description', '')}")
+        lines.append("")
+
+    lines += ["---", ""]
+
+    # ── Resource Mappings ──────────────────────────────────────────────────────
+    if resource_mappings:
+        lines += [
+            "## Resource Mappings",
+            "",
+            "| CloudFormation Resource | CFN Type | OCI Resource | OCI Type | Notes |",
+            "|-------------------------|----------|--------------|----------|-------|",
+        ]
+        for rm in resource_mappings:
+            cfn_name = (rm.get("cfn_name", "") or "").replace("|", "\\|")
+            cfn_type = (rm.get("cfn_type", "") or "").replace("|", "\\|")
+            oci_name = (rm.get("oci_name", "") or "").replace("|", "\\|")
+            oci_type = (rm.get("oci_type", "") or "").replace("|", "\\|")
+            note = (rm.get("notes", "") or "").replace("|", "\\|")[:80]
+            lines.append(f"| {cfn_name} | `{cfn_type}` | {oci_name} | `{oci_type}` | {note} |")
+        lines += ["", "---", ""]
+
+    # ── Prerequisites ──────────────────────────────────────────────────────────
+    if prerequisites:
+        lines += ["## Prerequisites", ""]
+        for i, prereq in enumerate(prerequisites, 1):
+            lines.append(f"### {i}. {prereq}")
+            lines.append("")
+        lines += ["---", ""]
+
+    # ── Deployment Checklist ───────────────────────────────────────────────────
+    lines += ["## Deployment Checklist", ""]
+    lines += [
+        "- [ ] Run `terraform init` in the output directory",
+        "- [ ] Copy `terraform.tfvars.example` to `terraform.tfvars` and fill in values",
+        "- [ ] Run `terraform validate` to check HCL syntax",
+        "- [ ] Run `terraform plan` and review the execution plan",
+    ]
+    for i, prereq in enumerate(prerequisites, 1):
+        lines.append(f"- [ ] Complete prerequisite {i}: {prereq}")
+    for gap in gaps:
+        if gap.get("severity") in ("HIGH", "CRITICAL"):
+            lines.append(f"- [ ] Address gap: {gap.get('gap', '')} — {gap.get('mitigation', '')}")
+    for issue in high_issues:
+        lines.append(f"- [ ] Fix: {issue.get('description', '')}")
+    lines += [
+        "- [ ] Run `terraform apply` in a non-production environment first",
+        "- [ ] Validate all resources are created successfully",
+        "",
+        "---",
+        "",
+    ]
+
+    # ── Gaps Summary ──────────────────────────────────────────────────────────
+    if gaps:
+        lines += [
+            "## Migration Gaps",
+            "",
+            "| Severity | Gap | Mitigation |",
+            "|----------|-----|------------|",
+        ]
+        for gap in gaps:
+            sev = gap.get("severity", "MEDIUM")
+            desc = (gap.get("gap", "") or "").replace("|", "\\|")
+            mit = (gap.get("mitigation", "") or "").replace("|", "\\|")
+            lines.append(f"| {sev} | {desc} | {mit} |")
+        lines += ["", "---", ""]
+
+    # ── Review Issues ──────────────────────────────────────────────────────────
+    if review_issues:
+        lines += [
+            "## Review Issues",
+            "",
+            "| Severity | Category | Resource | Description | Recommendation |",
+            "|----------|----------|----------|-------------|----------------|",
+        ]
+        for issue in review_issues:
+            sev = issue.get("severity", "LOW")
+            cat = (issue.get("category", "") or "").replace("|", "\\|")
+            res = (issue.get("resource", "") or "").replace("|", "\\|")
+            desc = (issue.get("description", "") or "").replace("|", "\\|")[:100]
+            rec = (issue.get("recommendation", "") or "").replace("|", "\\|")[:100]
+            lines.append(f"| {sev} | {cat} | {res} | {desc} | {rec} |")
+        lines += ["", "---", ""]
+
+    # ── Validation Summary ─────────────────────────────────────────────────────
+    lines += ["## Validation Summary", ""]
+    lines.append(f"**Final Decision:** {status_icon} {decision_str}")
+    lines.append(f"**Confidence Score:** {final_confidence:.1%}")
+    lines.append(f"**Iterations:** {iteration_count}")
+    lines.append("")
+    if final_confidence >= 0.85:
+        lines.append("Translation is approved. All CRITICAL and HIGH issues resolved. Ready for `terraform apply` after variable substitution.")
+    elif final_confidence >= 0.65:
+        lines.append("Translation is approved with notes. Review documented issues above before running `terraform apply`.")
+    else:
+        lines.append("Translation needs additional review. Address all CRITICAL and HIGH issues before deployment.")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
 # ── Artifact builder ──────────────────────────────────────────────────────────
 
 def build_artifact_dict(translation: dict, summary: dict | None = None) -> dict:
@@ -603,7 +789,13 @@ def run(
         "gap_analysis": gap_analysis,
     }
     artifacts = build_artifact_dict(current_translation or {}, summary_data)
-    artifacts["report.md"] = md_report
+    # Rich migration guide
+    artifacts["report.md"] = generate_rich_report_md(
+        current_translation or {}, gap_analysis, last_review,
+        final_decision, final_confidence, iteration,
+    )
+    # Orchestration log (what the agents actually did)
+    artifacts["translation_log.md"] = md_report
 
     # Calculate total cost
     total_cost = sum(r.get("cost_usd", 0) or 0 for r in interaction_records)

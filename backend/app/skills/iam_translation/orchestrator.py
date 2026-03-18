@@ -24,7 +24,7 @@ from agent_logger import (
 
 # ── Model config ──────────────────────────────────────────────────────────────
 ENHANCEMENT_MODEL = "claude-opus-4-6"
-REVIEW_MODEL      = "claude-sonnet-4-6"
+REVIEW_MODEL = "claude-opus-4-6"
 FIX_MODEL         = "claude-opus-4-6"
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -425,6 +425,284 @@ def run_gap_analysis(policy_text: str) -> dict:
     }
 
 
+# ── Report generators ────────────────────────────────────────────────────────
+
+_AWS_TO_OCI_SERVICE = {
+    "s3":                  ("Object Storage",       "`buckets`, `objects`"),
+    "dynamodb":            ("NoSQL Database",        "`nosql-tables`"),
+    "ec2":                 ("Compute + Networking",  "`instances`, `vcns`, `subnets`, `security-lists`"),
+    "lambda":              ("Functions",             "`fn-function`"),
+    "sqs":                 ("Queue",                 "`queues`"),
+    "sns":                 ("Notifications",         "`ons-topics`"),
+    "secretsmanager":      ("Vault",                 "`secret-bundles`, `secrets`"),
+    "kms":                 ("Vault KMS",             "`keys`"),
+    "logs":                ("Logging",               "`log-groups`"),
+    "cloudwatch":          ("Monitoring",            "`metrics`"),
+    "iam":                 ("IAM",                   "`groups`, `dynamic-groups`"),
+    "rds":                 ("Database",              "`db-systems`, `autonomous-database`"),
+    "ecs":                 ("Container Instances",   "`container-instances`"),
+    "eks":                 ("Kubernetes Engine",     "`clusters` (OKE)"),
+    "ecr":                 ("Container Registry",    "`repos`"),
+    "elasticloadbalancing":("Load Balancer",         "`load-balancers`"),
+    "autoscaling":         ("Autoscaling",           "`instance-configurations`"),
+    "cloudformation":      ("Resource Manager",      "`stacks`"),
+    "codecommit":          ("DevOps",                "`repositories`"),
+    "codebuild":           ("DevOps",                "`build-pipelines`"),
+    "codepipeline":        ("DevOps",                "`deployment-pipelines`"),
+    "route53":             ("DNS",                   "`dns-zones`"),
+    "ssm":                 ("OS Management",         "`managed-instances`"),
+    "waf":                 ("Web Application Firewall", "`waf-policies`"),
+}
+
+
+def generate_paste_ready_policies(translation: dict) -> str:
+    """Generate a clean paste-ready OCI policy statement file (no AWS metadata)."""
+    statements = translation.get("statements", [])
+    placeholders = translation.get("placeholders", {})
+
+    lines = [
+        "# OCI IAM Policy Statements",
+        "# Replace all PLACEHOLDER_NAME values before applying",
+        "",
+    ]
+
+    if placeholders:
+        lines.append("# PLACEHOLDERS:")
+        for key, desc in placeholders.items():
+            lines.append(f"# {key}: {desc}")
+        lines.append("")
+
+    for stmt in statements:
+        sid = stmt.get("sid", "")
+        statement = stmt.get("statement", "")
+        if sid:
+            lines.append(f"# {sid}")
+        if statement:
+            lines.append(statement)
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def generate_rich_report_md(
+    translation: dict,
+    gap_analysis: dict,
+    last_review: dict,
+    final_decision,
+    final_confidence: float,
+    iteration_count: int,
+) -> str:
+    """Generate a rich human-readable migration guide matching the reference format."""
+    statements = translation.get("statements", [])
+    placeholders = translation.get("placeholders", {})
+    critical_gaps = translation.get("critical_gaps", [])
+    prerequisites = translation.get("migration_prerequisites", [])
+
+    review_issues = last_review.get("issues", [])
+    review_summary = last_review.get("review_summary", "")
+
+    total_stmts = gap_analysis.get("total_statements", len(statements))
+    detected_services = gap_analysis.get("detected_services", [])
+
+    decision_str = final_decision.value if hasattr(final_decision, "value") else str(final_decision)
+    approved = decision_str in ("APPROVED", "APPROVED_WITH_NOTES")
+    status_icon = "✅" if approved else "⚠️"
+
+    critical_cnt = sum(1 for i in review_issues if i.get("severity") in ("CRITICAL", "HIGH"))
+    med_low_cnt = sum(1 for i in review_issues if i.get("severity") in ("MEDIUM", "LOW"))
+    if critical_cnt:
+        issues_summary = f"{critical_cnt} critical/high issues require attention"
+    elif med_low_cnt:
+        issues_summary = f"{med_low_cnt} medium/low issues documented"
+    else:
+        issues_summary = "no issues"
+
+    complexity = "HIGH" if len(detected_services) >= 6 else "MEDIUM" if len(detected_services) >= 3 else "LOW"
+
+    lines = []
+
+    # ── Header ─────────────────────────────────────────────────────────────────
+    lines += [
+        "# OCI IAM Policy Translation",
+        "",
+        f"**Generated:** {datetime.utcnow().strftime('%Y-%m-%d')}",
+        f"**Status:** {status_icon} {decision_str} ({iteration_count} iteration{'s' if iteration_count != 1 else ''}, {issues_summary})",
+        "",
+        "---",
+        "",
+    ]
+
+    # ── Executive Summary ──────────────────────────────────────────────────────
+    lines.append("## Executive Summary")
+    lines.append("")
+    if review_summary:
+        lines.append(review_summary)
+        lines.append("")
+
+    lines += [
+        f"**Translation Complexity:** {complexity}",
+        f"**AWS Statements:** {total_stmts}",
+        f"**OCI Statements:** {len(statements)}",
+        f"**Services:** {len(detected_services)} AWS → {len(detected_services)} OCI",
+        "",
+    ]
+
+    if critical_gaps:
+        lines.append("**Key Challenges:**")
+        for gap in critical_gaps:
+            lines.append(f"- {gap.get('gap', '')}")
+        lines.append("")
+
+    high_issues = [i for i in review_issues if i.get("severity") in ("CRITICAL", "HIGH")]
+    med_issues = [i for i in review_issues if i.get("severity") in ("MEDIUM", "LOW")]
+    if high_issues or med_issues:
+        lines.append("**Migration Impact:**")
+        for i in high_issues:
+            lines.append(f"- **High:** {i.get('description', '')}")
+        for i in med_issues[:5]:
+            sev = i.get("severity", "Low").title()
+            lines.append(f"- **{sev}:** {i.get('description', '')}")
+        lines.append("")
+
+    lines += ["---", ""]
+
+    # ── OCI Service Mappings ───────────────────────────────────────────────────
+    if detected_services:
+        lines += [
+            "## OCI Service Mappings",
+            "",
+            "| AWS Service | OCI Service | Resource Type | Translation Notes |",
+            "|-------------|-------------|---------------|-------------------|",
+        ]
+        # Build per-service notes from statement notes
+        svc_notes: dict[str, str] = {}
+        for stmt in statements:
+            aws_eq = stmt.get("aws_equivalent", "").lower()
+            note = stmt.get("notes", "")
+            for svc in detected_services:
+                if svc.lower() in aws_eq and note and svc not in svc_notes:
+                    svc_notes[svc] = note[:120].replace("|", "\\|")
+
+        for svc in detected_services:
+            oci_svc, res_type = _AWS_TO_OCI_SERVICE.get(svc.lower(), ("OCI equivalent", "see statements"))
+            note = svc_notes.get(svc, "—")
+            lines.append(f"| {svc.upper()} | {oci_svc} | {res_type} | {note} |")
+        lines += ["", "---", ""]
+
+    # ── Prerequisites ──────────────────────────────────────────────────────────
+    if prerequisites:
+        lines += ["## Prerequisites", ""]
+        for i, prereq in enumerate(prerequisites, 1):
+            lines.append(f"### {i}. {prereq}")
+            lines.append("")
+        lines += ["---", ""]
+
+    # ── Placeholder Reference ──────────────────────────────────────────────────
+    if placeholders:
+        lines += ["## Placeholder Reference", ""]
+        for key, desc in placeholders.items():
+            lines.append(f"- `{key}`: {desc}")
+        lines += ["", "---", ""]
+
+    # ── Final OCI Policy ───────────────────────────────────────────────────────
+    lines += [
+        "## Final OCI Policy",
+        "",
+        "Copy-paste ready statements. Replace all placeholders before deployment.",
+        "",
+    ]
+    for stmt in statements:
+        sid = stmt.get("sid", "Statement")
+        statement = stmt.get("statement", "")
+        aws_eq = stmt.get("aws_equivalent", "")
+        notes = stmt.get("notes", "")
+
+        lines.append(f"### {'=' * 40}")
+        lines.append(f"### {sid}")
+        lines.append(f"### {'=' * 40}")
+        lines.append("")
+        if aws_eq:
+            lines.append(f"```")
+            lines.append(f"# AWS: {aws_eq}")
+            lines.append(statement)
+            lines.append(f"```")
+        else:
+            lines.append(f"```")
+            lines.append(statement)
+            lines.append(f"```")
+        if notes:
+            lines.append(f"")
+            lines.append(f"**Notes:** {notes}")
+        lines += ["", "---", ""]
+
+    # ── Deployment Checklist ───────────────────────────────────────────────────
+    lines += ["## Deployment Checklist", ""]
+    if placeholders:
+        for key in placeholders:
+            lines.append(f"- [ ] Replace `{key}` with actual value")
+    for i, prereq in enumerate(prerequisites, 1):
+        lines.append(f"- [ ] Complete prerequisite {i}: {prereq}")
+    for gap in critical_gaps:
+        if gap.get("severity") in ("HIGH", "CRITICAL"):
+            lines.append(f"- [ ] Address gap: {gap.get('gap', '')} — {gap.get('mitigation', '')}")
+    for issue in high_issues:
+        lines.append(f"- [ ] Fix: {issue.get('description', '')}")
+    lines += [
+        "- [ ] Test statements in a non-production compartment first",
+        "- [ ] Verify least privilege before production deployment",
+        "",
+        "---",
+        "",
+    ]
+
+    # ── Critical Gaps Summary ──────────────────────────────────────────────────
+    if critical_gaps:
+        lines += [
+            "## Critical Gaps Summary",
+            "",
+            "| Severity | Gap | Mitigation |",
+            "|----------|-----|------------|",
+        ]
+        for gap in critical_gaps:
+            sev = gap.get("severity", "MEDIUM")
+            desc = gap.get("gap", "").replace("|", "\\|")
+            mit = gap.get("mitigation", "").replace("|", "\\|")
+            lines.append(f"| {sev} | {desc} | {mit} |")
+        lines += ["", "---", ""]
+
+    # ── Review Issues ──────────────────────────────────────────────────────────
+    if review_issues:
+        lines += [
+            "## Review Issues",
+            "",
+            "| Severity | Category | Description | Fix Suggestion |",
+            "|----------|----------|-------------|----------------|",
+        ]
+        for issue in review_issues:
+            sev = issue.get("severity", "LOW")
+            cat = issue.get("category", "").replace("|", "\\|")
+            desc = (issue.get("description", "") or "").replace("|", "\\|")[:120]
+            fix = (issue.get("fix_suggestion", "") or "").replace("|", "\\|")[:120]
+            lines.append(f"| {sev} | {cat} | {desc} | {fix} |")
+        lines += ["", "---", ""]
+
+    # ── Validation Summary ─────────────────────────────────────────────────────
+    lines += ["## Validation Summary", ""]
+    lines.append(f"**Final Decision:** {status_icon} {decision_str}")
+    lines.append(f"**Confidence Score:** {final_confidence:.1%}")
+    lines.append(f"**Iterations:** {iteration_count}")
+    lines.append("")
+    if final_confidence >= 0.85:
+        lines.append("Translation is approved. All CRITICAL and HIGH issues resolved. Ready for deployment after placeholder substitution.")
+    elif final_confidence >= 0.65:
+        lines.append("Translation is approved with notes. Review documented issues above before deployment.")
+    else:
+        lines.append("Translation needs additional review. Address all CRITICAL and HIGH issues before deployment.")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
 # ── Main orchestration ────────────────────────────────────────────────────────
 
 def run(
@@ -637,8 +915,17 @@ def run(
     # 6. Build artifacts
     artifacts = {}
     if current_translation:
+        # Paste-ready OCI statements (no AWS metadata)
+        artifacts["oci_policies.txt"] = generate_paste_ready_policies(current_translation)
+        # Full machine-readable translation
         artifacts["oci_policies.json"] = json.dumps(current_translation, indent=2)
-    artifacts["report.md"] = md_report
+        # Rich migration guide
+        artifacts["report.md"] = generate_rich_report_md(
+            current_translation, gap_analysis, last_review,
+            final_decision, final_confidence, iteration,
+        )
+    # Orchestration log (what the agents actually did)
+    artifacts["translation_log.md"] = md_report
 
     total_cost = sum(r.get("cost_usd", 0) or 0 for r in interaction_records)
 

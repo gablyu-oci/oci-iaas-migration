@@ -10,17 +10,17 @@ from app.config import settings
 MODEL_ROUTING = {
     "cfn_terraform": {
         "enhancement": "claude-opus-4-6",
-        "review": "claude-sonnet-4-6",
+        "review": "claude-opus-4-6",
         "fix": "claude-opus-4-6",
     },
     "iam_translation": {
         "enhancement": "claude-opus-4-6",
-        "review": "claude-sonnet-4-6",
+        "review": "claude-opus-4-6",
         "fix": "claude-opus-4-6",
     },
     "dependency_discovery": {
         "runbook": "claude-opus-4-6",
-        "anomalies": "claude-sonnet-4-6",
+        "anomalies": "claude-opus-4-6",
     },
 }
 
@@ -58,4 +58,4 @@ def get_anthropic_client(api_key: str | None = None):
 def get_model(skill_type: str, agent_type: str) -> str:
     """Look up the model to use for a given skill + agent type combination."""
     skill_models = MODEL_ROUTING.get(skill_type, {})
-    return skill_models.get(agent_type, "claude-sonnet-4-6")
+    return skill_models.get(agent_type, "claude-opus-4-6")

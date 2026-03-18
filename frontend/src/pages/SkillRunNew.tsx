@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useState, useRef, type FormEvent, type DragEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useCreateSkillRun } from '../api/hooks/useSkillRuns';
 import { useResources } from '../api/hooks/useResources';
@@ -9,16 +9,22 @@ const SKILL_TYPES = [
     value: 'cfn_terraform',
     label: 'CloudFormation to Terraform',
     description: 'Convert AWS CloudFormation templates to OCI Terraform',
+    accept: '.yaml,.yml,.json',
+    hint: 'YAML or JSON CloudFormation template',
   },
   {
     value: 'iam_translation',
     label: 'IAM Translation',
     description: 'Translate AWS IAM policies to OCI IAM policies',
+    accept: '.json',
+    hint: 'JSON IAM policy document',
   },
   {
     value: 'dependency_discovery',
     label: 'Dependency Discovery',
     description: 'Discover and map resource dependencies',
+    accept: '.json,.csv,.log',
+    hint: 'CloudTrail JSON or VPC Flow Log',
   },
 ];
 
@@ -27,14 +33,47 @@ export default function SkillRunNew() {
   const preselectedResourceId = searchParams.get('resource_id') || '';
 
   const [skillType, setSkillType] = useState('cfn_terraform');
-  const [inputMode, setInputMode] = useState<'resource' | 'content'>(
-    preselectedResourceId ? 'resource' : 'content'
+  const [inputMode, setInputMode] = useState<'resource' | 'file'>(
+    preselectedResourceId ? 'resource' : 'file'
   );
   const [selectedResourceId, setSelectedResourceId] = useState(
     preselectedResourceId
   );
   const [inputContent, setInputContent] = useState('');
+  const [fileName, setFileName] = useState('');
+  const [isDragging, setIsDragging] = useState(false);
+  const [fileError, setFileError] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [maxIterations, setMaxIterations] = useState(3);
+
+  const currentSkill = SKILL_TYPES.find((s) => s.value === skillType)!;
+
+  const loadFile = (file: File) => {
+    setFileError('');
+    if (file.size > 5 * 1024 * 1024) {
+      setFileError('File is too large. Maximum size is 5 MB.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      setInputContent(e.target?.result as string);
+      setFileName(file.name);
+    };
+    reader.onerror = () => setFileError('Failed to read file.');
+    reader.readAsText(file);
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) loadFile(file);
+  };
+
+  const handleDrop = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) loadFile(file);
+  };
 
   const navigate = useNavigate();
   const createSkillRun = useCreateSkillRun();
@@ -55,7 +94,7 @@ export default function SkillRunNew() {
 
     if (inputMode === 'resource' && selectedResourceId) {
       payload.input_resource_id = selectedResourceId;
-    } else if (inputMode === 'content' && inputContent.trim()) {
+    } else if (inputMode === 'file' && inputContent.trim()) {
       payload.input_content = inputContent;
     }
 
@@ -129,20 +168,18 @@ export default function SkillRunNew() {
                 onChange={() => setInputMode('resource')}
                 className="text-blue-600"
               />
-              <span className="text-sm font-medium">
-                Select from resources
-              </span>
+              <span className="text-sm font-medium">Select from resources</span>
             </label>
             <label className="flex items-center gap-2 cursor-pointer">
               <input
                 type="radio"
                 name="input_mode"
-                value="content"
-                checked={inputMode === 'content'}
-                onChange={() => setInputMode('content')}
+                value="file"
+                checked={inputMode === 'file'}
+                onChange={() => setInputMode('file')}
                 className="text-blue-600"
               />
-              <span className="text-sm font-medium">Paste content</span>
+              <span className="text-sm font-medium">Upload file</span>
             </label>
           </div>
 
@@ -175,22 +212,62 @@ export default function SkillRunNew() {
             </div>
           )}
 
-          {inputMode === 'content' && (
-            <div>
-              <label
-                htmlFor="input-content"
-                className="block text-sm font-medium text-gray-700 mb-1"
+          {inputMode === 'file' && (
+            <div className="space-y-3">
+              {/* Drop zone */}
+              <div
+                onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                onDragLeave={() => setIsDragging(false)}
+                onDrop={handleDrop}
+                onClick={() => fileInputRef.current?.click()}
+                className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
+                  isDragging
+                    ? 'border-blue-500 bg-blue-50'
+                    : fileName
+                    ? 'border-green-400 bg-green-50'
+                    : 'border-gray-300 hover:border-gray-400 bg-gray-50'
+                }`}
               >
-                Paste YAML, JSON, or CloudFormation content
-              </label>
-              <textarea
-                id="input-content"
-                value={inputContent}
-                onChange={(e) => setInputContent(e.target.value)}
-                rows={12}
-                placeholder="Paste your CloudFormation template, IAM policy, or resource configuration here..."
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-sm"
-              />
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept={currentSkill.accept}
+                  onChange={handleFileChange}
+                  className="hidden"
+                />
+                {fileName ? (
+                  <div className="space-y-1">
+                    <p className="text-green-700 font-medium">✓ {fileName}</p>
+                    <p className="text-xs text-gray-500">
+                      {(inputContent.length / 1024).toFixed(1)} KB loaded — click to replace
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    <p className="text-gray-600 font-medium">
+                      Drop file here or click to browse
+                    </p>
+                    <p className="text-xs text-gray-400">{currentSkill.hint}</p>
+                  </div>
+                )}
+              </div>
+
+              {fileError && (
+                <p className="text-sm text-red-600">{fileError}</p>
+              )}
+
+              {/* Preview */}
+              {inputContent && (
+                <details className="text-sm">
+                  <summary className="cursor-pointer text-gray-500 hover:text-gray-700">
+                    Preview content
+                  </summary>
+                  <pre className="mt-2 p-3 bg-gray-50 border rounded-lg overflow-auto max-h-48 text-xs font-mono text-gray-700">
+                    {inputContent.slice(0, 2000)}
+                    {inputContent.length > 2000 && '\n… (truncated for preview)'}
+                  </pre>
+                </details>
+              )}
             </div>
           )}
         </div>
@@ -229,7 +306,7 @@ export default function SkillRunNew() {
             disabled={
               createSkillRun.isPending ||
               (inputMode === 'resource' && !selectedResourceId) ||
-              (inputMode === 'content' && !inputContent.trim())
+              (inputMode === 'file' && !inputContent.trim())
             }
             className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
           >

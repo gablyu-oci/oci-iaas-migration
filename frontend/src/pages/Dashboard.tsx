@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 import { useResources } from '../api/hooks/useResources';
-import { useSkillRuns } from '../api/hooks/useSkillRuns';
+import { useSkillRuns, useDeleteSkillRun } from '../api/hooks/useSkillRuns';
 import { useMigrations } from '../api/hooks/useMigrations';
 import { formatDate, formatCost, cn } from '../lib/utils';
 
@@ -10,6 +10,7 @@ export default function Dashboard() {
   const { data: migrations, isLoading: loadingMigrations } = useMigrations();
 
   const recentRuns = (skillRuns || []).slice(0, 10);
+  const deleteSkillRun = useDeleteSkillRun();
 
   const statusColors: Record<string, string> = {
     queued: 'bg-gray-100 text-gray-800',
@@ -172,28 +173,40 @@ export default function Dashboard() {
                       {formatDate(run.created_at)}
                     </td>
                     <td className="px-4 py-3">
-                      {run.status === 'complete' ? (
-                        <Link
-                          to={`/skill-runs/${run.id}/results`}
-                          className="text-blue-600 hover:text-blue-800 text-sm font-medium"
+                      <div className="flex items-center gap-3">
+                        {run.status === 'complete' ? (
+                          <Link
+                            to={`/skill-runs/${run.id}/results`}
+                            className="text-blue-600 hover:text-blue-800 text-sm font-medium"
+                          >
+                            View Results
+                          </Link>
+                        ) : run.status === 'running' || run.status === 'queued' ? (
+                          <Link
+                            to={`/skill-runs/${run.id}`}
+                            className="text-blue-600 hover:text-blue-800 text-sm font-medium"
+                          >
+                            View Progress
+                          </Link>
+                        ) : (
+                          <Link
+                            to={`/skill-runs/${run.id}/results`}
+                            className="text-gray-600 hover:text-gray-800 text-sm font-medium"
+                          >
+                            View Details
+                          </Link>
+                        )}
+                        <button
+                          onClick={() => {
+                            if (confirm('Delete this skill run?')) {
+                              deleteSkillRun.mutate(run.id);
+                            }
+                          }}
+                          className="text-red-500 hover:text-red-700 text-sm font-medium"
                         >
-                          View Results
-                        </Link>
-                      ) : run.status === 'running' || run.status === 'queued' ? (
-                        <Link
-                          to={`/skill-runs/${run.id}`}
-                          className="text-blue-600 hover:text-blue-800 text-sm font-medium"
-                        >
-                          View Progress
-                        </Link>
-                      ) : (
-                        <Link
-                          to={`/skill-runs/${run.id}/results`}
-                          className="text-gray-600 hover:text-gray-800 text-sm font-medium"
-                        >
-                          View Details
-                        </Link>
-                      )}
+                          Delete
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

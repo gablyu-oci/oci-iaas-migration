@@ -61,6 +61,23 @@ export function useCreateSkillRun() {
   });
 }
 
+export function useDeleteSkillRun() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => client.delete(`/api/skill-runs/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['skill-runs'] }),
+  });
+}
+
+export function useSkillRunInteractions(skillRunId: string) {
+  return useQuery<InteractionEvent[]>({
+    queryKey: ['skill-runs', skillRunId, 'interactions'],
+    queryFn: () =>
+      client.get(`/api/skill-runs/${skillRunId}/interactions`).then((r) => r.data),
+    enabled: !!skillRunId,
+  });
+}
+
 export function useSkillRunArtifacts(skillRunId: string) {
   return useQuery<Artifact[]>({
     queryKey: ['skill-runs', skillRunId, 'artifacts'],
@@ -70,46 +87,71 @@ export function useSkillRunArtifacts(skillRunId: string) {
   });
 }
 
+export interface InteractionEvent {
+  id: string;
+  agent_type: string | null;
+  model: string | null;
+  iteration: number | null;
+  tokens_input: number | null;
+  tokens_output: number | null;
+  cost_usd: number | null;
+  decision: string | null;
+  confidence: number | null;
+  duration_seconds: number | null;
+  created_at: string;
+}
+
 interface SSEEvent {
   phase: string;
   iteration: number;
   confidence: number;
   status: string;
   elapsed_secs: number;
+  new_interactions?: InteractionEvent[];
 }
 
 export function useSkillRunStream(skillRunId: string) {
   const [event, setEvent] = useState<SSEEvent | null>(null);
   const [connected, setConnected] = useState(false);
+  const [interactions, setInteractions] = useState<InteractionEvent[]>([]);
 
   useEffect(() => {
     if (!skillRunId) return;
+    // Reset interactions when skillRunId changes
+    setInteractions([]);
 
     const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
     const token = localStorage.getItem('token');
     const url = `${API_URL}/api/skill-runs/${skillRunId}/stream?token=${token}`;
     const es = new EventSource(url);
 
-    es.onopen = () => setConnected(true);
-    es.onmessage = (e) => {
+    const parseAndSet = (e: MessageEvent) => {
       try {
-        setEvent(JSON.parse(e.data));
-      } catch {
-        // ignore parse errors
-      }
+        const data: SSEEvent = JSON.parse(e.data);
+        setEvent(data);
+        if (data.new_interactions && data.new_interactions.length > 0) {
+          setInteractions((prev) => [...prev, ...data.new_interactions!]);
+        }
+      } catch { /* ignore */ }
     };
+
+    es.onopen = () => setConnected(true);
+    es.addEventListener('status', parseAndSet);
+    es.addEventListener('done', parseAndSet);
     es.onerror = () => {
       setConnected(false);
       es.close();
     };
 
     return () => {
+      es.removeEventListener('status', parseAndSet);
+      es.removeEventListener('done', parseAndSet);
       es.close();
       setConnected(false);
     };
   }, [skillRunId]);
 
-  return { event, connected };
+  return { event, connected, interactions };
 }
 
 export function getArtifactDownloadUrl(artifactId: string) {
