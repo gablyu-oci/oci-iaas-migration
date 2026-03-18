@@ -1,0 +1,111 @@
+========================================================================
+  AWS DEPENDENCY DISCOVERY — MIGRATION SEQUENCING REPORT
+========================================================================
+
+  Total dependencies discovered: 15
+  Critical: 1  |  High: 0  |  Medium: 6  |  Low: 8
+
+------------------------------------------------------------------------
+  WARNING: CIRCULAR DEPENDENCIES DETECTED
+------------------------------------------------------------------------
+    Cycle: 555555555555:dynamodb -> 555555555555:dynamodb
+    Cycle: 555555555555:sqs -> 555555555555:sqs
+    Cycle: 555555555555:secretsmanager -> 555555555555:secretsmanager
+    Cycle: 666666666666:execute-api -> 666666666666:execute-api
+    Cycle: 555555555555:sns -> 555555555555:sns
+
+  These services have mutual dependencies and cannot be migrated
+  independently. They must be migrated together or with a cutover plan.
+
+------------------------------------------------------------------------
+  TOP DEPENDENCIES (ranked by risk)
+------------------------------------------------------------------------
+
+    1. [!!!] 666666666666:sts  -->  555555555555:sts
+       Cross-account trust chain (AssumeRole) — 666666666666:sts assumes roles in 555555555555:sts
+       BREAKS IF WRONG: Services in sts will lose access to sts resources after migration
+
+    2. [!  ] 555555555555:dynamodb  -->  555555555555:dynamodb
+       Data write dependency (PutItem, 4x observed)
+       BREAKS IF WRONG: dynamodb writes to dynamodb — write failures may cause data loss
+
+    3. [!  ] 555555555555:sqs  -->  555555555555:sqs
+       Async messaging dependency (SendMessage, 2x observed)
+       BREAKS IF WRONG: Messages from sqs to sqs will be lost or undeliverable
+
+    4. [!  ] 555555555555:s3  -->  555555555555:s3
+       Data write dependency (PutObject, 2x observed)
+       BREAKS IF WRONG: s3 writes to s3 — write failures may cause data loss
+
+    5. [!  ] 666666666666:execute-api  -->  666666666666:execute-api
+       Synchronous invocation (Invoke, 1x observed)
+       BREAKS IF WRONG: execute-api calls execute-api synchronously — will fail immediately if target is unavailable
+
+    6. [!  ] 555555555555:sns  -->  555555555555:sns
+       Async messaging dependency (Publish, 1x observed)
+       BREAKS IF WRONG: Messages from sns to sns will be lost or undeliverable
+
+    7. [!  ] 555555555555:lambda  -->  555555555555:lambda
+       Synchronous invocation (Invoke, 1x observed)
+       BREAKS IF WRONG: lambda calls lambda synchronously — will fail immediately if target is unavailable
+
+    8. [   ] 555555555555:secretsmanager  -->  555555555555:secretsmanager
+       Data read dependency (GetSecretValue, 2x observed)
+       BREAKS IF WRONG: secretsmanager reads from secretsmanager — data unavailability will cause failures
+
+    9. [   ] 555555555555:10.1.1.20  -->  555555555555:postgres/rds@10.1.5.100
+       Network-level dependency (network:5432/6, 2 connections, 210.0 KB transferred) — discovered from VPC Flow Logs
+       BREAKS IF WRONG: Direct network traffic from 555555555555:10.1.1.20 to 555555555555:postgres/rds@10.1.5.100 will fail if network path is not re-established after migration
+
+   10. [   ] 555555555555:10.1.1.20  -->  555555555555:redis/elasticache@10.1.6.50
+       Network-level dependency (network:6379/6, 1 connections, 195.3 KB transferred) — discovered from VPC Flow Logs
+       BREAKS IF WRONG: Direct network traffic from 555555555555:10.1.1.20 to 555555555555:redis/elasticache@10.1.6.50 will fail if network path is not re-established after migration
+
+   11. [   ] 555555555555:10.1.1.20  -->  555555555555:https@10.1.7.80
+       Network-level dependency (network:443/6, 1 connections, 24.4 KB transferred) — discovered from VPC Flow Logs
+       BREAKS IF WRONG: Direct network traffic from 555555555555:10.1.1.20 to 555555555555:https@10.1.7.80 will fail if network path is not re-established after migration
+
+   12. [   ] 555555555555:10.1.4.50  -->  555555555555:postgres/rds@10.1.5.100
+       Network-level dependency (network:5432/6, 1 connections, 146.5 KB transferred) — discovered from VPC Flow Logs
+       BREAKS IF WRONG: Direct network traffic from 555555555555:10.1.4.50 to 555555555555:postgres/rds@10.1.5.100 will fail if network path is not re-established after migration
+
+   13. [   ] 555555555555:10.1.2.30  -->  555555555555:postgres/rds@10.1.5.100
+       Network-level dependency (network:5432/6, 1 connections, 58.6 KB transferred) — discovered from VPC Flow Logs
+       BREAKS IF WRONG: Direct network traffic from 555555555555:10.1.2.30 to 555555555555:postgres/rds@10.1.5.100 will fail if network path is not re-established after migration
+
+   14. [   ] 555555555555:10.1.2.30  -->  555555555555:redis/elasticache@10.1.6.50
+       Network-level dependency (network:6379/6, 1 connections, 39.1 KB transferred) — discovered from VPC Flow Logs
+       BREAKS IF WRONG: Direct network traffic from 555555555555:10.1.2.30 to 555555555555:redis/elasticache@10.1.6.50 will fail if network path is not re-established after migration
+
+   15. [   ] 666666666666:10.2.1.10  -->  666666666666:https@10.1.1.20
+       Network-level dependency (network:443/6, 1 connections, 14.6 KB transferred) — discovered from VPC Flow Logs
+       BREAKS IF WRONG: Direct network traffic from 666666666666:10.2.1.10 to 666666666666:https@10.1.1.20 will fail if network path is not re-established after migration
+
+------------------------------------------------------------------------
+  RECOMMENDED MIGRATION ORDER
+------------------------------------------------------------------------
+
+  Migrate in this order to minimize breakage:
+
+  Step   1: 555555555555:dynamodb (after: 555555555555:dynamodb)
+  Step   2: 555555555555:sqs (after: 555555555555:sqs)
+  Step   3: 555555555555:secretsmanager (after: 555555555555:secretsmanager)
+  Step   4: 666666666666:sts
+  Step   5: 666666666666:execute-api (after: 666666666666:execute-api)
+  Step   6: 555555555555:sns (after: 555555555555:sns)
+  Step   7: 555555555555:lambda (after: 555555555555:lambda)
+  Step   8: 555555555555:s3 (after: 555555555555:s3)
+  Step   9: 555555555555:10.1.1.20
+             *** HIGH FAN-OUT: 3 services depend on this ***
+  Step  10: 555555555555:10.1.4.50
+  Step  11: 555555555555:10.1.2.30
+  Step  12: 666666666666:10.2.1.10
+  Step  13: 555555555555:sts (after: 666666666666:sts)
+  Step  14: 555555555555:https@10.1.7.80 (after: 555555555555:10.1.1.20)
+  Step  15: 555555555555:postgres/rds@10.1.5.100 (after: 555555555555:10.1.1.20, 555555555555:10.1.4.50, 555555555555:10.1.2.30)
+  Step  16: 555555555555:redis/elasticache@10.1.6.50 (after: 555555555555:10.1.1.20, 555555555555:10.1.2.30)
+  Step  17: 666666666666:https@10.1.1.20 (after: 666666666666:10.2.1.10)
+
+========================================================================
+  END OF REPORT
+========================================================================

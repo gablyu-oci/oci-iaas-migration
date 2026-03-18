@@ -1,0 +1,242 @@
+{
+  "session_id": "iam-startup-backend-policy-20260311-230859",
+  "project_type": "iam",
+  "source_file": "startup-backend-policy.json",
+  "start_time": "2026-03-11T23:08:59.103361",
+  "end_time": "2026-03-11T23:16:26.455004",
+  "total_iterations": 2,
+  "final_decision": "APPROVED",
+  "final_confidence": 0.92,
+  "interactions": [
+    {
+      "timestamp": "2026-03-11T23:08:59.148619",
+      "iteration": 0,
+      "agent_type": "translator",
+      "model": null,
+      "input_summary": "AWS IAM policy: startup-backend-policy.json",
+      "output_summary": "Gap analysis: 0 unmapped services, 1 gaps, 9/9 statements mapped",
+      "full_output": null,
+      "confidence_score": null,
+      "decision": null,
+      "issues_found": [],
+      "fixes_applied": [],
+      "duration_seconds": 0.0452350159175694,
+      "tokens_input": null,
+      "tokens_output": null,
+      "tokens_cache_read": null,
+      "tokens_cache_write": null,
+      "tokens_total": null,
+      "cost_usd": null,
+      "metadata": {
+        "total_statements": 9,
+        "mapped_statements": 9,
+        "unmapped_count": 0,
+        "gap_count": 1,
+        "detected_services": [
+          "dynamodb",
+          "ec2",
+          "kms",
+          "lambda",
+          "logs",
+          "s3",
+          "secretsmanager",
+          "sqs"
+        ],
+        "unmapped_services": [],
+        "translator_output": "================================================================================\nOCI IAM Policy Translation\nSource: tmpp_7mkjk2.json\n================================================================================\n\nOCI POLICY STATEMENTS:\n--------------------------------------------------------------------------------\n1. Allow group <GROUP_NAME> to read buckets in compartment all-regions where target.bucket.name = 'acme-prod-media' AND target.bucket.name = 'acme-prod-media'\n2. Allow group <GROUP_NAME> to manage objects in compartment all-regions where target.bucket.name = 'acme-prod-media' AND target.bucket.name = 'acme-prod-media'\n3. Allow group <GROUP_NAME> to use nosql-family in compartment us-east-1 where target.nosql-table.name = 'AcmeOrders' AND target.nosql-table.name = 'AcmeOrders'\n4. Allow group <GROUP_NAME> to inspect instances in compartment <COMPARTMENT_NAME> where request.region = 'us-east-1'\n5. Allow group <GROUP_NAME> to use fn-function in compartment us-east-1\n6. Allow group <GROUP_NAME> to manage <UNKNOWN-SERVICE:sqs> in compartment us-east-1\n7. Allow group <GROUP_NAME> to read <UNKNOWN-SERVICE:secretsmanager> in compartment us-east-1 where target.resource.tag.Environment = 'production'\n8. Allow group <GROUP_NAME> to manage log-groups in compartment us-east-1\n9. Allow group <GROUP_NAME> to inspect keys in compartment us-east-1\n10. Allow group <GROUP_NAME> to manage buckets in compartment all-regions where target.bucket.name = 'acme-prod-*'\n\nPREREQUISITES:\n--------------------------------------------------------------------------------\nGroups to create:\n  - <GROUP_NAME>: Group for this policy - update with actual group name\n\nCompartments (update with actual OCID or name):\n  - all-regions: Compartment inferred from AWS resource ARN\n  - us-east-1: Compartment inferred from AWS resource ARN\n\nTRANSLATION GAPS:\n--------------------------------------------------------------------------------\n[MEDIUM] Condition: s3:x-amz-server-side-encryption\n  Impact: S3 e"
+      }
+    },
+    {
+      "timestamp": "2026-03-11T23:10:44.501833",
+      "iteration": 1,
+      "agent_type": "enhancement",
+      "model": "claude-sonnet-4-6",
+      "input_summary": "Enhance translation, fix 0 issues",
+      "output_summary": "Generated 15 OCI statements",
+      "full_output": null,
+      "confidence_score": null,
+      "decision": null,
+      "issues_found": [],
+      "fixes_applied": [],
+      "duration_seconds": 105.30705668195151,
+      "tokens_input": 1301,
+      "tokens_output": 5785,
+      "tokens_cache_read": 28642,
+      "tokens_cache_write": 0,
+      "tokens_total": 35728,
+      "cost_usd": 0.099271,
+      "metadata": {}
+    },
+    {
+      "timestamp": "2026-03-11T23:11:30.397443",
+      "iteration": 1,
+      "agent_type": "review",
+      "model": "claude-opus-4-6",
+      "input_summary": "Review translation from iteration 1",
+      "output_summary": "NEEDS_FIXES \u2014 10 issues \u2014 confidence 0.75",
+      "full_output": "{\"decision\": \"NEEDS_FIXES\", \"confidence_override\": null, \"architectural_mismatch\": false, \"issues\": [{\"severity\": \"HIGH\", \"category\": \"verb_accuracy\", \"description\": \"S3MediaBucketAccess_BucketLevel uses 'manage buckets' but the AWS actions (ListBucket, GetBucketLocation) only require read/inspect-level bucket access. PutObject and DeleteObject are object-level actions, not bucket-level. 'manage buckets' grants bucket creation, deletion, and policy modification at the bucket level, which far exceeds the original AWS permissions.\", \"fix_suggestion\": \"Change to 'Allow group BACKEND_APP_GROUP to read buckets in compartment COMPARTMENT_NAME where target.bucket.name = 'acme-prod-media''. The 'read buckets' verb covers ListBucket (listing objects in a bucket) and GetBucketLocation equivalents. Object-level mutations are handled by the separate objects statement.\"}, {\"severity\": \"HIGH\", \"category\": \"verb_accuracy\", \"description\": \"DenyDeleteBucket statement uses 'Deny ... manage buckets' which blocks ALL manage-level bucket operations (create, update, delete, policy changes) on acme-prod-media. The AWS policy only denies s3:DeleteBucket and s3:DeleteBucketPolicy. This over-broad deny will conflict with and negate the Allow 'manage buckets' statement for acme-prod-media, effectively preventing the group from performing any administrative bucket operations on that bucket.\", \"fix_suggestion\": \"OCI does not support action-level deny granularity easily. Since the first statement should be 'read buckets' (not 'manage buckets'), the group would never have bucket delete permissions in the first place, making this deny partially redundant for acme-prod-media. If broader protection is needed, use OCI permission-level conditions: 'Deny group BACKEND_APP_GROUP to manage buckets in compartment COMPARTMENT_NAME where all {target.bucket.name = 'acme-prod-media', any {request.permission = 'BUCKET_DELETE', request.permission = 'BUCKET_UPDATE'}}' \\u2014 though this is still broader than just delete. Document that this is a known gap and consider compensating controls.\"}, {\"severity\": \"HIGH\", \"category\": \"scope\", \"description\": \"DenyDeleteBucket only covers 'acme-prod-media' but the AWS Deny covers 'acme-prod-*' (all production buckets). The translation explicitly acknowledges this but only enumerates one bucket, significantly reducing the protective scope of the deny statement.\", \"fix_suggestion\": \"Enumerate all known acme-prod-* bucket names in the 'any {}' condition, or better yet, apply the deny at compartment level without a bucket name condition if the compartment only contains production buckets. Example: 'Deny group BACKEND_APP_GROUP to manage buckets in compartment ACME_PROD_COMPARTMENT' (if acceptable).\"}, {\"severity\": \"MEDIUM\", \"category\": \"verb_accuracy\", \"description\": \"S3MediaBucketAccess_ObjectLevel uses 'manage objects' which grants OBJECT_CREATE, OBJECT_OVERWRITE, OBJECT_DELETE, OBJECT_READ, OBJECT_INSPECT, OBJECT_RESTORE, OBJECT_VERSION_DELETE, and PAR_MANAGE. The AWS policy only grants GetObject, PutObject, DeleteObject. The OCI translation grants additional permissions like Pre-Authenticated Request management and version deletion that are not in the AWS policy.\", \"fix_suggestion\": \"Accept as the closest mapping since OCI does not offer granularity between 'use objects' and 'manage objects' that perfectly matches. Document that PAR_MANAGE and OBJECT_VERSION_DELETE are additional grants. If PARs are a concern, consider adding a deny for PAR operations if OCI supports permission-level deny conditions.\"}, {\"severity\": \"MEDIUM\", \"category\": \"scope\", \"description\": \"LambdaInvokeProcessors_Invoke uses 'where target.function.displayName = 'acme-order-'' which is an exact string match, not a prefix/wildcard match. This will match literally zero functions unless one is named exactly 'acme-order-'. The notes acknowledge this but the statement as written is non-functional.\", \"fix_suggestion\": \"Remove the where clause and instead scope to a dedicated compartment as recommended in the notes. Change to: 'Allow group BACKEND_APP_GROUP to use fn-function in compartment ACME_ORDER_FUNCTIONS_COMPARTMENT'. The placeholder ACME_ORDER_FUNCTIONS_COMPARTMENT is already defined.\"}, {\"severity\": \"MEDIUM\", \"category\": \"scope\", \"description\": \"LambdaInvokeProcessors_Read has no name-scoping condition at all, granting read access to ALL functions in the compartment. This is inconsistent with the invoke statement (which attempts name filtering) and broader than the AWS policy which restricts to acme-order-* functions.\", \"fix_suggestion\": \"Scope to the same dedicated compartment as the invoke statement: 'Allow group BACKEND_APP_GROUP to read fn-function in compartment ACME_ORDER_FUNCTIONS_COMPARTMENT'.\"}, {\"severity\": \"MEDIUM\", \"category\": \"verb_accuracy\", \"description\": \"CloudWatchLogs uses 'manage log-groups' which grants full administrative control over log groups including deletion. While CreateLogGroup does require create permissions, the combined grant is broader than needed. Additionally, 'manage log-groups' alone may not cover PutLogEvents which operates on log content, not log group resources.\", \"fix_suggestion\": \"Split into two statements: (1) 'Allow group BACKEND_APP_GROUP to manage log-groups in compartment ACME_BACKEND_LOGS_COMPARTMENT' for CreateLogGroup/CreateLogStream equivalents, and (2) 'Allow group BACKEND_APP_GROUP to use log-content in compartment ACME_BACKEND_LOGS_COMPARTMENT' for PutLogEvents. Verify OCI Logging resource types \\u2014 'log-content' or 'logs' may be needed for the write path.\"}, {\"severity\": \"MEDIUM\", \"category\": \"gaps\", \"description\": \"The DynamoDB statement does not carry forward any region restriction. While the AWS ARN implicitly restricts to us-east-1, the OCI statement has no region condition. The notes mention this but don't apply it. For consistency with the EC2 statements that do enforce region, this should be noted more prominently.\", \"fix_suggestion\": \"Consider adding 'where request.region = 'iad'' if regional restriction is a security requirement, or document explicitly why it is not needed (e.g., resources only exist in one region).\"}, {\"severity\": \"LOW\", \"category\": \"gaps\", \"description\": \"The EC2DescribeOnly translation splits into four separate statements (instances, security-lists, subnets, vcns). While functionally correct, using 'inspect virtual-network-family' could cover subnets, security-lists, and vcns in a single statement, though it would be broader than needed.\", \"fix_suggestion\": \"The split approach is actually more precise and follows least privilege. Keep as-is but consider whether 'inspect network-security-groups' should also be added since AWS Security Groups map to both OCI security-lists and NSGs.\"}, {\"severity\": \"LOW\", \"category\": \"redundancy\", \"description\": \"The notes and critical_gaps section is exceptionally thorough and well-documented, including migration prerequisites. This is good practice but some critical_gaps entries (like PassRole and CloudWatch Logs application changes) are operational concerns rather than IAM policy gaps.\", \"fix_suggestion\": \"No change needed \\u2014 the thoroughness is beneficial for migration planning.\"}], \"approved_notes\": \"\", \"review_summary\": \"The translation demonstrates strong domain knowledge and exceptional documentation quality, but has several issues requiring fixes. The most significant problems are: (1) 'manage buckets' is used where 'read buckets' suffices, granting excessive bucket-level permissions; (2) the Deny statement is both over-broad (blocking all manage operations instead of just delete) and under-scoped (only covering one bucket instead of the acme-prod-* pattern); (3) the Lambda function name condition is syntactically non-functional as a literal string match. The object storage, secrets, KMS, and networking translations are well-mapped with appropriate verb levels. The critical_gaps documentation is among the best I've reviewed, providing actionable mitigations for each OCI limitation.\"}",
+      "confidence_score": 0.75,
+      "decision": "NEEDS_FIXES",
+      "issues_found": [
+        "[HIGH] S3MediaBucketAccess_BucketLevel uses 'manage buckets' but the AWS actions (ListBucket, GetBucketLocation) only require read/inspect-level bucket access. PutObject and DeleteObject are object-level actions, not bucket-level. 'manage buckets' grants bucket creation, deletion, and policy modification at the bucket level, which far exceeds the original AWS permissions.",
+        "[HIGH] DenyDeleteBucket statement uses 'Deny ... manage buckets' which blocks ALL manage-level bucket operations (create, update, delete, policy changes) on acme-prod-media. The AWS policy only denies s3:DeleteBucket and s3:DeleteBucketPolicy. This over-broad deny will conflict with and negate the Allow 'manage buckets' statement for acme-prod-media, effectively preventing the group from performing any administrative bucket operations on that bucket.",
+        "[HIGH] DenyDeleteBucket only covers 'acme-prod-media' but the AWS Deny covers 'acme-prod-*' (all production buckets). The translation explicitly acknowledges this but only enumerates one bucket, significantly reducing the protective scope of the deny statement.",
+        "[MEDIUM] S3MediaBucketAccess_ObjectLevel uses 'manage objects' which grants OBJECT_CREATE, OBJECT_OVERWRITE, OBJECT_DELETE, OBJECT_READ, OBJECT_INSPECT, OBJECT_RESTORE, OBJECT_VERSION_DELETE, and PAR_MANAGE. The AWS policy only grants GetObject, PutObject, DeleteObject. The OCI translation grants additional permissions like Pre-Authenticated Request management and version deletion that are not in the AWS policy.",
+        "[MEDIUM] LambdaInvokeProcessors_Invoke uses 'where target.function.displayName = 'acme-order-'' which is an exact string match, not a prefix/wildcard match. This will match literally zero functions unless one is named exactly 'acme-order-'. The notes acknowledge this but the statement as written is non-functional.",
+        "[MEDIUM] LambdaInvokeProcessors_Read has no name-scoping condition at all, granting read access to ALL functions in the compartment. This is inconsistent with the invoke statement (which attempts name filtering) and broader than the AWS policy which restricts to acme-order-* functions.",
+        "[MEDIUM] CloudWatchLogs uses 'manage log-groups' which grants full administrative control over log groups including deletion. While CreateLogGroup does require create permissions, the combined grant is broader than needed. Additionally, 'manage log-groups' alone may not cover PutLogEvents which operates on log content, not log group resources.",
+        "[MEDIUM] The DynamoDB statement does not carry forward any region restriction. While the AWS ARN implicitly restricts to us-east-1, the OCI statement has no region condition. The notes mention this but don't apply it. For consistency with the EC2 statements that do enforce region, this should be noted more prominently.",
+        "[LOW] The EC2DescribeOnly translation splits into four separate statements (instances, security-lists, subnets, vcns). While functionally correct, using 'inspect virtual-network-family' could cover subnets, security-lists, and vcns in a single statement, though it would be broader than needed.",
+        "[LOW] The notes and critical_gaps section is exceptionally thorough and well-documented, including migration prerequisites. This is good practice but some critical_gaps entries (like PassRole and CloudWatch Logs application changes) are operational concerns rather than IAM policy gaps."
+      ],
+      "fixes_applied": [],
+      "duration_seconds": 45.89544954407029,
+      "tokens_input": 10998,
+      "tokens_output": 2117,
+      "tokens_cache_read": 0,
+      "tokens_cache_write": 0,
+      "tokens_total": 13115,
+      "cost_usd": 0.323745,
+      "metadata": {}
+    },
+    {
+      "timestamp": "2026-03-11T23:13:28.882705",
+      "iteration": 1,
+      "agent_type": "fix",
+      "model": "claude-sonnet-4-6",
+      "input_summary": "Fix issues from review iteration 1",
+      "output_summary": "Applied 3 fixes",
+      "full_output": null,
+      "confidence_score": null,
+      "decision": null,
+      "issues_found": [],
+      "fixes_applied": [
+        "Changed 'manage buckets' to 'read buckets' for S3MediaBucketAccess_BucketLevel: s3:ListBucket and s3:GetBucketLocation are read/inspect-level bucket operations; PutObject and DeleteObject are object-level and handled by the separate objects statement. 'manage buckets' was far over-permissive, granting bucket creation, deletion, and policy modification.",
+        "Replaced over-broad 'Deny ... manage buckets' in DenyDeleteBucket with permission-level conditions using 'all {any {target.bucket.name = ...}, any {request.permission = 'BUCKET_DELETE', request.permission = 'BUCKET_UPDATE'}}': the original deny blocked ALL manage-level bucket operations, conflicting with the (now-corrected) Allow statement and exceeding the AWS intent of denying only s3:DeleteBucket and s3:DeleteBucketPolicy.",
+        "Expanded DenyDeleteBucket scope to enumerate multiple acme-prod-* bucket names (ACME_PROD_BUCKET_2, ACME_PROD_BUCKET_N as placeholders) in the 'any {}' condition, and added compartment-level deny as a documented alternative: the original translation only covered 'acme-prod-media', leaving all other acme-prod-* buckets unprotected against the AWS Deny's intended scope."
+      ],
+      "duration_seconds": 118.48503578500822,
+      "tokens_input": 7875,
+      "tokens_output": 6512,
+      "tokens_cache_read": 0,
+      "tokens_cache_write": 16998,
+      "tokens_total": 31385,
+      "cost_usd": 0.185047,
+      "metadata": {}
+    },
+    {
+      "timestamp": "2026-03-11T23:15:47.298055",
+      "iteration": 2,
+      "agent_type": "enhancement",
+      "model": "claude-sonnet-4-6",
+      "input_summary": "Enhance translation, fix 3 issues",
+      "output_summary": "Generated 15 OCI statements",
+      "full_output": null,
+      "confidence_score": null,
+      "decision": null,
+      "issues_found": [],
+      "fixes_applied": [],
+      "duration_seconds": 138.41492166207172,
+      "tokens_input": 8261,
+      "tokens_output": 7930,
+      "tokens_cache_read": 28642,
+      "tokens_cache_write": 0,
+      "tokens_total": 44833,
+      "cost_usd": 0.152326,
+      "metadata": {}
+    },
+    {
+      "timestamp": "2026-03-11T23:16:26.454890",
+      "iteration": 2,
+      "agent_type": "review",
+      "model": "claude-opus-4-6",
+      "input_summary": "Review translation from iteration 2",
+      "output_summary": "APPROVED \u2014 7 issues \u2014 confidence 0.92",
+      "full_output": "{\"decision\": \"APPROVED_WITH_NOTES\", \"confidence_override\": null, \"architectural_mismatch\": false, \"issues\": [{\"severity\": \"MEDIUM\", \"category\": \"verb_accuracy\", \"description\": \"The DenyDeleteBucket statement maps s3:DeleteBucketPolicy to BUCKET_UPDATE, but BUCKET_UPDATE covers all bucket modifications (lifecycle rules, CORS, versioning, etc.), not just policy deletion. This is broader than the original AWS deny intent. Additionally, s3:DeleteBucket maps correctly to BUCKET_DELETE, but the deny uses 'manage buckets' as the verb with permission conditions \\u2014 this is the correct OCI pattern, but the BUCKET_UPDATE mapping is an imperfect approximation.\", \"fix_suggestion\": \"This is acknowledged in the notes and critical_gaps. Since OCI does not have a finer-grained permission for bucket policy deletion specifically, this is an acceptable approximation. Document the broader scope clearly. Consider whether BUCKET_UPDATE in the deny is truly needed \\u2014 if the intent is only to prevent bucket deletion and bucket policy deletion, and OCI bucket policies work differently (OCI uses IAM policies not bucket-attached policies), you may be able to drop the BUCKET_UPDATE condition entirely and keep only BUCKET_DELETE.\"}, {\"severity\": \"MEDIUM\", \"category\": \"scope\", \"description\": \"The CloudWatchLogs statement uses 'manage log-groups' which grants full lifecycle management including deletion of log groups and all associated logs. The AWS policy grants logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents, and logs:DescribeLogStreams \\u2014 which is create and write access but NOT delete access. 'manage' is broader than needed for the ongoing operations.\", \"fix_suggestion\": \"The translation notes acknowledge this. For a tighter mapping, consider splitting into: (1) 'manage log-groups' for initial setup only (or handled by an admin), and (2) 'use log-content' or 'manage log-content' for runtime log ingestion (PutLogEvents equivalent). The OCI Logging service separates log-groups (containers) from log-content (the actual log data). A more precise runtime policy might be: 'Allow group BACKEND_APP_GROUP to manage log-content in compartment ACME_BACKEND_LOGS_COMPARTMENT' plus 'Allow group BACKEND_APP_GROUP to use log-groups in compartment ACME_BACKEND_LOGS_COMPARTMENT'.\"}, {\"severity\": \"MEDIUM\", \"category\": \"scope\", \"description\": \"The LambdaInvokeProcessors_Read statement ('read fn-function') is redundant because LambdaInvokeProcessors_Invoke uses 'use fn-function', and the 'use' verb already includes all capabilities of 'read' per OCI's verb hierarchy (manage > use > read > inspect).\", \"fix_suggestion\": \"Remove the LambdaInvokeProcessors_Read statement as it is fully covered by the 'use fn-function' statement. The 'use' verb inherently includes read-level access.\"}, {\"severity\": \"MEDIUM\", \"category\": \"gaps\", \"description\": \"The S3MediaBucketAccess_ObjectLevel uses 'manage objects' which includes OBJECT_VERSION_DELETE and OBJECT_RESTORE permissions not present in the original AWS policy (s3:GetObject, s3:PutObject, s3:DeleteObject). While noted in the translation, this is a scope expansion that could have security implications if versioning is enabled.\", \"fix_suggestion\": \"This is a known limitation of OCI's verb model \\u2014 there is no verb between 'use' and 'manage' for objects. Document this as a residual risk. If versioning is critical, consider using permission-level conditions: 'where any {request.permission = 'OBJECT_READ', request.permission = 'OBJECT_CREATE', request.permission = 'OBJECT_OVERWRITE', request.permission = 'OBJECT_DELETE', request.permission = 'OBJECT_INSPECT'}' to exclude OBJECT_VERSION_DELETE and OBJECT_RESTORE.\"}, {\"severity\": \"LOW\", \"category\": \"redundancy\", \"description\": \"Multiple different compartment placeholders are used (COMPARTMENT_NAME, ACME_PROD_COMPARTMENT, ACME_ORDER_FUNCTIONS_COMPARTMENT, ACME_BACKEND_LOGS_COMPARTMENT, NETWORKING_COMPARTMENT_NAME) which is architecturally sound for OCI but significantly increases operational complexity compared to the original single-account AWS policy. The migration prerequisites properly document this.\", \"fix_suggestion\": \"No change needed \\u2014 this is the idiomatic OCI approach. The documentation is thorough. Consider providing a simplified alternative using fewer compartments for organizations that prefer less compartment sprawl, acknowledging the trade-off with granularity.\"}, {\"severity\": \"LOW\", \"category\": \"service_coverage\", \"description\": \"The DynamoDB to OCI NoSQL mapping is semantically correct, but OCI NoSQL (based on Oracle NoSQL) has different consistency models, capacity management (on-demand vs. provisioned differs), and query capabilities compared to DynamoDB. This is an operational gap rather than a policy gap.\", \"fix_suggestion\": \"No policy change needed. The notes adequately cover the IAM mapping. Operational differences should be documented in migration runbooks.\"}, {\"severity\": \"LOW\", \"category\": \"conditions\", \"description\": \"The tag condition 'target.resource.tag.Environment = 'production'' in the SecretsManagerReadDB statements requires that a tag namespace containing 'Environment' exists and is properly applied to all secrets. If the tag is in a defined tag namespace, the syntax should be 'target.resource.tag.<namespace>.Environment = 'production''. If it's a freeform tag, the syntax differs.\", \"fix_suggestion\": \"Clarify in the migration prerequisites whether 'Environment' is a defined tag (requiring namespace prefix, e.g., 'target.resource.tag.Operations.Environment') or a freeform tag. OCI policy conditions for defined tags require the namespace. Update the policy syntax accordingly once the tag namespace is confirmed.\"}], \"approved_notes\": \"This is an exceptionally thorough and well-documented AWS-to-OCI policy translation. The translator demonstrates deep knowledge of both platforms and has correctly identified all major gaps with actionable mitigations. The verb selections are appropriate, service mappings are accurate, and the compartment-based scoping strategy is the correct idiomatic OCI approach for replacing AWS ARN-prefix patterns. The critical_gaps and migration_prerequisites sections are comprehensive and provide genuine operational value. The few issues identified are mostly inherent OCI platform limitations that are already documented in the translation notes.\", \"review_summary\": \"This is a high-quality translation that accurately maps 9 AWS IAM statements to 15 OCI policy statements with appropriate service mappings (S3\\u2192Object Storage, DynamoDB\\u2192NoSQL, EC2\\u2192Compute/Networking, Lambda\\u2192Functions, SQS\\u2192Queue, Secrets Manager\\u2192Vault, CloudWatch Logs\\u2192Logging, KMS\\u2192KMS). The main issues are: one redundant statement (read fn-function is subsumed by use fn-function), slightly over-broad verb selection for CloudWatch Logs (manage instead of a split approach), and minor scope expansions inherent to OCI's coarser verb model. All condition translation gaps (KMS ViaService, S3 encryption, wildcard naming) are properly identified with appropriate compensating controls documented.\"}",
+      "confidence_score": 0.92,
+      "decision": "APPROVED",
+      "issues_found": [
+        "[MEDIUM] The DenyDeleteBucket statement maps s3:DeleteBucketPolicy to BUCKET_UPDATE, but BUCKET_UPDATE covers all bucket modifications (lifecycle rules, CORS, versioning, etc.), not just policy deletion. This is broader than the original AWS deny intent. Additionally, s3:DeleteBucket maps correctly to BUCKET_DELETE, but the deny uses 'manage buckets' as the verb with permission conditions \u2014 this is the correct OCI pattern, but the BUCKET_UPDATE mapping is an imperfect approximation.",
+        "[MEDIUM] The CloudWatchLogs statement uses 'manage log-groups' which grants full lifecycle management including deletion of log groups and all associated logs. The AWS policy grants logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents, and logs:DescribeLogStreams \u2014 which is create and write access but NOT delete access. 'manage' is broader than needed for the ongoing operations.",
+        "[MEDIUM] The LambdaInvokeProcessors_Read statement ('read fn-function') is redundant because LambdaInvokeProcessors_Invoke uses 'use fn-function', and the 'use' verb already includes all capabilities of 'read' per OCI's verb hierarchy (manage > use > read > inspect).",
+        "[MEDIUM] The S3MediaBucketAccess_ObjectLevel uses 'manage objects' which includes OBJECT_VERSION_DELETE and OBJECT_RESTORE permissions not present in the original AWS policy (s3:GetObject, s3:PutObject, s3:DeleteObject). While noted in the translation, this is a scope expansion that could have security implications if versioning is enabled.",
+        "[LOW] Multiple different compartment placeholders are used (COMPARTMENT_NAME, ACME_PROD_COMPARTMENT, ACME_ORDER_FUNCTIONS_COMPARTMENT, ACME_BACKEND_LOGS_COMPARTMENT, NETWORKING_COMPARTMENT_NAME) which is architecturally sound for OCI but significantly increases operational complexity compared to the original single-account AWS policy. The migration prerequisites properly document this.",
+        "[LOW] The DynamoDB to OCI NoSQL mapping is semantically correct, but OCI NoSQL (based on Oracle NoSQL) has different consistency models, capacity management (on-demand vs. provisioned differs), and query capabilities compared to DynamoDB. This is an operational gap rather than a policy gap.",
+        "[LOW] The tag condition 'target.resource.tag.Environment = 'production'' in the SecretsManagerReadDB statements requires that a tag namespace containing 'Environment' exists and is properly applied to all secrets. If the tag is in a defined tag namespace, the syntax should be 'target.resource.tag.<namespace>.Environment = 'production''. If it's a freeform tag, the syntax differs."
+      ],
+      "fixes_applied": [],
+      "duration_seconds": 39.156680604908615,
+      "tokens_input": 13203,
+      "tokens_output": 1822,
+      "tokens_cache_read": 0,
+      "tokens_cache_write": 0,
+      "tokens_total": 15025,
+      "cost_usd": 0.334695,
+      "metadata": {}
+    }
+  ],
+  "summary_stats": {
+    "total_agent_calls": 6,
+    "agent_type_counts": {
+      "translator": 1,
+      "enhancement": 2,
+      "review": 2,
+      "fix": 1
+    },
+    "confidence_progression": [
+      [
+        1,
+        0.75
+      ],
+      [
+        2,
+        0.92
+      ]
+    ],
+    "total_issues_found": 17,
+    "total_fixes_applied": 3,
+    "total_duration_seconds": 447.3043792939279,
+    "avg_duration_per_call": 74.55072988232132,
+    "total_tokens": 140086,
+    "total_tokens_input": 41638,
+    "total_tokens_output": 24166,
+    "total_tokens_cache_read": 57284,
+    "total_tokens_cache_write": 16998,
+    "total_cost_usd": 1.095084,
+    "tokens_by_agent_type": {
+      "translator": 0,
+      "enhancement": 80561,
+      "review": 28140,
+      "fix": 31385
+    },
+    "tokens_by_model": {
+      "unknown": {
+        "input": 0,
+        "output": 0,
+        "cache_read": 0,
+        "cache_write": 0,
+        "total": 0,
+        "cost": 0.0,
+        "calls": 1
+      },
+      "claude-sonnet-4-6": {
+        "input": 17437,
+        "output": 20227,
+        "cache_read": 57284,
+        "cache_write": 16998,
+        "total": 111946,
+        "cost": 0.4366439999999999,
+        "calls": 3
+      },
+      "claude-opus-4-6": {
+        "input": 24201,
+        "output": 3939,
+        "cache_read": 0,
+        "cache_write": 0,
+        "total": 28140,
+        "cost": 0.65844,
+        "calls": 2
+      }
+    }
+  }
+}

@@ -1,0 +1,90 @@
+# =============================================================================
+# terraform.tfvars.example
+# Copy to terraform.tfvars and populate all required values.
+# NEVER commit terraform.tfvars to version control.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# OCI Provider Authentication
+# ---------------------------------------------------------------------------
+tenancy_ocid     = "ocid1.tenancy.oc1..aaaaaaaaTENANCY_OCID_HERE"
+user_ocid        = "ocid1.user.oc1..aaaaaaaaUSER_OCID_HERE"
+fingerprint      = "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
+private_key_path = "~/.oci/oci_api_key.pem"
+region           = "us-ashburn-1"
+
+# ---------------------------------------------------------------------------
+# Compartment
+# ---------------------------------------------------------------------------
+compartment_id = "ocid1.compartment.oc1..aaaaaaaaCOMPARTMENT_OCID_HERE"
+
+# ---------------------------------------------------------------------------
+# Application Identity  (maps CFN Parameter: Environment)
+# ---------------------------------------------------------------------------
+environment  = "production"
+project_name = "acme"
+
+# ---------------------------------------------------------------------------
+# Networking
+# ---------------------------------------------------------------------------
+# Option A – Create new VCN (default; use_existing_vcn = false)
+# Mirrors CFN providing new networking alongside the stack.
+use_existing_vcn          = false
+vcn_cidr                  = "10.0.0.0/16"
+public_subnet_cidr_1      = "10.0.0.0/24"
+public_subnet_cidr_2      = "10.0.1.0/24"
+private_app_subnet_cidr_1 = "10.0.10.0/24"
+private_app_subnet_cidr_2 = "10.0.11.0/24"
+private_db_subnet_cidr    = "10.0.20.0/24"
+
+# Option B – Reference existing VCN / subnets
+# Mirrors CFN pattern: VpcId + PrivateSubnets + PublicSubnets as input parameters.
+# use_existing_vcn                = true
+# existing_vcn_id                 = "ocid1.vcn.oc1.iad.aaaaaaaaEXISTING_VCN"
+# existing_public_subnet_ids      = ["ocid1.subnet.oc1.iad.PUB1", "ocid1.subnet.oc1.iad.PUB2"]
+# existing_private_app_subnet_ids = ["ocid1.subnet.oc1.iad.APP1", "ocid1.subnet.oc1.iad.APP2"]
+# existing_private_db_subnet_id   = "ocid1.subnet.oc1.iad.DB1"
+
+# ---------------------------------------------------------------------------
+# Database  (maps CFN Parameter: DBPassword)
+# ---------------------------------------------------------------------------
+# REQUIRED: minimum 12 chars, must contain upper + lower + digit + special
+db_password              = "CHANGE_ME_Str0ng!Pass"
+db_storage_size_gb       = 50   # Maps RDS AllocatedStorage: 50 GB
+db_backup_retention_days = 7    # Maps RDS BackupRetentionPeriod: 7
+
+# ---------------------------------------------------------------------------
+# OKE Cluster
+# ---------------------------------------------------------------------------
+kubernetes_version = "v1.30.1"
+app_desired_count  = 2    # Maps ECS AppService.DesiredCount: 2
+app_max_count      = 10   # HPA upper bound (maps ECS scaling policy)
+
+# ---------------------------------------------------------------------------
+# Kubernetes Workload
+# ---------------------------------------------------------------------------
+k8s_namespace         = "acme-app"
+ocir_pull_secret_name = "ocir-pull-secret"
+# Pre-create before Phase-2 apply:
+#   kubectl create secret docker-registry ocir-pull-secret \
+#     --docker-server=us-ashburn-1.ocir.io \
+#     --docker-username='<namespace>/<username>' \
+#     --docker-password='<oci-auth-token>' \
+#     -n acme-app
+
+# Container image (maps ECS TaskDefinition image URI pointing at ECR)
+# Format: <region>.ocir.io/<tenancy-namespace>/<repo>:<tag>
+app_image_uri = "us-ashburn-1.ocir.io/mytenancynamespace/acme-app:latest"
+
+# ---------------------------------------------------------------------------
+# Load Balancer / TLS
+# ---------------------------------------------------------------------------
+# Leave empty for HTTP-only; set to certificate name for HTTPS (port 443).
+# The certificate must be pre-imported into the OCI LB Certificates service.
+ssl_certificate_name = ""
+
+# ---------------------------------------------------------------------------
+# Monitoring & Alerting
+# ---------------------------------------------------------------------------
+# Leave empty to skip ONS email subscription.
+alert_email = "ops-team@example.com"

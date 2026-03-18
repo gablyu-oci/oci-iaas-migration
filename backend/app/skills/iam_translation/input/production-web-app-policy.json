@@ -1,0 +1,316 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "EC2InstanceManagement",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances",
+        "ec2:StartInstances",
+        "ec2:StopInstances",
+        "ec2:RebootInstances",
+        "ec2:DescribeInstances",
+        "ec2:DescribeInstanceStatus",
+        "ec2:DescribeImages",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeVpcs",
+        "ec2:DescribeKeyPairs",
+        "ec2:DescribeVolumes",
+        "ec2:DescribeTags",
+        "ec2:CreateTags",
+        "ec2:AttachVolume",
+        "ec2:DetachVolume"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": [
+            "us-east-1",
+            "us-west-2"
+          ],
+          "ec2:ResourceTag/Environment": [
+            "production",
+            "staging"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "DenyTerminateWithoutMFA",
+      "Effect": "Deny",
+      "Action": [
+        "ec2:TerminateInstances"
+      ],
+      "Resource": "arn:aws:ec2:*:123456789012:instance/*",
+      "Condition": {
+        "BoolIfExists": {
+          "aws:MultiFactorAuthPresent": "false"
+        }
+      }
+    },
+    {
+      "Sid": "S3AppBucketReadWrite",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:ListBucket",
+        "s3:GetBucketLocation",
+        "s3:GetBucketVersioning"
+      ],
+      "Resource": [
+        "arn:aws:s3:::mycompany-prod-app-assets",
+        "arn:aws:s3:::mycompany-prod-app-assets/*",
+        "arn:aws:s3:::mycompany-prod-uploads",
+        "arn:aws:s3:::mycompany-prod-uploads/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "s3:x-amz-server-side-encryption": "aws:kms"
+        },
+        "StringLike": {
+          "s3:prefix": [
+            "public/*",
+            "private/${aws:userid}/*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "S3DenyUnencryptedUploads",
+      "Effect": "Deny",
+      "Action": "s3:PutObject",
+      "Resource": [
+        "arn:aws:s3:::mycompany-prod-app-assets/*",
+        "arn:aws:s3:::mycompany-prod-uploads/*"
+      ],
+      "Condition": {
+        "StringNotEquals": {
+          "s3:x-amz-server-side-encryption": "aws:kms"
+        }
+      }
+    },
+    {
+      "Sid": "DynamoDBTableAccess",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:Query",
+        "dynamodb:Scan",
+        "dynamodb:BatchGetItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:DescribeTable"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:us-east-1:123456789012:table/UserSessions",
+        "arn:aws:dynamodb:us-east-1:123456789012:table/UserSessions/index/*",
+        "arn:aws:dynamodb:us-east-1:123456789012:table/AppConfig",
+        "arn:aws:dynamodb:us-east-1:123456789012:table/AuditLog"
+      ],
+      "Condition": {
+        "ForAllValues:StringEquals": {
+          "dynamodb:LeadingKeys": [
+            "${aws:userid}"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "LambdaInvokeAndManage",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:InvokeFunction",
+        "lambda:GetFunction",
+        "lambda:GetFunctionConfiguration",
+        "lambda:ListFunctions",
+        "lambda:ListVersionsByFunction",
+        "lambda:ListAliases",
+        "lambda:UpdateFunctionCode",
+        "lambda:UpdateFunctionConfiguration",
+        "lambda:PublishVersion",
+        "lambda:CreateAlias",
+        "lambda:UpdateAlias"
+      ],
+      "Resource": "arn:aws:lambda:us-east-1:123456789012:function:prod-*"
+    },
+    {
+      "Sid": "SQSSNSMessaging",
+      "Effect": "Allow",
+      "Action": [
+        "sqs:SendMessage",
+        "sqs:ReceiveMessage",
+        "sqs:DeleteMessage",
+        "sqs:GetQueueAttributes",
+        "sqs:GetQueueUrl",
+        "sqs:ChangeMessageVisibility",
+        "sns:Publish",
+        "sns:Subscribe",
+        "sns:ListSubscriptionsByTopic"
+      ],
+      "Resource": [
+        "arn:aws:sqs:us-east-1:123456789012:prod-order-processing",
+        "arn:aws:sqs:us-east-1:123456789012:prod-order-processing-dlq",
+        "arn:aws:sqs:us-east-1:123456789012:prod-notification-queue",
+        "arn:aws:sns:us-east-1:123456789012:prod-order-events",
+        "arn:aws:sns:us-east-1:123456789012:prod-alert-notifications"
+      ]
+    },
+    {
+      "Sid": "KMSKeyUsage",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Encrypt",
+        "kms:Decrypt",
+        "kms:ReEncryptFrom",
+        "kms:ReEncryptTo",
+        "kms:GenerateDataKey",
+        "kms:GenerateDataKeyWithoutPlaintext",
+        "kms:DescribeKey"
+      ],
+      "Resource": [
+        "arn:aws:kms:us-east-1:123456789012:key/mrk-abc123def456",
+        "arn:aws:kms:us-west-2:123456789012:key/mrk-abc123def456"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": [
+            "s3.us-east-1.amazonaws.com",
+            "dynamodb.us-east-1.amazonaws.com",
+            "sqs.us-east-1.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "CloudWatchMonitoring",
+      "Effect": "Allow",
+      "Action": [
+        "cloudwatch:PutMetricData",
+        "cloudwatch:GetMetricData",
+        "cloudwatch:GetMetricStatistics",
+        "cloudwatch:ListMetrics",
+        "cloudwatch:DescribeAlarms",
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogGroups",
+        "logs:DescribeLogStreams",
+        "logs:GetLogEvents",
+        "logs:FilterLogEvents"
+      ],
+      "Resource": [
+        "arn:aws:cloudwatch:us-east-1:123456789012:alarm:prod-*",
+        "arn:aws:logs:us-east-1:123456789012:log-group:/aws/lambda/prod-*",
+        "arn:aws:logs:us-east-1:123456789012:log-group:/ecs/prod-*",
+        "arn:aws:logs:us-east-1:123456789012:log-group:/aws/lambda/prod-*:*",
+        "arn:aws:logs:us-east-1:123456789012:log-group:/ecs/prod-*:*"
+      ]
+    },
+    {
+      "Sid": "SecretsManagerReadOnly",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:ListSecretVersionIds"
+      ],
+      "Resource": "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/*",
+      "Condition": {
+        "StringEquals": {
+          "secretsmanager:ResourceTag/Environment": "production"
+        }
+      }
+    },
+    {
+      "Sid": "ECSTaskManagement",
+      "Effect": "Allow",
+      "Action": [
+        "ecs:DescribeClusters",
+        "ecs:DescribeServices",
+        "ecs:DescribeTasks",
+        "ecs:DescribeTaskDefinition",
+        "ecs:ListTasks",
+        "ecs:ListServices",
+        "ecs:UpdateService",
+        "ecs:RunTask",
+        "ecs:StopTask",
+        "ecs:RegisterTaskDefinition"
+      ],
+      "Resource": [
+        "arn:aws:ecs:us-east-1:123456789012:cluster/prod-web-cluster",
+        "arn:aws:ecs:us-east-1:123456789012:service/prod-web-cluster/*",
+        "arn:aws:ecs:us-east-1:123456789012:task/prod-web-cluster/*",
+        "arn:aws:ecs:us-east-1:123456789012:task-definition/prod-*:*"
+      ]
+    },
+    {
+      "Sid": "IAMPassRoleToServices",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": [
+        "arn:aws:iam::123456789012:role/prod-ecs-task-execution-role",
+        "arn:aws:iam::123456789012:role/prod-lambda-execution-role"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": [
+            "ecs-tasks.amazonaws.com",
+            "lambda.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "DenyAllOutsideAllowedRegions",
+      "Effect": "Deny",
+      "NotAction": [
+        "iam:*",
+        "sts:*",
+        "s3:GetBucketLocation",
+        "s3:ListAllMyBuckets",
+        "cloudfront:*",
+        "route53:*",
+        "support:*",
+        "health:*"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "aws:RequestedRegion": [
+            "us-east-1",
+            "us-west-2"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "DenyAccessFromNonVpcEndpoints",
+      "Effect": "Deny",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:Query"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "aws:SourceVpce": [
+            "vpce-0abc123def456789a",
+            "vpce-0def456abc789012b"
+          ]
+        },
+        "Bool": {
+          "aws:ViaAWSService": "false"
+        }
+      }
+    }
+  ]
+}

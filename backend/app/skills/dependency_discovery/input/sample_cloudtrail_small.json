@@ -1,0 +1,524 @@
+{
+  "Records": [
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA12345:session",
+        "arn": "arn:aws:iam::111111111111:role/app-service-role",
+        "accountId": "111111111111",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::111111111111:role"
+          }
+        }
+      },
+      "eventTime": "2026-01-15T10:30:00Z",
+      "eventSource": "sts.amazonaws.com",
+      "eventName": "AssumeRole",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.0.1.50",
+      "eventID": "370375ff-5d77-4af5-ab9a-e53996e42f62",
+      "requestParameters": {
+        "roleArn": "arn:aws:iam::333333333333:role/shared-data-access"
+      },
+      "responseElements": {},
+      "readOnly": false
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA12345:session",
+        "arn": "arn:aws:iam::111111111111:role/app-service-role",
+        "accountId": "111111111111",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::111111111111:role"
+          }
+        }
+      },
+      "eventTime": "2026-01-16T11:30:00Z",
+      "eventSource": "sts.amazonaws.com",
+      "eventName": "AssumeRole",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.0.1.50",
+      "eventID": "2ee30c41-8241-4c1a-85fe-36fa51a76c05",
+      "requestParameters": {
+        "roleArn": "arn:aws:iam::333333333333:role/shared-data-access"
+      },
+      "responseElements": {},
+      "readOnly": false
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA12345:session",
+        "arn": "arn:aws:iam::111111111111:role/app-service-role",
+        "accountId": "111111111111",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::111111111111:role"
+          }
+        }
+      },
+      "eventTime": "2026-01-17T12:30:00Z",
+      "eventSource": "sts.amazonaws.com",
+      "eventName": "AssumeRole",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.0.1.50",
+      "eventID": "572cab59-ce4e-401f-9545-728e558ad3f4",
+      "requestParameters": {
+        "roleArn": "arn:aws:iam::333333333333:role/shared-data-access"
+      },
+      "responseElements": {},
+      "readOnly": false
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA12345:session",
+        "arn": "arn:aws:iam::111111111111:role/app-service-role",
+        "accountId": "111111111111",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::111111111111:role"
+          }
+        }
+      },
+      "eventTime": "2026-01-18T13:30:00Z",
+      "eventSource": "sts.amazonaws.com",
+      "eventName": "AssumeRole",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.0.1.50",
+      "eventID": "df9c5620-3278-4fef-a383-cbd216787e8b",
+      "requestParameters": {
+        "roleArn": "arn:aws:iam::333333333333:role/shared-data-access"
+      },
+      "responseElements": {},
+      "readOnly": false
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA12345:session",
+        "arn": "arn:aws:iam::111111111111:role/app-service-role",
+        "accountId": "111111111111",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::111111111111:role"
+          }
+        }
+      },
+      "eventTime": "2026-01-19T14:30:00Z",
+      "eventSource": "sts.amazonaws.com",
+      "eventName": "AssumeRole",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.0.1.50",
+      "eventID": "d1880a54-3eaa-4534-b017-34cab0c513ec",
+      "requestParameters": {
+        "roleArn": "arn:aws:iam::333333333333:role/shared-data-access"
+      },
+      "responseElements": {},
+      "readOnly": false
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA12345:session",
+        "arn": "arn:aws:iam::111111111111:role/app-service-role",
+        "accountId": "111111111111",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::111111111111:role"
+          }
+        }
+      },
+      "eventTime": "2026-01-20T15:30:00Z",
+      "eventSource": "sts.amazonaws.com",
+      "eventName": "AssumeRole",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.0.1.50",
+      "eventID": "00013998-64ae-4045-badd-9b24c64a9f50",
+      "requestParameters": {
+        "roleArn": "arn:aws:iam::333333333333:role/shared-data-access"
+      },
+      "responseElements": {},
+      "readOnly": false
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA12345:session",
+        "arn": "arn:aws:iam::111111111111:role/app-service-role",
+        "accountId": "111111111111",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::111111111111:role"
+          }
+        }
+      },
+      "eventTime": "2026-01-21T16:30:00Z",
+      "eventSource": "sts.amazonaws.com",
+      "eventName": "AssumeRole",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.0.1.50",
+      "eventID": "64d40a0c-1868-4274-ab78-14860392d758",
+      "requestParameters": {
+        "roleArn": "arn:aws:iam::333333333333:role/shared-data-access"
+      },
+      "responseElements": {},
+      "readOnly": false
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA12345:session",
+        "arn": "arn:aws:iam::111111111111:role/app-service-role",
+        "accountId": "111111111111",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::111111111111:role"
+          }
+        }
+      },
+      "eventTime": "2026-01-22T17:30:00Z",
+      "eventSource": "sts.amazonaws.com",
+      "eventName": "AssumeRole",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.0.1.50",
+      "eventID": "b525b0d4-f064-46c8-b4d0-a6c0958644be",
+      "requestParameters": {
+        "roleArn": "arn:aws:iam::333333333333:role/shared-data-access"
+      },
+      "responseElements": {},
+      "readOnly": false
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA12345:session",
+        "arn": "arn:aws:iam::111111111111:role/app-service-role",
+        "accountId": "111111111111",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::111111111111:role"
+          }
+        }
+      },
+      "eventTime": "2026-01-23T10:30:00Z",
+      "eventSource": "sts.amazonaws.com",
+      "eventName": "AssumeRole",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.0.1.50",
+      "eventID": "3e690625-5e7a-4937-9a4a-908bc5cdbd4a",
+      "requestParameters": {
+        "roleArn": "arn:aws:iam::333333333333:role/shared-data-access"
+      },
+      "responseElements": {},
+      "readOnly": false
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA12345:session",
+        "arn": "arn:aws:iam::111111111111:role/app-service-role",
+        "accountId": "111111111111",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::111111111111:role"
+          }
+        }
+      },
+      "eventTime": "2026-01-24T11:30:00Z",
+      "eventSource": "sts.amazonaws.com",
+      "eventName": "AssumeRole",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.0.1.50",
+      "eventID": "ef368952-ddaf-4903-a728-d7c9e9f6a889",
+      "requestParameters": {
+        "roleArn": "arn:aws:iam::333333333333:role/shared-data-access"
+      },
+      "responseElements": {},
+      "readOnly": false
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA12345:session",
+        "arn": "arn:aws:iam::111111111111:role/app-service-role",
+        "accountId": "111111111111",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::111111111111:role"
+          }
+        }
+      },
+      "eventTime": "2026-01-15T12:30:00Z",
+      "eventSource": "sts.amazonaws.com",
+      "eventName": "AssumeRole",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.0.1.50",
+      "eventID": "b015e46d-4a81-40f5-b355-f3f8332f1b98",
+      "requestParameters": {
+        "roleArn": "arn:aws:iam::333333333333:role/shared-data-access"
+      },
+      "responseElements": {},
+      "readOnly": false
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA12345:session",
+        "arn": "arn:aws:iam::111111111111:role/app-service-role",
+        "accountId": "111111111111",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::111111111111:role"
+          }
+        }
+      },
+      "eventTime": "2026-01-16T13:30:00Z",
+      "eventSource": "sts.amazonaws.com",
+      "eventName": "AssumeRole",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.0.1.50",
+      "eventID": "427fbc1f-df85-4a1d-b75b-0fcaac4003cb",
+      "requestParameters": {
+        "roleArn": "arn:aws:iam::333333333333:role/shared-data-access"
+      },
+      "responseElements": {},
+      "readOnly": false
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA12345:session",
+        "arn": "arn:aws:iam::111111111111:role/app-service-role",
+        "accountId": "111111111111",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::111111111111:role"
+          }
+        }
+      },
+      "eventTime": "2026-01-17T14:30:00Z",
+      "eventSource": "sts.amazonaws.com",
+      "eventName": "AssumeRole",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.0.1.50",
+      "eventID": "6bca7698-064a-49e5-bcf2-31eaa25670c0",
+      "requestParameters": {
+        "roleArn": "arn:aws:iam::333333333333:role/shared-data-access"
+      },
+      "responseElements": {},
+      "readOnly": false
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA12345:session",
+        "arn": "arn:aws:iam::111111111111:role/app-service-role",
+        "accountId": "111111111111",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::111111111111:role"
+          }
+        }
+      },
+      "eventTime": "2026-01-18T15:30:00Z",
+      "eventSource": "sts.amazonaws.com",
+      "eventName": "AssumeRole",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.0.1.50",
+      "eventID": "bca135f5-a697-4882-92f2-6d9f75043177",
+      "requestParameters": {
+        "roleArn": "arn:aws:iam::333333333333:role/shared-data-access"
+      },
+      "responseElements": {},
+      "readOnly": false
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA12345:session",
+        "arn": "arn:aws:iam::111111111111:role/app-service-role",
+        "accountId": "111111111111",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::111111111111:role"
+          }
+        }
+      },
+      "eventTime": "2026-01-19T16:30:00Z",
+      "eventSource": "sts.amazonaws.com",
+      "eventName": "AssumeRole",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.0.1.50",
+      "eventID": "56a2e9b5-ddc9-4c84-8278-602cce0d1c2c",
+      "requestParameters": {
+        "roleArn": "arn:aws:iam::333333333333:role/shared-data-access"
+      },
+      "responseElements": {},
+      "readOnly": false
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA12345:session",
+        "arn": "arn:aws:iam::444444444444:role/dev-deploy-role",
+        "accountId": "444444444444",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::444444444444:role"
+          }
+        }
+      },
+      "eventTime": "2026-01-16T9:00:00Z",
+      "eventSource": "sts.amazonaws.com",
+      "eventName": "AssumeRole",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.0.1.50",
+      "eventID": "4be6c456-ffb8-447e-b95d-7244b75589af",
+      "requestParameters": {
+        "roleArn": "arn:aws:iam::111111111111:role/prod-readonly"
+      },
+      "responseElements": {},
+      "readOnly": false
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA12345:session",
+        "arn": "arn:aws:iam::444444444444:role/dev-deploy-role",
+        "accountId": "444444444444",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::444444444444:role"
+          }
+        }
+      },
+      "eventTime": "2026-01-17T10:00:00Z",
+      "eventSource": "sts.amazonaws.com",
+      "eventName": "AssumeRole",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.0.1.50",
+      "eventID": "2a31b421-677d-4136-9720-bd7163134440",
+      "requestParameters": {
+        "roleArn": "arn:aws:iam::111111111111:role/prod-readonly"
+      },
+      "responseElements": {},
+      "readOnly": false
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA12345:session",
+        "arn": "arn:aws:iam::444444444444:role/dev-deploy-role",
+        "accountId": "444444444444",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::444444444444:role"
+          }
+        }
+      },
+      "eventTime": "2026-01-18T11:00:00Z",
+      "eventSource": "sts.amazonaws.com",
+      "eventName": "AssumeRole",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.0.1.50",
+      "eventID": "69bbb2ab-9881-428d-bba6-00ca4d9c4a99",
+      "requestParameters": {
+        "roleArn": "arn:aws:iam::111111111111:role/prod-readonly"
+      },
+      "responseElements": {},
+      "readOnly": false
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA12345:session",
+        "arn": "arn:aws:iam::444444444444:role/dev-deploy-role",
+        "accountId": "444444444444",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::444444444444:role"
+          }
+        }
+      },
+      "eventTime": "2026-01-19T12:00:00Z",
+      "eventSource": "sts.amazonaws.com",
+      "eventName": "AssumeRole",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.0.1.50",
+      "eventID": "24de86d6-bc5d-4897-86f2-64e60769f9ec",
+      "requestParameters": {
+        "roleArn": "arn:aws:iam::111111111111:role/prod-readonly"
+      },
+      "responseElements": {},
+      "readOnly": false
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA12345:session",
+        "arn": "arn:aws:iam::444444444444:role/dev-deploy-role",
+        "accountId": "444444444444",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::444444444444:role"
+          }
+        }
+      },
+      "eventTime": "2026-01-20T13:00:00Z",
+      "eventSource": "sts.amazonaws.com",
+      "eventName": "AssumeRole",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.0.1.50",
+      "eventID": "37435c6a-8dca-4f0b-aa14-e7fa5adbd90d",
+      "requestParameters": {
+        "roleArn": "arn:aws:iam::111111111111:role/prod-readonly"
+      },
+      "responseElements": {},
+      "readOnly": false
+    }
+  ]
+}

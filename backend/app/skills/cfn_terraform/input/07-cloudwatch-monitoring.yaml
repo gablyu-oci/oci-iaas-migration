@@ -1,0 +1,246 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudWatch Dashboard, Alarms, Log Groups, and Metric Filters'
+
+Parameters:
+  ApplicationName:
+    Type: String
+    Default: 'MyApplication'
+    Description: 'Name of the application being monitored'
+  
+  AlarmEmail:
+    Type: String
+    Description: 'Email address for alarm notifications'
+
+Resources:
+  # SNS Topic for Alarms
+  AlarmTopic:
+    Type: 'AWS::SNS::Topic'
+    Properties:
+      TopicName: !Sub '${ApplicationName}-alarms'
+      DisplayName: !Sub '${ApplicationName} CloudWatch Alarms'
+      Subscription:
+        - Endpoint: !Ref AlarmEmail
+          Protocol: email
+
+  # CloudWatch Log Group
+  ApplicationLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/aws/application/${ApplicationName}'
+      RetentionInDays: 30
+
+  # Metric Filter for Error Count
+  ErrorMetricFilter:
+    Type: 'AWS::Logs::MetricFilter'
+    Properties:
+      FilterPattern: '[time, request_id, level = ERROR*, ...]'
+      LogGroupName: !Ref ApplicationLogGroup
+      MetricTransformations:
+        - MetricName: ErrorCount
+          MetricNamespace: !Ref ApplicationName
+          MetricValue: '1'
+          DefaultValue: 0
+
+  # Metric Filter for Warning Count
+  WarningMetricFilter:
+    Type: 'AWS::Logs::MetricFilter'
+    Properties:
+      FilterPattern: '[time, request_id, level = WARN*, ...]'
+      LogGroupName: !Ref ApplicationLogGroup
+      MetricTransformations:
+        - MetricName: WarningCount
+          MetricNamespace: !Ref ApplicationName
+          MetricValue: '1'
+          DefaultValue: 0
+
+  # Metric Filter for Response Time
+  ResponseTimeMetricFilter:
+    Type: 'AWS::Logs::MetricFilter'
+    Properties:
+      FilterPattern: '[time, request_id, ..., response_time]'
+      LogGroupName: !Ref ApplicationLogGroup
+      MetricTransformations:
+        - MetricName: ResponseTime
+          MetricNamespace: !Ref ApplicationName
+          MetricValue: '$response_time'
+          DefaultValue: 0
+          Unit: Milliseconds
+
+  # CloudWatch Alarm - High Error Rate
+  HighErrorRateAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub '${ApplicationName}-high-error-rate'
+      AlarmDescription: 'Error rate is above threshold'
+      MetricName: ErrorCount
+      Namespace: !Ref ApplicationName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
+  # CloudWatch Alarm - High Response Time
+  HighResponseTimeAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub '${ApplicationName}-high-response-time'
+      AlarmDescription: 'Response time is above threshold'
+      MetricName: ResponseTime
+      Namespace: !Ref ApplicationName
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1000  # 1 second in milliseconds
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  # Composite Alarm - Application Health
+  ApplicationHealthAlarm:
+    Type: 'AWS::CloudWatch::CompositeAlarm'
+    Properties:
+      AlarmName: !Sub '${ApplicationName}-unhealthy'
+      AlarmDescription: 'Application is unhealthy based on multiple metrics'
+      AlarmRule: !Sub |
+        ALARM(${HighErrorRateAlarm}) OR
+        ALARM(${HighResponseTimeAlarm})
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  # CloudWatch Dashboard
+  ApplicationDashboard:
+    Type: 'AWS::CloudWatch::Dashboard'
+    Properties:
+      DashboardName: !Sub '${ApplicationName}-dashboard'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "properties": {
+                "metrics": [
+                  ["${ApplicationName}", "ErrorCount", {"stat": "Sum", "label": "Errors"}],
+                  [".", "WarningCount", {"stat": "Sum", "label": "Warnings"}]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}",
+                "title": "Application Errors and Warnings",
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "properties": {
+                "metrics": [
+                  ["${ApplicationName}", "ResponseTime", {"stat": "Average", "label": "Avg Response Time"}],
+                  ["...", {"stat": "Maximum", "label": "Max Response Time"}],
+                  ["...", {"stat": "Minimum", "label": "Min Response Time"}]
+                ],
+                "period": 300,
+                "stat": "Average",
+                "region": "${AWS::Region}",
+                "title": "Response Time",
+                "yAxis": {
+                  "left": {
+                    "min": 0,
+                    "label": "Milliseconds"
+                  }
+                }
+              }
+            },
+            {
+              "type": "log",
+              "properties": {
+                "query": "SOURCE '${ApplicationLogGroup}'\n| fields @timestamp, @message\n| filter level = \"ERROR\"\n| sort @timestamp desc\n| limit 20",
+                "region": "${AWS::Region}",
+                "title": "Recent Errors",
+                "stacked": false
+              }
+            },
+            {
+              "type": "metric",
+              "properties": {
+                "metrics": [
+                  ["AWS/EC2", "CPUUtilization", {"stat": "Average"}]
+                ],
+                "period": 300,
+                "stat": "Average",
+                "region": "${AWS::Region}",
+                "title": "EC2 CPU Utilization",
+                "yAxis": {
+                  "left": {
+                    "min": 0,
+                    "max": 100
+                  }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "properties": {
+                "metrics": [
+                  ["AWS/RDS", "DatabaseConnections", {"stat": "Average"}],
+                  [".", "CPUUtilization", {"stat": "Average"}],
+                  [".", "FreeableMemory", {"stat": "Average"}]
+                ],
+                "period": 300,
+                "stat": "Average",
+                "region": "${AWS::Region}",
+                "title": "RDS Metrics"
+              }
+            }
+          ]
+        }
+
+  # Custom Metric Alarm (for application-published metrics)
+  CustomMetricAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub '${ApplicationName}-custom-metric-high'
+      AlarmDescription: 'Custom application metric exceeds threshold'
+      MetricName: CustomMetric
+      Namespace: !Ref ApplicationName
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 100
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  # Log Stream for Application Logs
+  ApplicationLogStream:
+    Type: 'AWS::Logs::LogStream'
+    Properties:
+      LogGroupName: !Ref ApplicationLogGroup
+      LogStreamName: !Sub '${ApplicationName}-${AWS::StackName}'
+
+Outputs:
+  LogGroupName:
+    Description: 'CloudWatch Log Group name'
+    Value: !Ref ApplicationLogGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-LogGroup'
+  
+  AlarmTopicArn:
+    Description: 'SNS Topic ARN for alarms'
+    Value: !Ref AlarmTopic
+    Export:
+      Name: !Sub '${AWS::StackName}-AlarmTopic'
+  
+  DashboardURL:
+    Description: 'CloudWatch Dashboard URL'
+    Value: !Sub 'https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${ApplicationDashboard}'

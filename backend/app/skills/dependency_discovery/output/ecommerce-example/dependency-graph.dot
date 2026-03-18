@@ -1,0 +1,58 @@
+digraph dependencies {
+  rankdir=TB;
+  node [shape=box, style=rounded];
+
+  "ec2_order_api" [label="EC2\nec2-order-api", fillcolor=orange, style=filled];
+  "ec2_fulfillment_worker" [label="EC2\nec2-fulfillment-worker", fillcolor=orange, style=filled];
+  "ec2_reporting_svc" [label="EC2\nec2-reporting-svc", fillcolor=orange, style=filled];
+  "lambda_send_order_email" [label="Lambda\nlambda-send-order-email", fillcolor=cyan, style=filled];
+  "ec2_payment_svc" [label="EC2\nec2-payment-svc", fillcolor=orange, style=filled];
+  "dynamodb_orders" [label="DynamoDB\ndynamodb-orders", fillcolor=green, style=filled];
+  "dynamodb_inventory" [label="DynamoDB\ndynamodb-inventory", fillcolor=green, style=filled];
+  "sqs_order_fulfillment" [label="SQS\nsqs-order-fulfillment", fillcolor=yellow, style=filled];
+  "sns_order_notifications" [label="SNS\nsns-order-notifications", fillcolor=yellow, style=filled];
+  "s3_order_invoices" [label="S3\ns3-order-invoices", fillcolor=pink, style=filled];
+  "rds_postgres" [label="RDS\nrds-postgres", fillcolor=purple, style=filled];
+  "elasticache_redis" [label="ElastiCache\nelasticache-redis", fillcolor=red, style=filled];
+  "secretsmanager_db_creds" [label="SecretsManager\nsecretsmanager-db-creds", fillcolor=gray, style=filled];
+  "secretsmanager_smtp_creds" [label="SecretsManager\nsecretsmanager-smtp-creds", fillcolor=gray, style=filled];
+  "apigateway_payments" [label="APIGateway\napigateway-payments", fillcolor=lightgreen, style=filled];
+  "iam_order_api_role" [label="IAMRole\niam-order-api-role", fillcolor=white, style=filled];
+  "iam_fulfillment_worker_role" [label="IAMRole\niam-fulfillment-worker-role", fillcolor=white, style=filled];
+  "iam_notification_lambda_role" [label="IAMRole\niam-notification-lambda-role", fillcolor=white, style=filled];
+  "iam_reporting_service_role" [label="IAMRole\niam-reporting-service-role", fillcolor=white, style=filled];
+  "iam_payment_service_role" [label="IAMRole\niam-payment-service-role", fillcolor=white, style=filled];
+  "iam_payment_gateway_access" [label="IAMRole\niam-payment-gateway-access", fillcolor=white, style=filled];
+  "internal_https_svc" [label="EC2\ninternal-https-svc", fillcolor=orange, style=filled];
+  "vpc_main" [label="VPC\nvpc-main", fillcolor=lightblue, style=filled];
+  "vpc_payments" [label="VPC\nvpc-payments", fillcolor=lightblue, style=filled];
+
+  "ec2_order_api" -> "dynamodb_orders" [label="api_call (9)", color=blue];
+  "ec2_order_api" -> "sqs_order_fulfillment" [label="api_call (8)", color=blue];
+  "ec2_order_api" -> "s3_order_invoices" [label="api_call (7)", color=blue];
+  "ec2_order_api" -> "secretsmanager_db_creds" [label="api_call (8)", color=blue];
+  "ec2_order_api" -> "rds_postgres" [label="network (9)", style=bold, color=red];
+  "ec2_order_api" -> "elasticache_redis" [label="network (8)", style=bold, color=red];
+  "ec2_order_api" -> "internal_https_svc" [label="network (5)", style=bold, color=red];
+  "ec2_order_api" -> "iam_order_api_role" [label="iam_role (9)", style=dashed, color=orange];
+  "sqs_order_fulfillment" -> "ec2_fulfillment_worker" [label="event_trigger (8)", style=dotted, color=green];
+  "ec2_fulfillment_worker" -> "dynamodb_orders" [label="api_call (8)", color=blue];
+  "ec2_fulfillment_worker" -> "dynamodb_inventory" [label="api_call (8)", color=blue];
+  "ec2_fulfillment_worker" -> "sns_order_notifications" [label="api_call (7)", color=blue];
+  "ec2_fulfillment_worker" -> "rds_postgres" [label="network (7)", style=bold, color=red];
+  "ec2_fulfillment_worker" -> "elasticache_redis" [label="network (6)", style=bold, color=red];
+  "ec2_fulfillment_worker" -> "iam_fulfillment_worker_role" [label="iam_role (9)", style=dashed, color=orange];
+  "sns_order_notifications" -> "lambda_send_order_email" [label="event_trigger (8)", style=dotted, color=green];
+  "lambda_send_order_email" -> "secretsmanager_smtp_creds" [label="api_call (7)", color=blue];
+  "lambda_send_order_email" -> "iam_notification_lambda_role" [label="iam_role (9)", style=dashed, color=orange];
+  "ec2_reporting_svc" -> "dynamodb_orders" [label="api_call (7)", color=blue];
+  "ec2_reporting_svc" -> "s3_order_invoices" [label="api_call (6)", color=blue];
+  "ec2_reporting_svc" -> "rds_postgres" [label="network (7)", style=bold, color=red];
+  "ec2_reporting_svc" -> "iam_reporting_service_role" [label="iam_role (9)", style=dashed, color=orange];
+  "ec2_payment_svc" -> "iam_payment_service_role" [label="iam_role (9)", style=dashed, color=orange];
+  "ec2_payment_svc" -> "iam_payment_gateway_access" [label="iam_role (9)", style=dashed, color=orange];
+  "ec2_payment_svc" -> "apigateway_payments" [label="api_call (8)", color=blue];
+  "ec2_payment_svc" -> "ec2_order_api" [label="network (7)", style=bold, color=red];
+  "secretsmanager_db_creds" -> "rds_postgres" [label="api_call (9)", color=blue];
+  "vpc_payments" -> "vpc_main" [label="network (8)", style=bold, color=red];
+}

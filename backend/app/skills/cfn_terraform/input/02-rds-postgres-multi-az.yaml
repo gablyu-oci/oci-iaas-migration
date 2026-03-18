@@ -1,0 +1,164 @@
+# Production RDS PostgreSQL template with multi-AZ support
+# Source: https://github.com/widdix/aws-cf-templates
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'State: RDS Postgres with Multi-AZ, backups, and CloudWatch alarms'
+
+Parameters:
+  ParentVPCStack:
+    Description: 'Stack name of parent VPC stack'
+    Type: String
+  
+  DBInstanceClass:
+    Description: 'The instance type of database server'
+    Type: String
+    Default: 'db.t2.micro'
+  
+  DBAllocatedStorage:
+    Description: 'The allocated storage size, specified in GB'
+    Type: Number
+    Default: 20
+    MinValue: 5
+    MaxValue: 16384
+  
+  DBName:
+    Description: 'Name of the database'
+    Type: String
+    Default: 'myappdb'
+  
+  DBMasterUsername:
+    Description: 'The master user name for the DB instance'
+    Type: String
+    Default: 'dbadmin'
+  
+  DBMasterUserPassword:
+    Description: 'The master password for the DB instance'
+    Type: String
+    NoEcho: true
+  
+  DBMultiAZ:
+    Description: 'Deploy to multiple Availability Zones for HA'
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+  
+  DBBackupRetentionPeriod:
+    Description: 'The number of days to keep snapshots'
+    Type: Number
+    MinValue: 0
+    MaxValue: 35
+    Default: 7
+  
+  EngineVersion:
+    Description: 'PostgreSQL version'
+    Type: String
+    Default: '14.8'
+    AllowedValues: ['15.3', '15.2', '14.8', '14.7', '13.11', '12.15']
+
+Resources:
+  DatabaseSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: !Sub '${AWS::StackName}-database-sg'
+      VpcId: !Ref ParentVPCStack
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 10.0.0.0/16  # Adjust to your VPC CIDR
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-db-sg'
+
+  DBSubnetGroup:
+    Type: 'AWS::RDS::DBSubnetGroup'
+    Properties:
+      DBSubnetGroupDescription: !Sub '${AWS::StackName} subnet group'
+      SubnetIds:
+        - subnet-abc123  # Replace with actual subnet IDs
+        - subnet-def456
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-subnet-group'
+
+  DBInstance:
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Type: 'AWS::RDS::DBInstance'
+    Properties:
+      AllocatedStorage: !Ref DBAllocatedStorage
+      AllowMajorVersionUpgrade: false
+      AutoMinorVersionUpgrade: true
+      BackupRetentionPeriod: !Ref DBBackupRetentionPeriod
+      CopyTagsToSnapshot: true
+      DBInstanceClass: !Ref DBInstanceClass
+      DBInstanceIdentifier: !Sub '${AWS::StackName}-postgres'
+      DBName: !Ref DBName
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      Engine: postgres
+      EngineVersion: !Ref EngineVersion
+      MasterUsername: !Ref DBMasterUsername
+      MasterUserPassword: !Ref DBMasterUserPassword
+      MultiAZ: !Ref DBMultiAZ
+      Port: 5432
+      PreferredBackupWindow: '03:00-04:00'
+      PreferredMaintenanceWindow: 'sun:04:00-sun:05:00'
+      PubliclyAccessible: false
+      StorageType: gp3
+      StorageEncrypted: true
+      VPCSecurityGroups:
+        - !Ref DatabaseSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-db'
+
+  # CloudWatch Alarms
+  DatabaseCPUUtilizationAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-db-cpu-high'
+      AlarmDescription: 'Database CPU utilization is too high'
+      MetricName: CPUUtilization
+      Namespace: 'AWS/RDS'
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DBInstance
+
+  DatabaseFreeStorageSpaceAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-db-storage-low'
+      AlarmDescription: 'Database free storage space is too low'
+      MetricName: FreeStorageSpace
+      Namespace: 'AWS/RDS'
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 2000000000  # 2 GB in bytes
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DBInstance
+
+Outputs:
+  DBInstanceEndpoint:
+    Description: 'Database endpoint'
+    Value: !GetAtt DBInstance.Endpoint.Address
+    Export:
+      Name: !Sub '${AWS::StackName}-Endpoint'
+  
+  DBInstancePort:
+    Description: 'Database port'
+    Value: !GetAtt DBInstance.Endpoint.Port
+    Export:
+      Name: !Sub '${AWS::StackName}-Port'
+  
+  SecurityGroupId:
+    Description: 'Security group ID for database access'
+    Value: !Ref DatabaseSecurityGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-SecurityGroupId'

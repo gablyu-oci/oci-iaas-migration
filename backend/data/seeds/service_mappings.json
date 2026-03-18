@@ -1,0 +1,19 @@
+[
+  {"aws_service": "EC2", "aws_resource_type": "AWS::EC2::Instance", "oci_service": "Compute", "oci_resource_type": "oci_core_instance", "terraform_resource": "oci_core_instance", "notes": "Map instance types manually"},
+  {"aws_service": "S3", "aws_resource_type": "AWS::S3::Bucket", "oci_service": "Object Storage", "oci_resource_type": "oci_objectstorage_bucket", "terraform_resource": "oci_objectstorage_bucket", "notes": ""},
+  {"aws_service": "RDS", "aws_resource_type": "AWS::RDS::DBInstance", "oci_service": "Database", "oci_resource_type": "oci_database_db_system", "terraform_resource": "oci_database_db_system", "notes": "Consider Autonomous DB for managed option"},
+  {"aws_service": "VPC", "aws_resource_type": "AWS::EC2::VPC", "oci_service": "Networking", "oci_resource_type": "oci_core_vcn", "terraform_resource": "oci_core_vcn", "notes": "VPC maps to VCN"},
+  {"aws_service": "VPC", "aws_resource_type": "AWS::EC2::Subnet", "oci_service": "Networking", "oci_resource_type": "oci_core_subnet", "terraform_resource": "oci_core_subnet", "notes": ""},
+  {"aws_service": "Lambda", "aws_resource_type": "AWS::Lambda::Function", "oci_service": "Functions", "oci_resource_type": "oci_functions_function", "terraform_resource": "oci_functions_function", "notes": "Requires OCI Functions application"},
+  {"aws_service": "ELB", "aws_resource_type": "AWS::ElasticLoadBalancingV2::LoadBalancer", "oci_service": "Load Balancer", "oci_resource_type": "oci_load_balancer_load_balancer", "terraform_resource": "oci_load_balancer_load_balancer", "notes": "ALB maps to OCI LB with routing rules"},
+  {"aws_service": "IAM", "aws_resource_type": "AWS::IAM::Role", "oci_service": "IAM", "oci_resource_type": "oci_identity_dynamic_group", "terraform_resource": "oci_identity_dynamic_group", "notes": "Use dynamic groups for service roles"},
+  {"aws_service": "IAM", "aws_resource_type": "AWS::IAM::Policy", "oci_service": "IAM", "oci_resource_type": "oci_identity_policy", "terraform_resource": "oci_identity_policy", "notes": "OCI uses verb-based policy model"},
+  {"aws_service": "CloudWatch", "aws_resource_type": "AWS::CloudWatch::Alarm", "oci_service": "Monitoring", "oci_resource_type": "oci_monitoring_alarm", "terraform_resource": "oci_monitoring_alarm", "notes": "Map metric namespaces to OCI"},
+  {"aws_service": "SNS", "aws_resource_type": "AWS::SNS::Topic", "oci_service": "Notifications", "oci_resource_type": "oci_ons_notification_topic", "terraform_resource": "oci_ons_notification_topic", "notes": ""},
+  {"aws_service": "SQS", "aws_resource_type": "AWS::SQS::Queue", "oci_service": "Queue", "oci_resource_type": "oci_queue_queue", "terraform_resource": "oci_queue_queue", "notes": "OCI Queue service"},
+  {"aws_service": "DynamoDB", "aws_resource_type": "AWS::DynamoDB::Table", "oci_service": "NoSQL Database", "oci_resource_type": "oci_nosql_table", "terraform_resource": "oci_nosql_table", "notes": "Consider schema differences"},
+  {"aws_service": "ECS", "aws_resource_type": "AWS::ECS::Service", "oci_service": "Container Instances", "oci_resource_type": "oci_container_instances_container_instance", "terraform_resource": "oci_container_instances_container_instance", "notes": "For simple services; use OKE for complex"},
+  {"aws_service": "EKS", "aws_resource_type": "AWS::EKS::Cluster", "oci_service": "Container Engine (OKE)", "oci_resource_type": "oci_containerengine_cluster", "terraform_resource": "oci_containerengine_cluster", "notes": "OKE is OCI managed Kubernetes"},
+  {"aws_service": "CloudFront", "aws_resource_type": "AWS::CloudFront::Distribution", "oci_service": "CDN", "oci_resource_type": "oci_waa_web_app_acceleration", "terraform_resource": "oci_waa_web_app_acceleration", "notes": "Limited CDN feature parity"},
+  {"aws_service": "Route53", "aws_resource_type": "AWS::Route53::HostedZone", "oci_service": "DNS", "oci_resource_type": "oci_dns_zone", "terraform_resource": "oci_dns_zone", "notes": ""}
+]

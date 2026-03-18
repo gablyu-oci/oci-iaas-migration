@@ -1,0 +1,552 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Production data pipeline: S3 landing zone -> Lambda ETL -> DynamoDB ->
+  Step Functions orchestration -> SNS notifications -> Athena queries.
+  Common pattern for analytics / data lake migrations.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: production
+    AllowedValues: [production, staging]
+  DataRetentionDays:
+    Type: Number
+    Default: 90
+  NotificationEmail:
+    Type: String
+    Default: data-team@example.com
+
+Resources:
+
+  # --- S3 Data Lake Buckets ---
+  RawDataBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-raw-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref DataEncryptionKey
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+              - StorageClass: GLACIER
+                TransitionInDays: 90
+            ExpirationInDays: 365
+          - Id: CleanupIncomplete
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: incoming/
+            Function: !GetAtt ETLProcessorFunction.Arn
+      Tags:
+        - Key: DataClassification
+          Value: confidential
+
+  ProcessedDataBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-processed-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref DataEncryptionKey
+
+  AthenaResultsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-athena-results-${AWS::AccountId}"
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireResults
+            Status: Enabled
+            ExpirationInDays: 7
+
+  # --- KMS Encryption Key ---
+  DataEncryptionKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub "Encryption key for ${AWS::StackName} data pipeline"
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnableRootAccess
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: kms:*
+            Resource: "*"
+          - Sid: AllowLambdaAccess
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt ETLRole.Arn
+            Action:
+              - kms:Decrypt
+              - kms:Encrypt
+              - kms:GenerateDataKey
+            Resource: "*"
+      EnableKeyRotation: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  DataEncryptionKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub "alias/${AWS::StackName}-data-key"
+      TargetKeyId: !Ref DataEncryptionKey
+
+  # --- DynamoDB Tables ---
+  MetadataTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    Properties:
+      TableName: !Sub "${AWS::StackName}-metadata"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: gsi1pk
+          AttributeType: S
+        - AttributeName: gsi1sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: gsi1pk
+              KeyType: HASH
+            - AttributeName: gsi1sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref DataEncryptionKey
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  JobTrackingTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-jobs"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: jobId
+          AttributeType: S
+        - AttributeName: status
+          AttributeType: S
+        - AttributeName: createdAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: jobId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: StatusIndex
+          KeySchema:
+            - AttributeName: status
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # --- Lambda Functions ---
+  ETLRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-etl-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DataAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt RawDataBucket.Arn
+                  - !Sub "${RawDataBucket.Arn}/*"
+                  - !GetAtt ProcessedDataBucket.Arn
+                  - !Sub "${ProcessedDataBucket.Arn}/*"
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt MetadataTable.Arn
+                  - !Sub "${MetadataTable.Arn}/index/*"
+                  - !GetAtt JobTrackingTable.Arn
+                  - !Sub "${JobTrackingTable.Arn}/index/*"
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                Resource: !GetAtt DataEncryptionKey.Arn
+
+  ETLProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-etl-processor"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt ETLRole.Arn
+      Timeout: 900
+      MemorySize: 3008
+      Environment:
+        Variables:
+          PROCESSED_BUCKET: !Ref ProcessedDataBucket
+          METADATA_TABLE: !Ref MetadataTable
+          JOB_TABLE: !Ref JobTrackingTable
+          ENVIRONMENT: !Ref Environment
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          def handler(event, context):
+              # Process S3 event, transform data, write to processed bucket
+              s3 = boto3.client('s3')
+              dynamodb = boto3.resource('dynamodb')
+              for record in event['Records']:
+                  bucket = record['s3']['bucket']['name']
+                  key = record['s3']['object']['key']
+                  # ETL logic here
+                  print(f"Processing {bucket}/{key}")
+              return {'statusCode': 200}
+      Tags:
+        Environment: !Ref Environment
+
+  ETLProcessorPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ETLProcessorFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !GetAtt RawDataBucket.Arn
+
+  DataValidatorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-data-validator"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt ETLRole.Arn
+      Timeout: 300
+      MemorySize: 1024
+      Environment:
+        Variables:
+          METADATA_TABLE: !Ref MetadataTable
+      Code:
+        ZipFile: |
+          import json
+          def handler(event, context):
+              # Validate transformed data quality
+              records = event.get('records', [])
+              errors = []
+              for r in records:
+                  if not r.get('id'):
+                      errors.append(f"Missing ID in record")
+              return {'valid': len(errors) == 0, 'errors': errors}
+
+  ReportGeneratorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-report-generator"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt ETLRole.Arn
+      Timeout: 300
+      MemorySize: 512
+      Environment:
+        Variables:
+          PROCESSED_BUCKET: !Ref ProcessedDataBucket
+          NOTIFICATION_TOPIC: !Ref PipelineNotificationTopic
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          def handler(event, context):
+              sns = boto3.client('sns')
+              topic = event.get('topic_arn')
+              sns.publish(TopicArn=topic, Message=json.dumps(event))
+              return {'statusCode': 200}
+
+  # --- Step Functions State Machine ---
+  StepFunctionsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeLambda
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource:
+                  - !GetAtt ETLProcessorFunction.Arn
+                  - !GetAtt DataValidatorFunction.Arn
+                  - !GetAtt ReportGeneratorFunction.Arn
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref PipelineNotificationTopic
+
+  DataPipelineStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub "${AWS::StackName}-pipeline"
+      RoleArn: !GetAtt StepFunctionsRole.Arn
+      DefinitionString: !Sub |
+        {
+          "Comment": "Data pipeline orchestration",
+          "StartAt": "ProcessData",
+          "States": {
+            "ProcessData": {
+              "Type": "Task",
+              "Resource": "${ETLProcessorFunction.Arn}",
+              "Next": "ValidateData",
+              "Retry": [
+                {
+                  "ErrorEquals": ["States.TaskFailed"],
+                  "IntervalSeconds": 30,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "Next": "NotifyFailure"
+                }
+              ]
+            },
+            "ValidateData": {
+              "Type": "Task",
+              "Resource": "${DataValidatorFunction.Arn}",
+              "Next": "CheckValidation"
+            },
+            "CheckValidation": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.valid",
+                  "BooleanEquals": true,
+                  "Next": "GenerateReport"
+                }
+              ],
+              "Default": "NotifyFailure"
+            },
+            "GenerateReport": {
+              "Type": "Task",
+              "Resource": "${ReportGeneratorFunction.Arn}",
+              "Next": "NotifySuccess"
+            },
+            "NotifySuccess": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::sns:publish",
+              "Parameters": {
+                "TopicArn": "${PipelineNotificationTopic}",
+                "Message.$": "$.report",
+                "Subject": "Pipeline Success"
+              },
+              "End": true
+            },
+            "NotifyFailure": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::sns:publish",
+              "Parameters": {
+                "TopicArn": "${PipelineNotificationTopic}",
+                "Message.$": "$.error",
+                "Subject": "Pipeline Failed"
+              },
+              "End": true
+            }
+          }
+        }
+
+  # --- SNS Notifications ---
+  PipelineNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${AWS::StackName}-notifications"
+      KmsMasterKeyId: !Ref DataEncryptionKey
+
+  PipelineEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref PipelineNotificationTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+
+  # --- Athena for Querying ---
+  AthenaWorkGroup:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: !Sub "${AWS::StackName}-workgroup"
+      State: ENABLED
+      WorkGroupConfiguration:
+        ResultConfiguration:
+          OutputLocation: !Sub "s3://${AthenaResultsBucket}/results/"
+          EncryptionConfiguration:
+            EncryptionOption: SSE_KMS
+            KmsKey: !Ref DataEncryptionKey
+        EnforceWorkGroupConfiguration: true
+        PublishCloudWatchMetricsEnabled: true
+        BytesScannedCutoffPerQuery: 10737418240  # 10GB
+
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Sub "${AWS::StackName}_catalog"
+        Description: Data catalog for pipeline outputs
+
+  GlueCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: !Sub "${AWS::StackName}-crawler"
+      Role: !GetAtt ETLRole.Arn
+      DatabaseName: !Sub "${AWS::StackName}_catalog"
+      Targets:
+        S3Targets:
+          - Path: !Sub "s3://${ProcessedDataBucket}/output/"
+      Schedule:
+        ScheduleExpression: cron(0 6 * * ? *)
+
+  # --- EventBridge Rule for Scheduled Pipeline ---
+  PipelineSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${AWS::StackName}-daily-run"
+      Description: Trigger pipeline daily
+      ScheduleExpression: cron(0 2 * * ? *)
+      State: ENABLED
+      Targets:
+        - Id: StepFunctionTarget
+          Arn: !GetAtt DataPipelineStateMachine.Arn
+          RoleArn: !GetAtt EventBridgeRole.Arn
+          Input: '{"source": "scheduled", "full_refresh": false}'
+
+  EventBridgeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: StartStateMachine
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: states:StartExecution
+                Resource: !GetAtt DataPipelineStateMachine.Arn
+
+  # --- CloudWatch Dashboard ---
+  PipelineDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub "${AWS::StackName}-dashboard"
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "properties": {
+                "title": "Lambda Invocations",
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${ETLProcessorFunction}"],
+                  ["AWS/Lambda", "Errors", "FunctionName", "${ETLProcessorFunction}"]
+                ],
+                "period": 300,
+                "stat": "Sum"
+              }
+            },
+            {
+              "type": "metric",
+              "properties": {
+                "title": "DynamoDB",
+                "metrics": [
+                  ["AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", "${MetadataTable}"],
+                  ["AWS/DynamoDB", "ConsumedWriteCapacityUnits", "TableName", "${MetadataTable}"]
+                ],
+                "period": 300,
+                "stat": "Sum"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  RawBucketName:
+    Value: !Ref RawDataBucket
+    Description: Upload raw data here
+  ProcessedBucketName:
+    Value: !Ref ProcessedDataBucket
+  PipelineArn:
+    Value: !GetAtt DataPipelineStateMachine.Arn
+    Description: Step Functions state machine ARN
+  MetadataTableName:
+    Value: !Ref MetadataTable
+  DashboardURL:
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${AWS::StackName}-dashboard"

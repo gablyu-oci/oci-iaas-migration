@@ -1,0 +1,55 @@
+graph TB
+
+  ec2_order_api["EC2<br/>ec2-order-api"]
+  ec2_fulfillment_worker["EC2<br/>ec2-fulfillment-worker"]
+  ec2_reporting_svc["EC2<br/>ec2-reporting-svc"]
+  lambda_send_order_email["Lambda<br/>lambda-send-order-email"]
+  ec2_payment_svc["EC2<br/>ec2-payment-svc"]
+  dynamodb_orders["DynamoDB<br/>dynamodb-orders"]
+  dynamodb_inventory["DynamoDB<br/>dynamodb-inventory"]
+  sqs_order_fulfillment["SQS<br/>sqs-order-fulfillment"]
+  sns_order_notifications["SNS<br/>sns-order-notifications"]
+  s3_order_invoices["S3<br/>s3-order-invoices"]
+  rds_postgres["RDS<br/>rds-postgres"]
+  elasticache_redis["ElastiCache<br/>elasticache-redis"]
+  secretsmanager_db_creds["SecretsManager<br/>secretsmanager-db-creds"]
+  secretsmanager_smtp_creds["SecretsManager<br/>secretsmanager-smtp-creds"]
+  apigateway_payments["APIGateway<br/>apigateway-payments"]
+  iam_order_api_role["IAMRole<br/>iam-order-api-role"]
+  iam_fulfillment_worker_role["IAMRole<br/>iam-fulfillment-worker-role"]
+  iam_notification_lambda_role["IAMRole<br/>iam-notification-lambda-role"]
+  iam_reporting_service_role["IAMRole<br/>iam-reporting-service-role"]
+  iam_payment_service_role["IAMRole<br/>iam-payment-service-role"]
+  iam_payment_gateway_access["IAMRole<br/>iam-payment-gateway-access"]
+  internal_https_svc["EC2<br/>internal-https-svc"]
+  vpc_main["VPC<br/>vpc-main"]
+  vpc_payments["VPC<br/>vpc-payments"]
+
+  ec2_order_api -->|api_call (9)| dynamodb_orders
+  ec2_order_api -->|api_call (8)| sqs_order_fulfillment
+  ec2_order_api -->|api_call (7)| s3_order_invoices
+  ec2_order_api -->|api_call (8)| secretsmanager_db_creds
+  ec2_order_api -->|network (9)| rds_postgres
+  ec2_order_api -->|network (8)| elasticache_redis
+  ec2_order_api -->|network (5)| internal_https_svc
+  ec2_order_api -->|iam_role (9)| iam_order_api_role
+  sqs_order_fulfillment -->|event_trigger (8)| ec2_fulfillment_worker
+  ec2_fulfillment_worker -->|api_call (8)| dynamodb_orders
+  ec2_fulfillment_worker -->|api_call (8)| dynamodb_inventory
+  ec2_fulfillment_worker -->|api_call (7)| sns_order_notifications
+  ec2_fulfillment_worker -->|network (7)| rds_postgres
+  ec2_fulfillment_worker -->|network (6)| elasticache_redis
+  ec2_fulfillment_worker -->|iam_role (9)| iam_fulfillment_worker_role
+  sns_order_notifications -->|event_trigger (8)| lambda_send_order_email
+  lambda_send_order_email -->|api_call (7)| secretsmanager_smtp_creds
+  lambda_send_order_email -->|iam_role (9)| iam_notification_lambda_role
+  ec2_reporting_svc -->|api_call (7)| dynamodb_orders
+  ec2_reporting_svc -->|api_call (6)| s3_order_invoices
+  ec2_reporting_svc -->|network (7)| rds_postgres
+  ec2_reporting_svc -->|iam_role (9)| iam_reporting_service_role
+  ec2_payment_svc -->|iam_role (9)| iam_payment_service_role
+  ec2_payment_svc -->|iam_role (9)| iam_payment_gateway_access
+  ec2_payment_svc -->|api_call (8)| apigateway_payments
+  ec2_payment_svc -->|network (7)| ec2_order_api
+  secretsmanager_db_creds -->|api_call (9)| rds_postgres
+  vpc_payments -->|network (8)| vpc_main

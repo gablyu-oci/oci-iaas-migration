@@ -1,0 +1,508 @@
+{
+  "resources": [
+    {
+      "id": "ec2-order-api",
+      "type": "EC2",
+      "account": "555555555555",
+      "region": "us-east-1",
+      "details": "Order API service at 10.1.1.20, assumes role order-api-role. Primary entry point for order processing. Connects to RDS PostgreSQL, ElastiCache Redis, DynamoDB, SQS, S3, Secrets Manager, and an internal HTTPS service."
+    },
+    {
+      "id": "ec2-fulfillment-worker",
+      "type": "EC2",
+      "account": "555555555555",
+      "region": "us-east-1",
+      "details": "Fulfillment worker service at 10.1.2.30, assumes role fulfillment-worker-role. Consumes from SQS order-fulfillment-queue, reads/updates DynamoDB (Orders, Inventory), publishes to SNS order-notifications. Also connects to RDS PostgreSQL and ElastiCache Redis."
+    },
+    {
+      "id": "ec2-reporting-svc",
+      "type": "EC2",
+      "account": "555555555555",
+      "region": "us-east-1",
+      "details": "Reporting service at 10.1.4.50, assumes role reporting-service-role. Queries DynamoDB Orders table, reads from S3 acme-order-invoices bucket. Also connects to RDS PostgreSQL for reporting queries."
+    },
+    {
+      "id": "lambda-send-order-email",
+      "type": "Lambda",
+      "account": "555555555555",
+      "region": "us-east-1",
+      "details": "Lambda function send-order-email at 10.1.3.40, assumes role notification-lambda-role. Triggered by SNS order-notifications topic. Retrieves SMTP credentials from Secrets Manager (prod/email-smtp-creds) to send order confirmation emails."
+    },
+    {
+      "id": "ec2-payment-svc",
+      "type": "EC2",
+      "account": "666666666666",
+      "region": "us-east-1",
+      "details": "Payment service at 10.2.1.10 in partner/shared account 666666666666, assumes role payment-service-role. Cross-account AssumeRole into 555555555555 (payment-gateway-access role), then invokes API Gateway endpoint /v1/payments/charge. Also makes HTTPS calls to ec2-order-api (10.1.1.20)."
+    },
+    {
+      "id": "dynamodb-orders",
+      "type": "DynamoDB",
+      "account": "555555555555",
+      "region": "us-east-1",
+      "details": "DynamoDB table 'Orders'. Receives PutItem from order-api, GetItem from fulfillment-worker, Query from reporting-service. Central order state store."
+    },
+    {
+      "id": "dynamodb-inventory",
+      "type": "DynamoDB",
+      "account": "555555555555",
+      "region": "us-east-1",
+      "details": "DynamoDB table 'Inventory'. Receives UpdateItem from fulfillment-worker to decrement stock during order fulfillment."
+    },
+    {
+      "id": "sqs-order-fulfillment",
+      "type": "SQS",
+      "account": "555555555555",
+      "region": "us-east-1",
+      "details": "SQS queue 'order-fulfillment-queue'. order-api sends messages; fulfillment-worker receives/processes them. Decouples order placement from fulfillment processing."
+    },
+    {
+      "id": "sns-order-notifications",
+      "type": "SNS",
+      "account": "555555555555",
+      "region": "us-east-1",
+      "details": "SNS topic 'order-notifications'. fulfillment-worker publishes order status events. Subscribed by lambda-send-order-email for email notifications."
+    },
+    {
+      "id": "s3-order-invoices",
+      "type": "S3",
+      "account": "555555555555",
+      "region": "us-east-1",
+      "details": "S3 bucket 'acme-order-invoices'. order-api writes invoice PDFs; reporting-service reads them for report generation."
+    },
+    {
+      "id": "rds-postgres",
+      "type": "RDS",
+      "account": "555555555555",
+      "region": "us-east-1",
+      "details": "RDS PostgreSQL instance at 10.1.5.100:5432. Receives connections from ec2-order-api (215KB, 2 conns), ec2-fulfillment-worker (60KB, 1 conn), and ec2-reporting-svc (150KB, 1 conn). Credentials stored in Secrets Manager (prod/database-creds)."
+    },
+    {
+      "id": "elasticache-redis",
+      "type": "ElastiCache",
+      "account": "555555555555",
+      "region": "us-east-1",
+      "details": "ElastiCache Redis cluster at 10.1.6.50:6379. Used by ec2-order-api (200KB, caching layer) and ec2-fulfillment-worker (40KB, likely session/cache). Provides low-latency caching for order data."
+    },
+    {
+      "id": "secretsmanager-db-creds",
+      "type": "SecretsManager",
+      "account": "555555555555",
+      "region": "us-east-1",
+      "details": "Secret 'prod/database-creds'. Retrieved by ec2-order-api to authenticate to RDS PostgreSQL."
+    },
+    {
+      "id": "secretsmanager-smtp-creds",
+      "type": "SecretsManager",
+      "account": "555555555555",
+      "region": "us-east-1",
+      "details": "Secret 'prod/email-smtp-creds'. Retrieved by lambda-send-order-email to authenticate to external SMTP service for sending order confirmation emails."
+    },
+    {
+      "id": "apigateway-payments",
+      "type": "APIGateway",
+      "account": "666666666666",
+      "region": "us-east-1",
+      "details": "API Gateway endpoint (api ID: abc123xyz) exposing /v1/payments/charge. Invoked by ec2-payment-svc after cross-account role assumption."
+    },
+    {
+      "id": "iam-order-api-role",
+      "type": "IAMRole",
+      "account": "555555555555",
+      "region": "us-east-1",
+      "details": "IAM role 'order-api-role' assumed by ec2-order-api. Grants access to DynamoDB, SQS, S3, Secrets Manager."
+    },
+    {
+      "id": "iam-fulfillment-worker-role",
+      "type": "IAMRole",
+      "account": "555555555555",
+      "region": "us-east-1",
+      "details": "IAM role 'fulfillment-worker-role' assumed by ec2-fulfillment-worker. Grants access to SQS, DynamoDB, SNS."
+    },
+    {
+      "id": "iam-notification-lambda-role",
+      "type": "IAMRole",
+      "account": "555555555555",
+      "region": "us-east-1",
+      "details": "IAM role 'notification-lambda-role' assumed by lambda-send-order-email. Grants access to Lambda invoke and Secrets Manager."
+    },
+    {
+      "id": "iam-reporting-service-role",
+      "type": "IAMRole",
+      "account": "555555555555",
+      "region": "us-east-1",
+      "details": "IAM role 'reporting-service-role' assumed by ec2-reporting-svc. Grants access to DynamoDB and S3."
+    },
+    {
+      "id": "iam-payment-service-role",
+      "type": "IAMRole",
+      "account": "666666666666",
+      "region": "us-east-1",
+      "details": "IAM role 'payment-service-role' in account 666666666666. Assumed by ec2-payment-svc, trusted to AssumeRole into 555555555555 payment-gateway-access."
+    },
+    {
+      "id": "iam-payment-gateway-access",
+      "type": "IAMRole",
+      "account": "555555555555",
+      "region": "us-east-1",
+      "details": "IAM role 'payment-gateway-access' in account 555555555555. Cross-account trust role assumed by 666666666666 payment-service-role for payment processing operations."
+    },
+    {
+      "id": "internal-https-svc",
+      "type": "EC2",
+      "account": "555555555555",
+      "region": "us-east-1",
+      "details": "Unknown internal HTTPS service at 10.1.7.80:443. Receives outbound calls from ec2-order-api (25KB). Possibly an internal microservice, ALB, or third-party integration proxy."
+    },
+    {
+      "id": "vpc-main",
+      "type": "VPC",
+      "account": "555555555555",
+      "region": "us-east-1",
+      "details": "Primary VPC housing the 10.1.x.x address space. Contains subnets for compute (10.1.1.x, 10.1.2.x, 10.1.3.x, 10.1.4.x), database (10.1.5.x), cache (10.1.6.x), and internal services (10.1.7.x)."
+    },
+    {
+      "id": "vpc-payments",
+      "type": "VPC",
+      "account": "666666666666",
+      "region": "us-east-1",
+      "details": "Payment account VPC with 10.2.x.x address space. Contains ec2-payment-svc. Requires VPC peering or Transit Gateway to reach 10.1.1.20 over HTTPS."
+    }
+  ],
+  "dependencies": [
+    {
+      "source": "ec2-order-api",
+      "target": "dynamodb-orders",
+      "type": "api_call",
+      "weight": 9,
+      "details": "PutItem to Orders table \u2014 writes every new order. Critical write path."
+    },
+    {
+      "source": "ec2-order-api",
+      "target": "sqs-order-fulfillment",
+      "type": "api_call",
+      "weight": 8,
+      "details": "SendMessage to order-fulfillment-queue \u2014 async handoff to fulfillment pipeline."
+    },
+    {
+      "source": "ec2-order-api",
+      "target": "s3-order-invoices",
+      "type": "api_call",
+      "weight": 7,
+      "details": "PutObject to acme-order-invoices \u2014 writes invoice PDFs."
+    },
+    {
+      "source": "ec2-order-api",
+      "target": "secretsmanager-db-creds",
+      "type": "api_call",
+      "weight": 8,
+      "details": "GetSecretValue for prod/database-creds \u2014 retrieves RDS credentials at startup or rotation."
+    },
+    {
+      "source": "ec2-order-api",
+      "target": "rds-postgres",
+      "type": "network",
+      "weight": 9,
+      "details": "PostgreSQL connection on port 5432, 215KB transferred, 2 connections. Primary relational data store."
+    },
+    {
+      "source": "ec2-order-api",
+      "target": "elasticache-redis",
+      "type": "network",
+      "weight": 8,
+      "details": "Redis connection on port 6379, 200KB transferred. Caching layer for order data or session state."
+    },
+    {
+      "source": "ec2-order-api",
+      "target": "internal-https-svc",
+      "type": "network",
+      "weight": 5,
+      "details": "HTTPS call to 10.1.7.80:443, 25KB transferred. Unknown internal dependency."
+    },
+    {
+      "source": "ec2-order-api",
+      "target": "iam-order-api-role",
+      "type": "iam_role",
+      "weight": 9,
+      "details": "EC2 instance assumes order-api-role for all AWS API calls."
+    },
+    {
+      "source": "sqs-order-fulfillment",
+      "target": "ec2-fulfillment-worker",
+      "type": "event_trigger",
+      "weight": 8,
+      "details": "ReceiveMessage \u2014 fulfillment worker polls queue for new orders."
+    },
+    {
+      "source": "ec2-fulfillment-worker",
+      "target": "dynamodb-orders",
+      "type": "api_call",
+      "weight": 8,
+      "details": "GetItem on Orders table \u2014 reads order details for fulfillment processing."
+    },
+    {
+      "source": "ec2-fulfillment-worker",
+      "target": "dynamodb-inventory",
+      "type": "api_call",
+      "weight": 8,
+      "details": "UpdateItem on Inventory table \u2014 decrements stock during fulfillment."
+    },
+    {
+      "source": "ec2-fulfillment-worker",
+      "target": "sns-order-notifications",
+      "type": "api_call",
+      "weight": 7,
+      "details": "Publish to order-notifications \u2014 sends fulfillment status events."
+    },
+    {
+      "source": "ec2-fulfillment-worker",
+      "target": "rds-postgres",
+      "type": "network",
+      "weight": 7,
+      "details": "PostgreSQL connection on port 5432, 60KB transferred. Likely reads additional order/fulfillment data."
+    },
+    {
+      "source": "ec2-fulfillment-worker",
+      "target": "elasticache-redis",
+      "type": "network",
+      "weight": 6,
+      "details": "Redis connection on port 6379, 40KB transferred. Caching or distributed locking."
+    },
+    {
+      "source": "ec2-fulfillment-worker",
+      "target": "iam-fulfillment-worker-role",
+      "type": "iam_role",
+      "weight": 9,
+      "details": "EC2 instance assumes fulfillment-worker-role for all AWS API calls."
+    },
+    {
+      "source": "sns-order-notifications",
+      "target": "lambda-send-order-email",
+      "type": "event_trigger",
+      "weight": 8,
+      "details": "SNS triggers Lambda function for email notifications on order events."
+    },
+    {
+      "source": "lambda-send-order-email",
+      "target": "secretsmanager-smtp-creds",
+      "type": "api_call",
+      "weight": 7,
+      "details": "GetSecretValue for prod/email-smtp-creds \u2014 retrieves SMTP credentials for sending emails."
+    },
+    {
+      "source": "lambda-send-order-email",
+      "target": "iam-notification-lambda-role",
+      "type": "iam_role",
+      "weight": 9,
+      "details": "Lambda execution role for notification function."
+    },
+    {
+      "source": "ec2-reporting-svc",
+      "target": "dynamodb-orders",
+      "type": "api_call",
+      "weight": 7,
+      "details": "Query on Orders table \u2014 reads order data for reporting."
+    },
+    {
+      "source": "ec2-reporting-svc",
+      "target": "s3-order-invoices",
+      "type": "api_call",
+      "weight": 6,
+      "details": "GetObject from acme-order-invoices \u2014 reads invoice PDFs for reporting."
+    },
+    {
+      "source": "ec2-reporting-svc",
+      "target": "rds-postgres",
+      "type": "network",
+      "weight": 7,
+      "details": "PostgreSQL connection on port 5432, 150KB transferred. Heavy reporting queries against relational data."
+    },
+    {
+      "source": "ec2-reporting-svc",
+      "target": "iam-reporting-service-role",
+      "type": "iam_role",
+      "weight": 9,
+      "details": "EC2 instance assumes reporting-service-role for all AWS API calls."
+    },
+    {
+      "source": "ec2-payment-svc",
+      "target": "iam-payment-service-role",
+      "type": "iam_role",
+      "weight": 9,
+      "details": "Payment service EC2 assumes payment-service-role in account 666666666666."
+    },
+    {
+      "source": "ec2-payment-svc",
+      "target": "iam-payment-gateway-access",
+      "type": "iam_role",
+      "weight": 9,
+      "details": "Cross-account AssumeRole from 666666666666 into 555555555555 payment-gateway-access role."
+    },
+    {
+      "source": "ec2-payment-svc",
+      "target": "apigateway-payments",
+      "type": "api_call",
+      "weight": 8,
+      "details": "POST /v1/payments/charge via API Gateway \u2014 synchronous payment processing."
+    },
+    {
+      "source": "ec2-payment-svc",
+      "target": "ec2-order-api",
+      "type": "network",
+      "weight": 7,
+      "details": "HTTPS call from 10.2.1.10 to 10.1.1.20:443, 15KB. Cross-VPC/cross-account communication \u2014 likely payment confirmation callback or order status query."
+    },
+    {
+      "source": "secretsmanager-db-creds",
+      "target": "rds-postgres",
+      "type": "api_call",
+      "weight": 9,
+      "details": "Credential secret 'prod/database-creds' grants access to RDS PostgreSQL. Implicit coupling \u2014 rotating this secret affects all RDS consumers."
+    },
+    {
+      "source": "vpc-payments",
+      "target": "vpc-main",
+      "type": "network",
+      "weight": 8,
+      "details": "Cross-VPC network path (10.2.x.x \u2192 10.1.x.x) required for payment service to reach order API. Likely VPC peering or Transit Gateway."
+    }
+  ],
+  "layers": [
+    [
+      "vpc-main",
+      "vpc-payments",
+      "iam-order-api-role",
+      "iam-fulfillment-worker-role",
+      "iam-notification-lambda-role",
+      "iam-reporting-service-role",
+      "iam-payment-service-role",
+      "iam-payment-gateway-access"
+    ],
+    [
+      "rds-postgres",
+      "elasticache-redis",
+      "dynamodb-orders",
+      "dynamodb-inventory",
+      "s3-order-invoices",
+      "sqs-order-fulfillment",
+      "sns-order-notifications",
+      "secretsmanager-db-creds",
+      "secretsmanager-smtp-creds",
+      "apigateway-payments",
+      "internal-https-svc"
+    ],
+    [
+      "ec2-order-api",
+      "ec2-fulfillment-worker",
+      "ec2-reporting-svc",
+      "lambda-send-order-email"
+    ],
+    [
+      "ec2-payment-svc"
+    ]
+  ],
+  "risks": [
+    {
+      "description": "Cross-account trust dependency: payment service in account 666666666666 assumes role 'payment-gateway-access' in account 555555555555. Migration of either account requires coordinated IAM trust policy updates, and any interruption breaks the payment flow synchronously.",
+      "severity": "HIGH",
+      "affected_resources": [
+        "ec2-payment-svc",
+        "iam-payment-service-role",
+        "iam-payment-gateway-access",
+        "apigateway-payments"
+      ]
+    },
+    {
+      "description": "Cross-VPC/cross-account network path (10.2.1.10 \u2192 10.1.1.20:443) requires VPC peering or Transit Gateway. IP address change during migration would break this connectivity. No DNS-based abstraction is evident \u2014 likely hardcoded IP or peering route.",
+      "severity": "HIGH",
+      "affected_resources": [
+        "ec2-payment-svc",
+        "ec2-order-api",
+        "vpc-main",
+        "vpc-payments"
+      ]
+    },
+    {
+      "description": "RDS PostgreSQL is a shared stateful dependency accessed by 3 different services (order-api, fulfillment-worker, reporting-svc). Migration requires careful handling of database replication, connection string updates, and potential downtime window coordination.",
+      "severity": "HIGH",
+      "affected_resources": [
+        "rds-postgres",
+        "ec2-order-api",
+        "ec2-fulfillment-worker",
+        "ec2-reporting-svc",
+        "secretsmanager-db-creds"
+      ]
+    },
+    {
+      "description": "DynamoDB Orders table is accessed by all three microservices (write, read, query). It is the central state store for the order lifecycle. Any migration inconsistency or replication lag will cause data integrity issues across the entire pipeline.",
+      "severity": "HIGH",
+      "affected_resources": [
+        "dynamodb-orders",
+        "ec2-order-api",
+        "ec2-fulfillment-worker",
+        "ec2-reporting-svc"
+      ]
+    },
+    {
+      "description": "SQS order-fulfillment-queue is the async decoupling point between order placement and fulfillment. Messages in-flight during migration could be lost or duplicated. Queue URL contains account ID, so cross-account migration requires URL changes in all producers/consumers.",
+      "severity": "MEDIUM",
+      "affected_resources": [
+        "sqs-order-fulfillment",
+        "ec2-order-api",
+        "ec2-fulfillment-worker"
+      ]
+    },
+    {
+      "description": "SNS \u2192 Lambda event trigger chain: order-notifications topic triggers send-order-email Lambda. Subscription ARNs are account-specific and must be recreated. During migration gap, customer notification emails will silently fail.",
+      "severity": "MEDIUM",
+      "affected_resources": [
+        "sns-order-notifications",
+        "lambda-send-order-email"
+      ]
+    },
+    {
+      "description": "Secrets Manager credentials (prod/database-creds, prod/email-smtp-creds) are region and account bound. Migration requires secret replication or re-creation, and all consumers must be updated. Credential rotation during migration could cause cascading auth failures.",
+      "severity": "MEDIUM",
+      "affected_resources": [
+        "secretsmanager-db-creds",
+        "secretsmanager-smtp-creds",
+        "ec2-order-api",
+        "lambda-send-order-email"
+      ]
+    },
+    {
+      "description": "Unknown internal HTTPS service at 10.1.7.80 \u2014 no CloudTrail identity or resource metadata available. This is a ghost dependency that could be an internal microservice, ALB, NAT gateway, or third-party proxy. Must be identified before migration.",
+      "severity": "MEDIUM",
+      "affected_resources": [
+        "internal-https-svc",
+        "ec2-order-api"
+      ]
+    },
+    {
+      "description": "ElastiCache Redis is not backed by CloudTrail (data-plane only). Two services depend on it for caching/session state. Cache invalidation strategy during migration is unclear \u2014 stale cache after cutover could serve incorrect pricing or inventory data.",
+      "severity": "MEDIUM",
+      "affected_resources": [
+        "elasticache-redis",
+        "ec2-order-api",
+        "ec2-fulfillment-worker"
+      ]
+    },
+    {
+      "description": "S3 bucket 'acme-order-invoices' is both written (order-api) and read (reporting-svc). Bucket name is globally unique \u2014 cannot be recreated with same name in a different account without deleting the original. Cross-account access policies or bucket migration strategy required.",
+      "severity": "LOW",
+      "affected_resources": [
+        "s3-order-invoices",
+        "ec2-order-api",
+        "ec2-reporting-svc"
+      ]
+    },
+    {
+      "description": "DynamoDB Inventory table is only observed receiving UpdateItem from fulfillment-worker. There are likely additional read paths (e.g., order-api checking stock before order creation) not captured in this 14-event sample.",
+      "severity": "LOW",
+      "affected_resources": [
+        "dynamodb-inventory",
+        "ec2-fulfillment-worker"
+      ]
+    }
+  ]
+}

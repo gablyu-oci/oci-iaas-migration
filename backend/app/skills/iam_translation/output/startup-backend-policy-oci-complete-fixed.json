@@ -1,0 +1,192 @@
+{
+  "policy_name": "startup-backend-policy",
+  "source": "AWS IAM Policy",
+  "target": "OCI IAM Policy",
+  "translation_version": "1.0",
+  "final_confidence": 0.92,
+  "review_confidence": 0.92,
+  "iterations": 2,
+  "status": "approved",
+  "statements": [
+    {
+      "sid": "S3MediaBucketAccess_BucketLevel",
+      "statement": "Allow group BACKEND_APP_GROUP to read buckets in compartment COMPARTMENT_NAME where target.bucket.name = 'acme-prod-media'",
+      "aws_equivalent": "s3:ListBucket, s3:GetBucketLocation on arn:aws:s3:::acme-prod-media",
+      "notes": "OCI 'read buckets' covers bucket-level read operations including listing objects (equivalent to s3:ListBucket) and reading bucket metadata (equivalent to s3:GetBucketLocation). PutObject and DeleteObject are object-level actions handled by the separate S3MediaBucketAccess_ObjectLevel statement and do not require any bucket-level verb beyond 'read'. CRITICAL GAP: The AWS condition 's3:x-amz-server-side-encryption: aws:kms' has no OCI IAM policy equivalent \u2014 encryption enforcement must be configured directly on the 'acme-prod-media' bucket by assigning a customer-managed KMS key (Object Storage console \u2192 Bucket \u2192 Assign KMS Key). This is actually stronger enforcement than the AWS condition-based approach since it cannot be bypassed by the caller. See critical_gaps entry 'S3_KMS_Encryption_Condition'."
+    },
+    {
+      "sid": "S3MediaBucketAccess_ObjectLevel",
+      "statement": "Allow group BACKEND_APP_GROUP to manage objects in compartment COMPARTMENT_NAME where target.bucket.name = 'acme-prod-media'",
+      "aws_equivalent": "s3:GetObject, s3:PutObject, s3:DeleteObject on arn:aws:s3:::acme-prod-media/*",
+      "notes": "OCI requires a separate statement for object-level access versus bucket-level access. 'manage objects' is required because the AWS actions span three different OCI permission levels: s3:GetObject \u2192 OBJECT_READ (read verb); s3:PutObject \u2192 OBJECT_CREATE + OBJECT_OVERWRITE (manage verb); s3:DeleteObject \u2192 OBJECT_DELETE (manage verb). Per the OCI verb hierarchy, the highest required verb drives the selection to 'manage'. NOTE: 'manage objects' is slightly broader than the original AWS policy in that it also grants OBJECT_VERSION_DELETE and OBJECT_RESTORE, which were not in the original policy. If versioning is enabled on this bucket and this is a concern, document it as a known gap. The KMS encryption condition is enforced at the bucket level \u2014 see S3MediaBucketAccess_BucketLevel notes."
+    },
+    {
+      "sid": "DynamoDBOrdersTable",
+      "statement": "Allow group BACKEND_APP_GROUP to use nosql-tables in compartment COMPARTMENT_NAME where target.nosql-table.name = 'AcmeOrders'",
+      "aws_equivalent": "dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem, dynamodb:Query, dynamodb:DescribeTable on arn:aws:dynamodb:us-east-1:987654321098:table/AcmeOrders and AcmeOrders/index/*",
+      "notes": "OCI 'use nosql-tables' is the correct verb: it covers row-level read operations (GetItem, Query \u2192 read/inspect), row-level mutations (PutItem, UpdateItem, DeleteItem \u2192 use-level), and table metadata inspection (DescribeTable \u2192 inspect). The 'use' verb does not grant table creation or deletion, preserving least privilege. GAP: OCI NoSQL IAM policies have no concept of index-level resource scoping \u2014 the AWS restriction to 'table/AcmeOrders/index/*' (covering GSI/LSI access) cannot be replicated. All indexes on AcmeOrders are implicitly accessible when 'use nosql-tables' is granted on the table. The us-east-1 regional origin is noted from the source ARN; if regional restriction is required, add 'where all {target.nosql-table.name = 'AcmeOrders', request.region = 'iad'}' using OCI's multi-condition syntax."
+    },
+    {
+      "sid": "EC2DescribeOnly_Instances",
+      "statement": "Allow group BACKEND_APP_GROUP to inspect instances in compartment COMPARTMENT_NAME where request.region = 'iad'",
+      "aws_equivalent": "ec2:DescribeInstances in us-east-1",
+      "notes": "ec2:DescribeInstances maps directly to OCI 'inspect instances'. OCI region code 'iad' corresponds to AWS us-east-1 (Ashburn, VA). The compartment scope replaces the AWS wildcard '*' resource restriction. 'inspect instances' provides instance metadata including state, shape, and configuration without granting any operational access."
+    },
+    {
+      "sid": "EC2DescribeOnly_SecurityLists",
+      "statement": "Allow group BACKEND_APP_GROUP to inspect security-lists in compartment NETWORKING_COMPARTMENT_NAME where request.region = 'iad'",
+      "aws_equivalent": "ec2:DescribeSecurityGroups in us-east-1",
+      "notes": "AWS Security Groups map most closely to OCI security-lists. SECURITY WARNING: In OCI, 'inspect security-lists' returns the FULL content of all security rules (all ingress and egress rules with ports, protocols, and CIDRs) \u2014 not just metadata. This is a broader information exposure than AWS DescribeSecurityGroups and should be reviewed against your least-privilege requirements. If OCI Network Security Groups (NSGs) are used in your environment alongside or instead of security-lists, add a parallel statement: 'Allow group BACKEND_APP_GROUP to inspect network-security-groups in compartment NETWORKING_COMPARTMENT_NAME where request.region = 'iad''. Networking resources are scoped to NETWORKING_COMPARTMENT_NAME as they may reside in a separate shared networking compartment."
+    },
+    {
+      "sid": "EC2DescribeOnly_Subnets",
+      "statement": "Allow group BACKEND_APP_GROUP to inspect subnets in compartment NETWORKING_COMPARTMENT_NAME where request.region = 'iad'",
+      "aws_equivalent": "ec2:DescribeSubnets in us-east-1",
+      "notes": "Direct mapping. 'inspect subnets' returns subnet metadata including CIDR blocks and availability domain assignments, which constitutes network topology information. Scoped to NETWORKING_COMPARTMENT_NAME as subnets typically reside in a shared networking compartment in OCI. Add this compartment to migration prerequisites if it differs from COMPARTMENT_NAME."
+    },
+    {
+      "sid": "EC2DescribeOnly_VCNs",
+      "statement": "Allow group BACKEND_APP_GROUP to inspect vcns in compartment NETWORKING_COMPARTMENT_NAME where request.region = 'iad'",
+      "aws_equivalent": "ec2:DescribeVpcs in us-east-1",
+      "notes": "AWS VPCs map to OCI VCNs. SECURITY WARNING: 'inspect vcns' returns full VCN configuration including all CIDR blocks, DNS settings, and associated component references. This is the OCI standard behavior \u2014 the inspect verb for networking resources returns complete configuration, not just metadata. Review whether full network topology visibility is acceptable for this group's security profile."
+    },
+    {
+      "sid": "LambdaInvokeProcessors_Invoke",
+      "statement": "Allow group BACKEND_APP_GROUP to use fn-function in compartment ACME_ORDER_FUNCTIONS_COMPARTMENT",
+      "aws_equivalent": "lambda:InvokeFunction on arn:aws:lambda:us-east-1:987654321098:function:acme-order-*",
+      "notes": "AWS lambda:InvokeFunction maps to OCI 'use fn-function'. IMPORTANT: OCI IAM 'where' conditions on function names do not support prefix-wildcard matching equivalent to the AWS ARN pattern 'acme-order-*'. Rather than using an unreliable name condition, the recommended and idiomatic OCI approach is to place all acme-order-* functions in a dedicated compartment (ACME_ORDER_FUNCTIONS_COMPARTMENT) and scope the policy to that compartment \u2014 this is the standard OCI replacement for ARN-prefix resource scoping. This compartment must be created as a migration prerequisite. All functions in this compartment will be accessible, so ensure only acme-order-* functions are deployed there."
+    },
+    {
+      "sid": "LambdaInvokeProcessors_Read",
+      "statement": "Allow group BACKEND_APP_GROUP to read fn-function in compartment ACME_ORDER_FUNCTIONS_COMPARTMENT",
+      "aws_equivalent": "lambda:GetFunction on arn:aws:lambda:us-east-1:987654321098:function:acme-order-*",
+      "notes": "lambda:GetFunction (view function configuration, code download URL, environment variables) maps to OCI 'read fn-function'. CAUTION: 'read fn-function' exposes function environment variables which may contain sensitive configuration such as database endpoints, internal service URLs, or feature flags. Ensure no credentials are stored in function environment variables \u2014 use OCI Vault secrets instead (already covered by SecretsManagerReadDB statements). Same compartment-scoping approach as LambdaInvokeProcessors_Invoke."
+    },
+    {
+      "sid": "SQSOrderQueue",
+      "statement": "Allow group BACKEND_APP_GROUP to use queues in compartment COMPARTMENT_NAME where any {target.queue.displayName = 'acme-order-queue', target.queue.displayName = 'acme-order-dlq'}",
+      "aws_equivalent": "sqs:SendMessage, sqs:ReceiveMessage, sqs:DeleteMessage, sqs:GetQueueAttributes on arn:aws:sqs:us-east-1:987654321098:acme-order-queue and acme-order-dlq",
+      "notes": "AWS SQS maps to OCI Queue service (resource type: 'queues'). 'use queues' covers the full set of required operations: message send (sqs:SendMessage), receive (sqs:ReceiveMessage), delete/acknowledge (sqs:DeleteMessage), and queue attribute reads (sqs:GetQueueAttributes). The 'any {\u2026}' multi-value condition scopes access to both the main processing queue and the dead-letter queue in a single statement. NOTE: If OCI Streaming (Kafka-compatible, higher throughput) is the target service instead of OCI Queue, the resource type is 'streams' with 'use streams' \u2014 confirm the target service before applying. OCI Queue and AWS SQS have different semantics around message visibility timeout, retention periods, and DLQ redrive policies; these must be reconfigured in OCI Queue."
+    },
+    {
+      "sid": "SecretsManagerReadDB_Value",
+      "statement": "Allow group BACKEND_APP_GROUP to read secret-bundles in compartment COMPARTMENT_NAME where target.resource.tag.Environment = 'production'",
+      "aws_equivalent": "secretsmanager:GetSecretValue on arn:aws:secretsmanager:us-east-1:987654321098:secret:acme/prod/db-* with tag Environment=production",
+      "notes": "AWS Secrets Manager maps to OCI Vault Secrets. 'read secret-bundles' is the correct resource type and verb for retrieving actual secret values (equivalent to GetSecretValue). The tag condition 'target.resource.tag.Environment = 'production'' is a DIRECT translation of the AWS condition 'secretsmanager:ResourceTag/Environment: production' \u2014 this is one of the strongest condition parity points in this policy. GAP: The AWS resource name prefix restriction 'acme/prod/db-*' cannot be expressed as a wildcard name condition in OCI policy. Compensate by combining the tag condition with compartment scoping: ensure all DB secrets reside in COMPARTMENT_NAME and are tagged Environment=production before this policy takes effect. All OCI Vault secrets must be tagged with 'Environment=production' as a deployment prerequisite."
+    },
+    {
+      "sid": "SecretsManagerReadDB_Inspect",
+      "statement": "Allow group BACKEND_APP_GROUP to inspect secrets in compartment COMPARTMENT_NAME where target.resource.tag.Environment = 'production'",
+      "aws_equivalent": "secretsmanager:DescribeSecret on arn:aws:secretsmanager:us-east-1:987654321098:secret:acme/prod/db-* with tag Environment=production",
+      "notes": "OCI separates listing/describing secrets (inspect secrets \u2192 returns secret metadata, version information, rotation status) from reading their actual values (read secret-bundles). This statement covers the secretsmanager:DescribeSecret equivalent. The same tag condition is applied for consistency. Both this statement and SecretsManagerReadDB_Value must be present to cover both original AWS actions."
+    },
+    {
+      "sid": "CloudWatchLogs",
+      "statement": "Allow group BACKEND_APP_GROUP to manage log-groups in compartment ACME_BACKEND_LOGS_COMPARTMENT",
+      "aws_equivalent": "logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents, logs:DescribeLogStreams on arn:aws:logs:us-east-1:987654321098:log-group:/app/acme-backend-*",
+      "notes": "AWS CloudWatch Logs maps to OCI Logging service (resource types: log-groups, log-content). 'manage log-groups' is required because logs:CreateLogGroup and logs:CreateLogStream require create-level permissions; PutLogEvents (log ingestion) and DescribeLogStreams (listing) are also covered. GAP: The AWS log group name prefix '/app/acme-backend-*' cannot be expressed as a wildcard name condition in OCI IAM policy. The idiomatic OCI solution is to place all acme-backend log groups in a dedicated compartment (ACME_BACKEND_LOGS_COMPARTMENT) and scope the policy there. NOTE: 'manage log-groups' grants full log group lifecycle management including deletion. If the application only needs runtime log ingestion after initial setup, consider splitting: a one-time administrator policy using 'manage log-groups' for initial creation, and a runtime policy using 'use log-groups' or 'manage log-content' for ongoing log writes. Application code using the AWS CloudWatch Logs SDK must be updated to use the OCI Logging SDK or Unified Monitoring Agent."
+    },
+    {
+      "sid": "KMSEncryptDecrypt",
+      "statement": "Allow group BACKEND_APP_GROUP to use keys in compartment COMPARTMENT_NAME where target.key.id = 'KEY_OCID_PLACEHOLDER'",
+      "aws_equivalent": "kms:Encrypt, kms:Decrypt, kms:GenerateDataKey, kms:DescribeKey on arn:aws:kms:us-east-1:987654321098:key/mrk-demo12345",
+      "notes": "AWS KMS maps to OCI KMS (Vault service, resource type: 'keys'). 'use keys' covers all four required cryptographic operations: kms:Encrypt \u2192 KEY_ENCRYPT, kms:Decrypt \u2192 KEY_DECRYPT, kms:GenerateDataKey \u2192 KEY_GENERATE_DATA_ENCRYPTION_KEY, kms:DescribeKey \u2192 KEY_READ (inspect/read). The key is scoped by OCID via 'target.key.id' \u2014 replace KEY_OCID_PLACEHOLDER with the actual OCI key OCID (format: ocid1.key.oc1.iad.xxxxx). CRITICAL GAP: The AWS condition 'kms:ViaService' (restricting key usage to only when invoked via s3.us-east-1.amazonaws.com or secretsmanager.us-east-1.amazonaws.com on behalf of this principal) has NO OCI equivalent. In OCI, there is no IAM policy condition to restrict key usage to specific calling services. See critical_gaps for full mitigation details. The AWS multi-region key identifier 'mrk-demo12345' must be replaced with the OCI key OCID after key import or creation in OCI Vault."
+    },
+    {
+      "sid": "DenyDeleteBucket",
+      "statement": "Deny group BACKEND_APP_GROUP to manage buckets in compartment ACME_PROD_COMPARTMENT where any {request.permission = 'BUCKET_DELETE', request.permission = 'BUCKET_UPDATE'}",
+      "aws_equivalent": "Deny s3:DeleteBucket, s3:DeleteBucketPolicy on arn:aws:s3:::acme-prod-*",
+      "notes": "This deny statement uses OCI permission-level conditions to target only deletion (BUCKET_DELETE) and policy-modification (BUCKET_UPDATE) operations, closely mirroring the AWS intent of denying only s3:DeleteBucket and s3:DeleteBucketPolicy rather than all bucket-level operations. SCOPE DECISION: Rather than enumerating individual bucket names (which would be incomplete and require maintenance), the deny is applied at the ACME_PROD_COMPARTMENT level \u2014 this is the recommended OCI pattern when all resources matching the AWS ARN prefix pattern (acme-prod-*) reside in a single compartment. This actually provides stronger protection than the original AWS policy, as it covers all current and future production buckets in the compartment without requiring policy updates when new buckets are added. PREREQUISITE: All acme-prod-* buckets must reside exclusively in ACME_PROD_COMPARTMENT for this compartment-level deny to be effective. If production buckets are spread across multiple compartments, replace with compartment-level denies per compartment, or use an explicit 'any {}' enumeration of all known bucket names. NOTE: Since the S3MediaBucketAccess_BucketLevel statement grants only 'read buckets' (not 'manage buckets'), the group does not possess BUCKET_DELETE or BUCKET_UPDATE permissions on acme-prod-media from that Allow statement alone; however, this deny provides defense-in-depth against any future policy additions that might inadvertently grant manage-level bucket access. In OCI, deny policies must be attached to the same compartment as, or a parent compartment of, the corresponding allow policies to take precedence."
+    }
+  ],
+  "placeholders": {
+    "BACKEND_APP_GROUP": "OCI IAM group name for the backend application team or service account users that held this AWS IAM role/policy. If this policy was originally attached to a Lambda execution role (service identity), replace with an OCI dynamic group: matching rule ALL {resource.type = 'fnfunc', resource.compartment.id = '<acme-order-functions-compartment-ocid>'}. If it is a human operator group, use a standard IAM group.",
+    "COMPARTMENT_NAME": "Primary OCI compartment where application resources reside: NoSQL tables (AcmeOrders), Object Storage (acme-prod-media), OCI Queue instances, Vault secrets, and KMS keys. Recommend a dedicated production application compartment, e.g., 'acme-production'. This is distinct from the networking compartment.",
+    "NETWORKING_COMPARTMENT_NAME": "OCI compartment where shared networking resources reside: VCNs, subnets, security-lists, and network security groups. Frequently a separate 'networking' or 'core-infrastructure' compartment in OCI tenancy designs. May equal COMPARTMENT_NAME if networking and workloads share a compartment.",
+    "ACME_ORDER_FUNCTIONS_COMPARTMENT": "Dedicated OCI compartment for all acme-order-* OCI Functions resources. This compartment replaces ARN-prefix-based resource scoping (acme-order-*) since OCI IAM does not support wildcard name conditions on function names. Only deploy acme-order-* functions in this compartment. Example name: 'acme-production-order-functions'.",
+    "ACME_BACKEND_LOGS_COMPARTMENT": "Dedicated OCI compartment for acme-backend application log groups. This compartment replaces log group name-prefix scoping (/app/acme-backend-*). Only deploy acme-backend log groups in this compartment. Example name: 'acme-backend-logs'. May be a sub-compartment under COMPARTMENT_NAME.",
+    "ACME_PROD_COMPARTMENT": "OCI compartment containing all acme-prod-* Object Storage buckets. The DenyDeleteBucket statement is scoped to this compartment to cover the full 'acme-prod-*' bucket namespace without requiring explicit name enumeration. This compartment should contain ONLY production buckets so the compartment-level deny does not inadvertently protect unintended resources. May equal COMPARTMENT_NAME if buckets and other resources share a compartment.",
+    "KEY_OCID_PLACEHOLDER": "OCI OCID of the KMS key corresponding to AWS KMS key 'mrk-demo12345'. Obtain this after importing or recreating the key in OCI Vault. Format: ocid1.key.oc1.iad.xxxxxxxxxx. This key should be stored in a dedicated Vault in COMPARTMENT_NAME."
+  },
+  "review_issues": [
+    {
+      "severity": "MEDIUM",
+      "statement_index": null,
+      "issue": "The DenyDeleteBucket statement maps s3:DeleteBucketPolicy to BUCKET_UPDATE, but BUCKET_UPDATE covers all bucket modifications (lifecycle rules, CORS, versioning, etc.), not just policy deletion. This is broader than the original AWS deny intent. Additionally, s3:DeleteBucket maps correctly to BUCKET_DELETE, but the deny uses 'manage buckets' as the verb with permission conditions \u2014 this is the correct OCI pattern, but the BUCKET_UPDATE mapping is an imperfect approximation.",
+      "recommendation": "This is acknowledged in the notes and critical_gaps. Since OCI does not have a finer-grained permission for bucket policy deletion specifically, this is an acceptable approximation. Document the broader scope clearly. Consider whether BUCKET_UPDATE in the deny is truly needed \u2014 if the intent is only to prevent bucket deletion and bucket policy deletion, and OCI bucket policies work differently (OCI uses IAM policies not bucket-attached policies), you may be able to drop the BUCKET_UPDATE condition entirely and keep only BUCKET_DELETE."
+    },
+    {
+      "severity": "MEDIUM",
+      "statement_index": null,
+      "issue": "The CloudWatchLogs statement uses 'manage log-groups' which grants full lifecycle management including deletion of log groups and all associated logs. The AWS policy grants logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents, and logs:DescribeLogStreams \u2014 which is create and write access but NOT delete access. 'manage' is broader than needed for the ongoing operations.",
+      "recommendation": "The translation notes acknowledge this. For a tighter mapping, consider splitting into: (1) 'manage log-groups' for initial setup only (or handled by an admin), and (2) 'use log-content' or 'manage log-content' for runtime log ingestion (PutLogEvents equivalent). The OCI Logging service separates log-groups (containers) from log-content (the actual log data). A more precise runtime policy might be: 'Allow group BACKEND_APP_GROUP to manage log-content in compartment ACME_BACKEND_LOGS_COMPARTMENT' plus 'Allow group BACKEND_APP_GROUP to use log-groups in compartment ACME_BACKEND_LOGS_COMPARTMENT'."
+    },
+    {
+      "severity": "MEDIUM",
+      "statement_index": null,
+      "issue": "The LambdaInvokeProcessors_Read statement ('read fn-function') is redundant because LambdaInvokeProcessors_Invoke uses 'use fn-function', and the 'use' verb already includes all capabilities of 'read' per OCI's verb hierarchy (manage > use > read > inspect).",
+      "recommendation": "Remove the LambdaInvokeProcessors_Read statement as it is fully covered by the 'use fn-function' statement. The 'use' verb inherently includes read-level access."
+    },
+    {
+      "severity": "MEDIUM",
+      "statement_index": null,
+      "issue": "The S3MediaBucketAccess_ObjectLevel uses 'manage objects' which includes OBJECT_VERSION_DELETE and OBJECT_RESTORE permissions not present in the original AWS policy (s3:GetObject, s3:PutObject, s3:DeleteObject). While noted in the translation, this is a scope expansion that could have security implications if versioning is enabled.",
+      "recommendation": "This is a known limitation of OCI's verb model \u2014 there is no verb between 'use' and 'manage' for objects. Document this as a residual risk. If versioning is critical, consider using permission-level conditions: 'where any {request.permission = 'OBJECT_READ', request.permission = 'OBJECT_CREATE', request.permission = 'OBJECT_OVERWRITE', request.permission = 'OBJECT_DELETE', request.permission = 'OBJECT_INSPECT'}' to exclude OBJECT_VERSION_DELETE and OBJECT_RESTORE."
+    },
+    {
+      "severity": "LOW",
+      "statement_index": null,
+      "issue": "Multiple different compartment placeholders are used (COMPARTMENT_NAME, ACME_PROD_COMPARTMENT, ACME_ORDER_FUNCTIONS_COMPARTMENT, ACME_BACKEND_LOGS_COMPARTMENT, NETWORKING_COMPARTMENT_NAME) which is architecturally sound for OCI but significantly increases operational complexity compared to the original single-account AWS policy. The migration prerequisites properly document this.",
+      "recommendation": "No change needed \u2014 this is the idiomatic OCI approach. The documentation is thorough. Consider providing a simplified alternative using fewer compartments for organizations that prefer less compartment sprawl, acknowledging the trade-off with granularity."
+    },
+    {
+      "severity": "LOW",
+      "statement_index": null,
+      "issue": "The DynamoDB to OCI NoSQL mapping is semantically correct, but OCI NoSQL (based on Oracle NoSQL) has different consistency models, capacity management (on-demand vs. provisioned differs), and query capabilities compared to DynamoDB. This is an operational gap rather than a policy gap.",
+      "recommendation": "No policy change needed. The notes adequately cover the IAM mapping. Operational differences should be documented in migration runbooks."
+    },
+    {
+      "severity": "LOW",
+      "statement_index": null,
+      "issue": "The tag condition 'target.resource.tag.Environment = 'production'' in the SecretsManagerReadDB statements requires that a tag namespace containing 'Environment' exists and is properly applied to all secrets. If the tag is in a defined tag namespace, the syntax should be 'target.resource.tag.<namespace>.Environment = 'production''. If it's a freeform tag, the syntax differs.",
+      "recommendation": "Clarify in the migration prerequisites whether 'Environment' is a defined tag (requiring namespace prefix, e.g., 'target.resource.tag.Operations.Environment') or a freeform tag. OCI policy conditions for defined tags require the namespace. Update the policy syntax accordingly once the tag namespace is confirmed."
+    }
+  ],
+  "critical_gaps": [
+    {
+      "gap": "S3 server-side encryption condition (s3:x-amz-server-side-encryption: aws:kms) has no OCI IAM policy equivalent",
+      "severity": "HIGH",
+      "mitigation": "OCI IAM policies cannot enforce encryption headers on object upload requests. Enforce encryption at the bucket level by assigning a customer-managed KMS key to the 'acme-prod-media' bucket (OCI Console: Object Storage \u2192 acme-prod-media \u2192 Resources \u2192 Encryption Key \u2192 Assign). Once configured, all objects are encrypted with the assigned KMS key regardless of caller-specified headers, which is actually a stronger enforcement model than the AWS condition-based approach since it cannot be bypassed. Additionally, enable OCI Security Zones on the production compartment with the 'Deny Object Storage buckets that are not encrypted with a customer-managed key' policy to prevent future unencrypted bucket creation. This must be completed before the bucket is populated with data."
+    },
+    {
+      "gap": "kms:ViaService condition (restrict key use to when invoked via S3 or Secrets Manager only) has no OCI equivalent",
+      "severity": "HIGH",
+      "mitigation": "OCI has no IAM policy condition to restrict key usage to specific calling services (no equivalent to kms:ViaService). Recommended mitigations in order of preference: (1) For Object Storage encryption: Associate the KMS key with the bucket at the bucket level \u2014 OCI Object Storage uses the key via its own service principal, not via the application user group. Remove KEY_ENCRYPT/KEY_DECRYPT from the user group policy and grant it only to the objectstorage-<region> service principal instead. (2) For Vault secrets: Similarly, OCI Vault manages key usage for secret encryption internally. (3) For remaining direct application key usage: Accept that KEY_ENCRYPT/KEY_DECRYPT cannot be service-restricted, and compensate with OCI Audit log monitoring and Cloud Guard detector rules that alert on direct key usage outside of expected patterns (e.g., direct API calls vs. service-mediated calls). (4) Document this as a residual risk in your security assessment with the compensating controls noted."
+    },
+    {
+      "gap": "AWS ARN prefix-wildcard resource scoping (acme-prod-*, acme-order-*, acme/prod/db-*, /app/acme-backend-*) is not supported in OCI IAM name conditions",
+      "severity": "MEDIUM",
+      "mitigation": "OCI IAM 'where' conditions on resource names do not support glob or prefix wildcards. The idiomatic OCI replacement is compartment-based scoping: (1) acme-order-* functions \u2192 dedicated ACME_ORDER_FUNCTIONS_COMPARTMENT compartment (implemented in LambdaInvokeProcessors statements); (2) acme/prod/db-* secrets \u2192 tag-based condition (Environment=production) plus COMPARTMENT_NAME scoping (implemented in SecretsManagerReadDB statements); (3) /app/acme-backend-* log groups \u2192 dedicated ACME_BACKEND_LOGS_COMPARTMENT compartment (implemented in CloudWatchLogs statement); (4) acme-prod-* buckets (deny) \u2192 ACME_PROD_COMPARTMENT compartment-level deny (implemented in DenyDeleteBucket statement). Maintain compartment boundaries rigorously as the primary resource isolation mechanism."
+    },
+    {
+      "gap": "DynamoDB index-level resource scoping (table/AcmeOrders/index/*) is not supported in OCI NoSQL IAM policies",
+      "severity": "MEDIUM",
+      "mitigation": "OCI NoSQL IAM policies operate at the table level only \u2014 there is no mechanism to restrict access to specific indexes on a table. Granting 'use nosql-tables' on AcmeOrders implicitly permits operations on all its indexes (primary, secondary). If index-level access isolation is a hard security requirement, it cannot be achieved via OCI IAM. Consider application-level access controls, separate tables per access pattern, or accept this as a known gap with documentation."
+    },
+    {
+      "gap": "AWS SQS has no identical OCI service \u2014 OCI Queue and OCI Streaming are both partial equivalents with different semantics",
+      "severity": "MEDIUM",
+      "mitigation": "OCI Queue service (resource type: 'queues') is the closest equivalent to AWS SQS standard queues, supporting at-least-once delivery, visibility timeout, and dead-letter queues. OCI Streaming (Kafka-compatible, resource type: 'streams') is an alternative for high-throughput event streaming scenarios. Key differences to evaluate: (1) Message retention: OCI Queue default is 7 days (configurable); (2) DLQ configuration: Must be explicitly set up in OCI Queue; (3) Message visibility timeout: Configurable per queue in OCI; (4) Throughput limits: Check OCI Queue service limits vs. your SQS usage patterns. Application code using the AWS SQS SDK must be updated to use OCI Queue SDK or OCI Streaming SDK. Confirm the target service before applying these policy statements."
+    },
+    {
+      "gap": "AWS CloudWatch Logs has no direct OCI equivalent \u2014 application SDK changes required",
+      "severity": "LOW",
+      "mitigation": "OCI Logging service provides structured log ingestion (resource types: log-groups, log-content, logs) as the functional equivalent. However, unlike S3 or NoSQL where the service API is similar, CloudWatch Logs and OCI Logging have different SDKs, APIs, and agent configurations. Required changes: (1) Update application logging libraries from AWS CloudWatch Logs SDK to OCI Logging SDK or configure the OCI Unified Monitoring Agent for log shipping; (2) Recreate log group structure in ACME_BACKEND_LOGS_COMPARTMENT; (3) Update any log-based alerting (CloudWatch Alarms) to OCI Monitoring alarms or Logging-based notifications; (4) Update log retention policies. The IAM translation (manage log-groups) is correct for OCI \u2014 the gap is purely operational/SDK."
+    },
+    {
+      "gap": "Deny statement over-broad: OCI 'manage' verb deny covers more operations than AWS s3:DeleteBucket + s3:DeleteBucketPolicy",
+      "severity": "LOW",
+      "mitigation": "AWS s3:DeleteBucket and s3:DeleteBucketPolicy are specific action denies. In OCI, the closest mapping uses permission-level conditions (BUCKET_DELETE, BUCKET_UPDATE) within a 'manage' verb deny. BUCKET_UPDATE is slightly broader than s3:DeleteBucketPolicy (it covers any bucket update including lifecycle, CORS, etc.), but this is the closest achievable OCI equivalent without a custom deny for each permission. Since the Allow statement grants only 'read buckets' (not 'manage buckets'), the group does not have BUCKET_DELETE or BUCKET_UPDATE permissions from this policy alone \u2014 the deny is a defense-in-depth measure against future policy changes. Document this scope difference in your security runbook."
+    }
+  ]
+}

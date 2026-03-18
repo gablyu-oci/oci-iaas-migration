@@ -1,0 +1,372 @@
+{
+  "Records": [
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA55555:order-api",
+        "arn": "arn:aws:iam::555555555555:role/order-api-role",
+        "accountId": "555555555555",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::555555555555:role/order-api-role"
+          }
+        }
+      },
+      "eventTime": "2026-02-10T09:15:00Z",
+      "eventSource": "dynamodb.amazonaws.com",
+      "eventName": "PutItem",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.1.1.20",
+      "eventID": "a1b2c3d4-1111-2222-3333-444455556666",
+      "requestParameters": {
+        "tableName": "Orders"
+      },
+      "responseElements": {},
+      "readOnly": false
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA55555:order-api",
+        "arn": "arn:aws:iam::555555555555:role/order-api-role",
+        "accountId": "555555555555",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::555555555555:role/order-api-role"
+          }
+        }
+      },
+      "eventTime": "2026-02-10T09:15:01Z",
+      "eventSource": "sqs.amazonaws.com",
+      "eventName": "SendMessage",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.1.1.20",
+      "eventID": "a1b2c3d4-1111-2222-3333-444455557777",
+      "requestParameters": {
+        "queueUrl": "https://sqs.us-east-1.amazonaws.com/555555555555/order-fulfillment-queue"
+      },
+      "responseElements": {},
+      "readOnly": false
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA55555:fulfillment-worker",
+        "arn": "arn:aws:iam::555555555555:role/fulfillment-worker-role",
+        "accountId": "555555555555",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::555555555555:role/fulfillment-worker-role"
+          }
+        }
+      },
+      "eventTime": "2026-02-10T09:15:05Z",
+      "eventSource": "sqs.amazonaws.com",
+      "eventName": "ReceiveMessage",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.1.2.30",
+      "eventID": "b2c3d4e5-2222-3333-4444-555566667777",
+      "requestParameters": {
+        "queueUrl": "https://sqs.us-east-1.amazonaws.com/555555555555/order-fulfillment-queue"
+      },
+      "responseElements": {},
+      "readOnly": true
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA55555:fulfillment-worker",
+        "arn": "arn:aws:iam::555555555555:role/fulfillment-worker-role",
+        "accountId": "555555555555",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::555555555555:role/fulfillment-worker-role"
+          }
+        }
+      },
+      "eventTime": "2026-02-10T09:15:06Z",
+      "eventSource": "dynamodb.amazonaws.com",
+      "eventName": "GetItem",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.1.2.30",
+      "eventID": "b2c3d4e5-2222-3333-4444-555566668888",
+      "requestParameters": {
+        "tableName": "Orders"
+      },
+      "responseElements": {},
+      "readOnly": true
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA55555:fulfillment-worker",
+        "arn": "arn:aws:iam::555555555555:role/fulfillment-worker-role",
+        "accountId": "555555555555",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::555555555555:role/fulfillment-worker-role"
+          }
+        }
+      },
+      "eventTime": "2026-02-10T09:15:07Z",
+      "eventSource": "dynamodb.amazonaws.com",
+      "eventName": "UpdateItem",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.1.2.30",
+      "eventID": "b2c3d4e5-2222-3333-4444-555566669999",
+      "requestParameters": {
+        "tableName": "Inventory"
+      },
+      "responseElements": {},
+      "readOnly": false
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA55555:fulfillment-worker",
+        "arn": "arn:aws:iam::555555555555:role/fulfillment-worker-role",
+        "accountId": "555555555555",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::555555555555:role/fulfillment-worker-role"
+          }
+        }
+      },
+      "eventTime": "2026-02-10T09:15:08Z",
+      "eventSource": "sns.amazonaws.com",
+      "eventName": "Publish",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.1.2.30",
+      "eventID": "c3d4e5f6-3333-4444-5555-666677778888",
+      "requestParameters": {
+        "topicArn": "arn:aws:sns:us-east-1:555555555555:order-notifications"
+      },
+      "responseElements": {},
+      "readOnly": false
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA55555:notification-lambda",
+        "arn": "arn:aws:iam::555555555555:role/notification-lambda-role",
+        "accountId": "555555555555",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::555555555555:role/notification-lambda-role"
+          }
+        }
+      },
+      "eventTime": "2026-02-10T09:15:10Z",
+      "eventSource": "lambda.amazonaws.com",
+      "eventName": "Invoke",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.1.3.40",
+      "eventID": "d4e5f6a7-4444-5555-6666-777788889999",
+      "requestParameters": {
+        "functionName": "arn:aws:lambda:us-east-1:555555555555:function:send-order-email"
+      },
+      "responseElements": {},
+      "readOnly": false
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA55555:notification-lambda",
+        "arn": "arn:aws:iam::555555555555:role/notification-lambda-role",
+        "accountId": "555555555555",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::555555555555:role/notification-lambda-role"
+          }
+        }
+      },
+      "eventTime": "2026-02-10T09:15:11Z",
+      "eventSource": "secretsmanager.amazonaws.com",
+      "eventName": "GetSecretValue",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.1.3.40",
+      "eventID": "d4e5f6a7-4444-5555-6666-77778888aaaa",
+      "requestParameters": {
+        "secretId": "arn:aws:secretsmanager:us-east-1:555555555555:secret:prod/email-smtp-creds"
+      },
+      "responseElements": {},
+      "readOnly": true
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA55555:order-api",
+        "arn": "arn:aws:iam::555555555555:role/order-api-role",
+        "accountId": "555555555555",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::555555555555:role/order-api-role"
+          }
+        }
+      },
+      "eventTime": "2026-02-10T09:16:00Z",
+      "eventSource": "s3.amazonaws.com",
+      "eventName": "PutObject",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.1.1.20",
+      "eventID": "e5f6a7b8-5555-6666-7777-888899990000",
+      "requestParameters": {
+        "bucketName": "acme-order-invoices",
+        "key": "2026/02/10/invoice-12345.pdf"
+      },
+      "responseElements": {},
+      "readOnly": false
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA55555:reporting-service",
+        "arn": "arn:aws:iam::555555555555:role/reporting-service-role",
+        "accountId": "555555555555",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::555555555555:role/reporting-service-role"
+          }
+        }
+      },
+      "eventTime": "2026-02-10T10:00:00Z",
+      "eventSource": "dynamodb.amazonaws.com",
+      "eventName": "Query",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.1.4.50",
+      "eventID": "f6a7b8c9-6666-7777-8888-999900001111",
+      "requestParameters": {
+        "tableName": "Orders"
+      },
+      "responseElements": {},
+      "readOnly": true
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA55555:reporting-service",
+        "arn": "arn:aws:iam::555555555555:role/reporting-service-role",
+        "accountId": "555555555555",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::555555555555:role/reporting-service-role"
+          }
+        }
+      },
+      "eventTime": "2026-02-10T10:00:01Z",
+      "eventSource": "s3.amazonaws.com",
+      "eventName": "GetObject",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.1.4.50",
+      "eventID": "f6a7b8c9-6666-7777-8888-999900002222",
+      "requestParameters": {
+        "bucketName": "acme-order-invoices",
+        "key": "2026/02/10/invoice-12345.pdf"
+      },
+      "responseElements": {},
+      "readOnly": true
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA55555:order-api",
+        "arn": "arn:aws:iam::555555555555:role/order-api-role",
+        "accountId": "555555555555",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::555555555555:role/order-api-role"
+          }
+        }
+      },
+      "eventTime": "2026-02-10T09:15:02Z",
+      "eventSource": "secretsmanager.amazonaws.com",
+      "eventName": "GetSecretValue",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.1.1.20",
+      "eventID": "a1b2c3d4-1111-2222-3333-444455558888",
+      "requestParameters": {
+        "secretId": "arn:aws:secretsmanager:us-east-1:555555555555:secret:prod/database-creds"
+      },
+      "responseElements": {},
+      "readOnly": true
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA66666:payment-service",
+        "arn": "arn:aws:iam::666666666666:role/payment-service-role",
+        "accountId": "666666666666",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::666666666666:role/payment-service-role"
+          }
+        }
+      },
+      "eventTime": "2026-02-10T09:15:03Z",
+      "eventSource": "sts.amazonaws.com",
+      "eventName": "AssumeRole",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.2.1.10",
+      "eventID": "g7h8i9j0-7777-8888-9999-000011112222",
+      "requestParameters": {
+        "roleArn": "arn:aws:iam::555555555555:role/payment-gateway-access"
+      },
+      "responseElements": {},
+      "readOnly": false
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "principalId": "AROA66666:payment-service",
+        "arn": "arn:aws:iam::666666666666:role/payment-service-role",
+        "accountId": "666666666666",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "arn": "arn:aws:iam::666666666666:role/payment-service-role"
+          }
+        }
+      },
+      "eventTime": "2026-02-10T09:15:04Z",
+      "eventSource": "execute-api.amazonaws.com",
+      "eventName": "Invoke",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "10.2.1.10",
+      "eventID": "g7h8i9j0-7777-8888-9999-000011113333",
+      "requestParameters": {
+        "apiId": "abc123xyz",
+        "resourcePath": "/v1/payments/charge",
+        "httpMethod": "POST"
+      },
+      "responseElements": {},
+      "readOnly": false
+    }
+  ]
+}

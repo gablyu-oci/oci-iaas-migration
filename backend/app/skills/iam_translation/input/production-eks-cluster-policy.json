@@ -1,0 +1,421 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "EKSClusterManagement",
+      "Effect": "Allow",
+      "Action": [
+        "eks:DescribeCluster",
+        "eks:ListClusters",
+        "eks:DescribeNodegroup",
+        "eks:ListNodegroups",
+        "eks:DescribeFargateProfile",
+        "eks:ListFargateProfiles",
+        "eks:DescribeAddon",
+        "eks:ListAddons",
+        "eks:DescribeAddonVersions",
+        "eks:DescribeUpdate",
+        "eks:ListUpdates",
+        "eks:ListTagsForResource",
+        "eks:AccessKubernetesApi"
+      ],
+      "Resource": [
+        "arn:aws:eks:us-east-1:123456789012:cluster/prod-*",
+        "arn:aws:eks:us-east-1:123456789012:nodegroup/prod-*/*/*",
+        "arn:aws:eks:us-east-1:123456789012:fargateprofile/prod-*/*/*",
+        "arn:aws:eks:us-east-1:123456789012:addon/prod-*/*/*"
+      ]
+    },
+    {
+      "Sid": "EKSClusterOperations",
+      "Effect": "Allow",
+      "Action": [
+        "eks:UpdateClusterVersion",
+        "eks:UpdateClusterConfig",
+        "eks:UpdateNodegroupVersion",
+        "eks:UpdateNodegroupConfig",
+        "eks:CreateAddon",
+        "eks:UpdateAddon",
+        "eks:DeleteAddon",
+        "eks:TagResource",
+        "eks:UntagResource",
+        "eks:AssociateEncryptionConfig"
+      ],
+      "Resource": [
+        "arn:aws:eks:us-east-1:123456789012:cluster/prod-*",
+        "arn:aws:eks:us-east-1:123456789012:nodegroup/prod-*/*/*",
+        "arn:aws:eks:us-east-1:123456789012:addon/prod-*/*/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-1",
+          "aws:ResourceTag/Environment": "production"
+        },
+        "BoolIfExists": {
+          "aws:MultiFactorAuthPresent": "true"
+        }
+      }
+    },
+    {
+      "Sid": "DenyEKSClusterDeletion",
+      "Effect": "Deny",
+      "Action": [
+        "eks:DeleteCluster",
+        "eks:DeleteNodegroup",
+        "eks:DeleteFargateProfile"
+      ],
+      "Resource": "arn:aws:eks:*:123456789012:*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Environment": "production"
+        }
+      }
+    },
+    {
+      "Sid": "NodeGroupAutoScaling",
+      "Effect": "Allow",
+      "Action": [
+        "autoscaling:DescribeAutoScalingGroups",
+        "autoscaling:DescribeAutoScalingInstances",
+        "autoscaling:DescribeLaunchConfigurations",
+        "autoscaling:DescribeScalingActivities",
+        "autoscaling:SetDesiredCapacity",
+        "autoscaling:UpdateAutoScalingGroup",
+        "autoscaling:TerminateInstanceInAutoScalingGroup",
+        "autoscaling:DescribeTags"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "autoscaling:ResourceTag/kubernetes.io/cluster/prod-main-cluster": "owned",
+          "aws:RequestedRegion": "us-east-1"
+        }
+      }
+    },
+    {
+      "Sid": "EC2NodeInstanceManagement",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeInstances",
+        "ec2:DescribeInstanceTypes",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeVpcs",
+        "ec2:DescribeLaunchTemplateVersions",
+        "ec2:DescribeImages",
+        "ec2:DescribeVolumes",
+        "ec2:DescribeNetworkInterfaces",
+        "ec2:DescribeAvailabilityZones",
+        "ec2:DescribeRouteTables",
+        "ec2:CreateTags",
+        "ec2:RunInstances",
+        "ec2:CreateLaunchTemplateVersion",
+        "ec2:CreateSecurityGroup",
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:AuthorizeSecurityGroupEgress",
+        "ec2:RevokeSecurityGroupIngress",
+        "ec2:RevokeSecurityGroupEgress",
+        "ec2:CreateNetworkInterface",
+        "ec2:DeleteNetworkInterface",
+        "ec2:AttachNetworkInterface",
+        "ec2:DetachNetworkInterface",
+        "ec2:ModifyNetworkInterfaceAttribute"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-1"
+        },
+        "StringLike": {
+          "ec2:ResourceTag/kubernetes.io/cluster/prod-*": "*"
+        }
+      }
+    },
+    {
+      "Sid": "EBSCSIDriverVolumes",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateVolume",
+        "ec2:DeleteVolume",
+        "ec2:AttachVolume",
+        "ec2:DetachVolume",
+        "ec2:ModifyVolume",
+        "ec2:DescribeVolumes",
+        "ec2:DescribeVolumesModifications",
+        "ec2:CreateSnapshot",
+        "ec2:DeleteSnapshot",
+        "ec2:DescribeSnapshots"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:ResourceTag/kubernetes.io/created-for/pvc/namespace": [
+            "prod",
+            "monitoring",
+            "logging"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "EFSCSIDriverAccess",
+      "Effect": "Allow",
+      "Action": [
+        "elasticfilesystem:DescribeFileSystems",
+        "elasticfilesystem:DescribeMountTargets",
+        "elasticfilesystem:DescribeAccessPoints",
+        "elasticfilesystem:CreateAccessPoint",
+        "elasticfilesystem:DeleteAccessPoint",
+        "elasticfilesystem:ClientMount",
+        "elasticfilesystem:ClientWrite",
+        "elasticfilesystem:ClientRootAccess"
+      ],
+      "Resource": [
+        "arn:aws:elasticfilesystem:us-east-1:123456789012:file-system/fs-0abc123def456",
+        "arn:aws:elasticfilesystem:us-east-1:123456789012:access-point/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "elasticfilesystem:ResourceTag/Environment": "production"
+        }
+      }
+    },
+    {
+      "Sid": "ALBIngressController",
+      "Effect": "Allow",
+      "Action": [
+        "elasticloadbalancing:CreateLoadBalancer",
+        "elasticloadbalancing:CreateTargetGroup",
+        "elasticloadbalancing:CreateListener",
+        "elasticloadbalancing:CreateRule",
+        "elasticloadbalancing:DeleteLoadBalancer",
+        "elasticloadbalancing:DeleteTargetGroup",
+        "elasticloadbalancing:DeleteListener",
+        "elasticloadbalancing:DeleteRule",
+        "elasticloadbalancing:ModifyLoadBalancerAttributes",
+        "elasticloadbalancing:ModifyTargetGroup",
+        "elasticloadbalancing:ModifyTargetGroupAttributes",
+        "elasticloadbalancing:ModifyListener",
+        "elasticloadbalancing:ModifyRule",
+        "elasticloadbalancing:RegisterTargets",
+        "elasticloadbalancing:DeregisterTargets",
+        "elasticloadbalancing:SetSecurityGroups",
+        "elasticloadbalancing:SetSubnets",
+        "elasticloadbalancing:AddTags",
+        "elasticloadbalancing:RemoveTags",
+        "elasticloadbalancing:DescribeLoadBalancers",
+        "elasticloadbalancing:DescribeTargetGroups",
+        "elasticloadbalancing:DescribeTargetHealth",
+        "elasticloadbalancing:DescribeListeners",
+        "elasticloadbalancing:DescribeRules",
+        "elasticloadbalancing:DescribeTags",
+        "elasticloadbalancing:DescribeLoadBalancerAttributes",
+        "elasticloadbalancing:DescribeTargetGroupAttributes"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-1",
+          "aws:ResourceTag/elbv2.k8s.aws/cluster": "prod-main-cluster"
+        }
+      }
+    },
+    {
+      "Sid": "Route53ExternalDNS",
+      "Effect": "Allow",
+      "Action": [
+        "route53:ChangeResourceRecordSets"
+      ],
+      "Resource": [
+        "arn:aws:route53:::hostedzone/Z0123456789ABCDEFGHIJ"
+      ]
+    },
+    {
+      "Sid": "Route53ReadOnly",
+      "Effect": "Allow",
+      "Action": [
+        "route53:ListHostedZones",
+        "route53:ListResourceRecordSets",
+        "route53:GetHostedZone"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ACMCertificateReadOnly",
+      "Effect": "Allow",
+      "Action": [
+        "acm:DescribeCertificate",
+        "acm:ListCertificates",
+        "acm:GetCertificate"
+      ],
+      "Resource": "arn:aws:acm:us-east-1:123456789012:certificate/*"
+    },
+    {
+      "Sid": "ECRImagePullPush",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:GetAuthorizationToken"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ECRRepositoryAccess",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:DescribeRepositories",
+        "ecr:ListImages",
+        "ecr:DescribeImages",
+        "ecr:InitiateLayerUpload",
+        "ecr:UploadLayerPart",
+        "ecr:CompleteLayerUpload",
+        "ecr:PutImage",
+        "ecr:GetRepositoryPolicy",
+        "ecr:ListTagsForResource"
+      ],
+      "Resource": [
+        "arn:aws:ecr:us-east-1:123456789012:repository/prod-*"
+      ]
+    },
+    {
+      "Sid": "KMSKeyForSecrets",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Encrypt",
+        "kms:Decrypt",
+        "kms:GenerateDataKey",
+        "kms:GenerateDataKeyWithoutPlaintext",
+        "kms:DescribeKey",
+        "kms:CreateGrant"
+      ],
+      "Resource": [
+        "arn:aws:kms:us-east-1:123456789012:key/mrk-eks-envelope-key-001",
+        "arn:aws:kms:us-east-1:123456789012:key/mrk-ebs-encryption-key-001"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": [
+            "eks.us-east-1.amazonaws.com",
+            "ec2.us-east-1.amazonaws.com"
+          ]
+        },
+        "Bool": {
+          "kms:GrantIsForAWSResource": "true"
+        }
+      }
+    },
+    {
+      "Sid": "CloudWatchLogsAndMetrics",
+      "Effect": "Allow",
+      "Action": [
+        "cloudwatch:PutMetricData",
+        "cloudwatch:GetMetricData",
+        "cloudwatch:GetMetricStatistics",
+        "cloudwatch:ListMetrics",
+        "cloudwatch:DescribeAlarms",
+        "cloudwatch:PutMetricAlarm",
+        "cloudwatch:DeleteAlarms",
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogGroups",
+        "logs:DescribeLogStreams",
+        "logs:GetLogEvents",
+        "logs:FilterLogEvents",
+        "logs:PutRetentionPolicy"
+      ],
+      "Resource": [
+        "arn:aws:cloudwatch:us-east-1:123456789012:alarm:eks-prod-*",
+        "arn:aws:logs:us-east-1:123456789012:log-group:/aws/eks/prod-*",
+        "arn:aws:logs:us-east-1:123456789012:log-group:/aws/eks/prod-*:*",
+        "arn:aws:logs:us-east-1:123456789012:log-group:/aws/containerinsights/prod-*",
+        "arn:aws:logs:us-east-1:123456789012:log-group:/aws/containerinsights/prod-*:*"
+      ]
+    },
+    {
+      "Sid": "SecretsManagerForPods",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:ListSecretVersionIds"
+      ],
+      "Resource": "arn:aws:secretsmanager:us-east-1:123456789012:secret:eks/prod/*",
+      "Condition": {
+        "StringEquals": {
+          "secretsmanager:ResourceTag/kubernetes-cluster": "prod-main-cluster"
+        }
+      }
+    },
+    {
+      "Sid": "SSMParameterStoreForConfig",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "ssm:GetParametersByPath",
+        "ssm:DescribeParameters"
+      ],
+      "Resource": [
+        "arn:aws:ssm:us-east-1:123456789012:parameter/eks/prod/*",
+        "arn:aws:ssm:us-east-1:123456789012:parameter/shared/prod/*"
+      ]
+    },
+    {
+      "Sid": "IAMPassRoleForEKS",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": [
+        "arn:aws:iam::123456789012:role/prod-eks-cluster-role",
+        "arn:aws:iam::123456789012:role/prod-eks-node-role",
+        "arn:aws:iam::123456789012:role/prod-eks-fargate-pod-role",
+        "arn:aws:iam::123456789012:role/prod-eks-alb-controller-role"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": [
+            "eks.amazonaws.com",
+            "ec2.amazonaws.com",
+            "eks-fargate-pods.amazonaws.com",
+            "elasticloadbalancing.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "STSAssumeRoleForIRSA",
+      "Effect": "Allow",
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Resource": "arn:aws:iam::123456789012:role/prod-eks-*-irsa-role",
+      "Condition": {
+        "StringEquals": {
+          "oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D4633E53DE1B71EXAMPLE:aud": "sts.amazonaws.com"
+        },
+        "StringLike": {
+          "oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D4633E53DE1B71EXAMPLE:sub": "system:serviceaccount:prod:*"
+        }
+      }
+    },
+    {
+      "Sid": "DenyAllOutsideAllowedRegion",
+      "Effect": "Deny",
+      "NotAction": [
+        "iam:*",
+        "sts:*",
+        "route53:*",
+        "cloudfront:*",
+        "acm:*",
+        "support:*",
+        "health:*"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "aws:RequestedRegion": "us-east-1"
+        }
+      }
+    }
+  ]
+}

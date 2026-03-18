@@ -1,0 +1,265 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'SQS Queues with Dead Letter Queue, SNS Topics, and Event-Driven Architecture'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: 'production'
+    AllowedValues:
+      - 'development'
+      - 'staging'
+      - 'production'
+
+Resources:
+  # Dead Letter Queue
+  DeadLetterQueue:
+    Type: 'AWS::SQS::Queue'
+    Properties:
+      QueueName: !Sub '${AWS::StackName}-dlq'
+      MessageRetentionPeriod: 1209600  # 14 days
+      VisibilityTimeout: 30
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Main Processing Queue
+  ProcessingQueue:
+    Type: 'AWS::SQS::Queue'
+    Properties:
+      QueueName: !Sub '${AWS::StackName}-processing-queue'
+      VisibilityTimeout: 300  # 5 minutes
+      MessageRetentionPeriod: 345600  # 4 days
+      ReceiveMessageWaitTimeSeconds: 20  # Long polling
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # FIFO Queue for Ordered Processing
+  FifoQueue:
+    Type: 'AWS::SQS::Queue'
+    Properties:
+      QueueName: !Sub '${AWS::StackName}-fifo.fifo'
+      FifoQueue: true
+      ContentBasedDeduplication: true
+      VisibilityTimeout: 180
+      MessageRetentionPeriod: 345600
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Queue Policy for SNS
+  QueuePolicy:
+    Type: 'AWS::SQS::QueuePolicy'
+    Properties:
+      Queues:
+        - !Ref ProcessingQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: 'AllowSNSToSendMessage'
+            Effect: Allow
+            Principal:
+              Service: 'sns.amazonaws.com'
+            Action:
+              - 'sqs:SendMessage'
+            Resource: !GetAtt ProcessingQueue.Arn
+            Condition:
+              ArnEquals:
+                'aws:SourceArn': !Ref EventTopic
+
+  # SNS Topic for Events
+  EventTopic:
+    Type: 'AWS::SNS::Topic'
+    Properties:
+      TopicName: !Sub '${AWS::StackName}-events'
+      DisplayName: 'Application Events'
+      Subscription:
+        - Endpoint: !GetAtt ProcessingQueue.Arn
+          Protocol: sqs
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # SNS Topic for Notifications
+  NotificationTopic:
+    Type: 'AWS::SNS::Topic'
+    Properties:
+      TopicName: !Sub '${AWS::StackName}-notifications'
+      DisplayName: 'User Notifications'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # SNS Topic Policy
+  TopicPolicy:
+    Type: 'AWS::SNS::TopicPolicy'
+    Properties:
+      Topics:
+        - !Ref EventTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: 'AllowPublishFromServices'
+            Effect: Allow
+            Principal:
+              Service:
+                - 's3.amazonaws.com'
+                - 'lambda.amazonaws.com'
+                - 'events.amazonaws.com'
+            Action: 'sns:Publish'
+            Resource: !Ref EventTopic
+
+  # Lambda Function for Queue Processing
+  QueueProcessorFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-queue-processor'
+      Runtime: 'python3.11'
+      Role: !GetAtt ProcessorLambdaRole.Arn
+      Handler: 'index.lambda_handler'
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          
+          def lambda_handler(event, context):
+              for record in event['Records']:
+                  # Process SQS message
+                  body = json.loads(record['body'])
+                  print(f"Processing message: {body}")
+                  
+                  # Your processing logic here
+                  
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps('Processed successfully')
+              }
+      Timeout: 60
+      ReservedConcurrentExecutions: 5
+
+  # Lambda Event Source Mapping
+  QueueEventSource:
+    Type: 'AWS::Lambda::EventSourceMapping'
+    Properties:
+      EventSourceArn: !GetAtt ProcessingQueue.Arn
+      FunctionName: !Ref QueueProcessorFunction
+      BatchSize: 10
+      MaximumBatchingWindowInSeconds: 5
+
+  # IAM Role for Lambda
+  ProcessorLambdaRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: SQSAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sqs:ReceiveMessage'
+                  - 'sqs:DeleteMessage'
+                  - 'sqs:GetQueueAttributes'
+                Resource:
+                  - !GetAtt ProcessingQueue.Arn
+                  - !GetAtt DeadLetterQueue.Arn
+
+  # CloudWatch Alarms for Queue Depth
+  QueueDepthAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-queue-depth-high'
+      AlarmDescription: 'Queue depth is too high'
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: 'AWS/SQS'
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1000
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt ProcessingQueue.QueueName
+      AlarmActions:
+        - !Ref NotificationTopic
+
+  # DLQ Alarm
+  DLQAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-dlq-messages'
+      AlarmDescription: 'Messages in Dead Letter Queue'
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: 'AWS/SQS'
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt DeadLetterQueue.QueueName
+      AlarmActions:
+        - !Ref NotificationTopic
+
+  # Lambda Function Errors Alarm
+  ProcessorErrorAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-processor-errors'
+      AlarmDescription: 'Lambda processor has errors'
+      MetricName: Errors
+      Namespace: 'AWS/Lambda'
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref QueueProcessorFunction
+      AlarmActions:
+        - !Ref NotificationTopic
+
+Outputs:
+  ProcessingQueueUrl:
+    Description: 'Processing Queue URL'
+    Value: !Ref ProcessingQueue
+    Export:
+      Name: !Sub '${AWS::StackName}-ProcessingQueueUrl'
+  
+  ProcessingQueueArn:
+    Description: 'Processing Queue ARN'
+    Value: !GetAtt ProcessingQueue.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ProcessingQueueArn'
+  
+  DeadLetterQueueUrl:
+    Description: 'Dead Letter Queue URL'
+    Value: !Ref DeadLetterQueue
+    Export:
+      Name: !Sub '${AWS::StackName}-DLQUrl'
+  
+  EventTopicArn:
+    Description: 'Event Topic ARN'
+    Value: !Ref EventTopic
+    Export:
+      Name: !Sub '${AWS::StackName}-EventTopicArn'
+  
+  FifoQueueUrl:
+    Description: 'FIFO Queue URL'
+    Value: !Ref FifoQueue
+    Export:
+      Name: !Sub '${AWS::StackName}-FifoQueueUrl'
