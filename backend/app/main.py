@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db.base import init_db
-from app.api import auth, aws, skills
+from app.api import auth, aws, skills, plans
 
 
 @asynccontextmanager
@@ -29,6 +29,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(aws.router)
 app.include_router(skills.router)
+app.include_router(plans.router)
 
 
 @app.get("/health")

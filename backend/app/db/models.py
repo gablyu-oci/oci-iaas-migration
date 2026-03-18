@@ -78,6 +78,9 @@ class Migration(Base):
 
     tenant: Mapped["Tenant"] = relationship(back_populates="migrations")
     resources: Mapped[list["Resource"]] = relationship(back_populates="migration")
+    plan: Mapped[Optional["MigrationPlan"]] = relationship(
+        back_populates="migration", uselist=False
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -210,3 +213,93 @@ class IAMMapping(Base):
     oci_permission: Mapped[Optional[str]] = mapped_column(String(255))
     oci_service: Mapped[Optional[str]] = mapped_column(String(128))
     notes: Mapped[Optional[str]] = mapped_column(Text)
+
+
+# ---------------------------------------------------------------------------
+# MigrationPlan
+# ---------------------------------------------------------------------------
+class MigrationPlan(Base):
+    __tablename__ = "migration_plans"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    migration_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("migrations.id"), nullable=False, unique=True
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(32), default="draft")
+    generated_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    summary: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+
+    migration: Mapped["Migration"] = relationship(back_populates="plan")
+    phases: Mapped[list["PlanPhase"]] = relationship(
+        back_populates="plan",
+        order_by="PlanPhase.order_index",
+    )
+
+
+# ---------------------------------------------------------------------------
+# PlanPhase
+# ---------------------------------------------------------------------------
+class PlanPhase(Base):
+    __tablename__ = "plan_phases"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    plan_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("migration_plans.id"), nullable=False
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    order_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+
+    plan: Mapped["MigrationPlan"] = relationship(back_populates="phases")
+    workloads: Mapped[list["Workload"]] = relationship(back_populates="phase")
+
+
+# ---------------------------------------------------------------------------
+# Workload
+# ---------------------------------------------------------------------------
+class Workload(Base):
+    __tablename__ = "workloads"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    phase_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("plan_phases.id"), nullable=False
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    skill_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    skill_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("skill_runs.id"), nullable=True
+    )
+
+    phase: Mapped["PlanPhase"] = relationship(back_populates="workloads")
+    resources: Mapped[list["WorkloadResource"]] = relationship(back_populates="workload")
+
+
+# ---------------------------------------------------------------------------
+# WorkloadResource
+# ---------------------------------------------------------------------------
+class WorkloadResource(Base):
+    __tablename__ = "workload_resources"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    workload_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workloads.id"), nullable=False
+    )
+    resource_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("resources.id"), nullable=False
+    )
+
+    __table_args__ = (UniqueConstraint("workload_id", "resource_id"),)
+
+    workload: Mapped["Workload"] = relationship(back_populates="resources")

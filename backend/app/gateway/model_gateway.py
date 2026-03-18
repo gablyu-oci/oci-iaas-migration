@@ -20,7 +20,27 @@ MODEL_ROUTING = {
     },
     "dependency_discovery": {
         "runbook": "claude-opus-4-6",
-        "anomalies": "claude-opus-4-6",
+        "anomalies": "claude-sonnet-4-6",
+    },
+    "network_translation": {
+        "enhancement": "claude-opus-4-6",
+        "review": "claude-sonnet-4-6",
+        "fix": "claude-sonnet-4-6",
+    },
+    "ec2_translation": {
+        "enhancement": "claude-opus-4-6",
+        "review": "claude-sonnet-4-6",
+        "fix": "claude-sonnet-4-6",
+    },
+    "database_translation": {
+        "enhancement": "claude-opus-4-6",
+        "review": "claude-sonnet-4-6",
+        "fix": "claude-sonnet-4-6",
+    },
+    "loadbalancer_translation": {
+        "enhancement": "claude-opus-4-6",
+        "review": "claude-sonnet-4-6",
+        "fix": "claude-sonnet-4-6",
     },
 }
 
@@ -59,3 +79,28 @@ def get_model(skill_type: str, agent_type: str) -> str:
     """Look up the model to use for a given skill + agent type combination."""
     skill_models = MODEL_ROUTING.get(skill_type, {})
     return skill_models.get(agent_type, "claude-opus-4-6")
+
+
+def guard_input(text: str, skill_type: str = "unknown") -> str:
+    """Run input guardrails. Returns scrubbed text. Raises ValueError if blocked."""
+    from app.gateway.guardrails import check_input
+    result = check_input(text)
+    if result["blocked"]:
+        raise ValueError(f"Input blocked by guardrail: {result['block_reason']}")
+    if result["warnings"]:
+        import logging
+        logging.getLogger(__name__).warning("Input guardrail warnings: %s", result["warnings"])
+    return result["scrubbed_text"]
+
+
+def guard_output(text: str, skill_type: str = "unknown") -> dict:
+    """Run output guardrails. Returns check result dict."""
+    from app.gateway.guardrails import check_output
+    result = check_output(text, skill_type)
+    if result["warnings"] or not result["valid"]:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Output guardrail [%s] issues=%s warnings=%s",
+            skill_type, result["issues"], result["warnings"]
+        )
+    return result
