@@ -39,32 +39,6 @@ Resources are grouped into phases in dependency order:
 
 ---
 
-## Architecture
-
-```
-┌─────────────────────┐        ┌──────────────────────────────────────┐
-│   React Frontend    │        │           FastAPI Backend             │
-│   (Vite, port 5173) │◄──────►│           (Uvicorn, port 8001)        │
-└─────────────────────┘  HTTP  │                                      │
-                               │  ┌──────────┐  ┌──────────────────┐ │
-                               │  │ AWS boto3│  │  Anthropic API    │ │
-                               │  │ extractor│  │  (Claude)         │ │
-                               │  └──────────┘  └──────────────────┘ │
-                               │                                      │
-                               │  ┌──────────┐  ┌──────────────────┐ │
-                               │  │PostgreSQL│  │  Redis + ARQ      │ │
-                               │  │  (5432)  │  │  (6379, optional) │ │
-                               │  └──────────┘  └──────────────────┘ │
-                               └──────────────────────────────────────┘
-```
-
-- **Frontend** — React + TypeScript + TanStack Query + Tailwind. Dashboards for migrations, resource lists, plan viewer, and live job progress via SSE.
-- **Backend** — FastAPI + SQLAlchemy async ORM + Alembic migrations.
-- **Jobs** — Translation jobs run in child processes (or via ARQ when Redis is available). Each process sets its own process group so it can be killed cleanly along with any nested `claude` CLI subprocesses.
-- **AI** — Anthropic API key takes priority; Claude Code OAuth token is the fallback.
-
----
-
 ## Prerequisites
 
 - Python 3.11+
