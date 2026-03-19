@@ -36,6 +36,7 @@ Resource mappings:
 - Internet Gateway -> route in oci_core_route_table pointing to oci_core_internet_gateway
 - NAT Gateway -> oci_core_nat_gateway + route in private route table
 - Route Tables -> oci_core_route_table + oci_core_route_table_attachment
+- Network Interface (ENI) -> oci_core_vnic_attachment (secondary VNICs; primary VNIC is auto-created with the instance)
 
 Rules:
 - Use only valid OCI Terraform provider resources (hashicorp/oci)
@@ -47,6 +48,7 @@ Rules:
 - OCI NAT Gateway is a standalone regional resource (not per-AZ like AWS)
 - Prefer NSGs (oci_core_network_security_group_security_rule) over security lists for flexibility
 - Protocol numbers: TCP=6, UDP=17, ICMP=1, ALL=-1 (map AWS protocol "-1" to "all" in OCI stateless=false rules)
+- For ENIs (network_interfaces): the primary ENI (device_index=0) becomes the instance's primary VNIC (auto-created with the instance, no Terraform resource needed); secondary ENIs (device_index>0) become oci_core_vnic_attachment resources
 - Map AWS ingress/egress rules to OCI NSG security rules with correct direction (INGRESS/EGRESS)
 - For security group rules without port range (protocol=-1), use source_type/destination_type CIDR_BLOCK and omit tcp_options/udp_options
 - Output ONLY a JSON object with this schema:
@@ -79,6 +81,7 @@ Review checklist:
 - Route tables have correct targets (internet gateway for public, NAT gateway for private, DRG for on-prem)
 - All public subnets have a route to the internet gateway
 - Private subnets have a route to the NAT gateway if a NAT gateway exists in the input
+- ENIs: primary ENI (device_index=0) is noted as auto-created with instance; secondary ENIs have oci_core_vnic_attachment
 - Resources use variables for compartment_id and other environment-specific values
 - freeform_tags are applied to all resources
 - No AWS resource types appear in the output
@@ -158,13 +161,23 @@ class NetworkTranslationOrchestrator(BaseTranslationOrchestrator):
             rt_count     = len(input_data.get("route_tables", []))
             igw_count    = len(input_data.get("internet_gateways", []))
             nat_count    = len(input_data.get("nat_gateways", []))
+            eni_list     = input_data.get("network_interfaces", [])
+            # Primary ENIs (device_index=0) map to auto-created VNICs — no Terraform resource
+            # Secondary ENIs (device_index>0) → oci_core_vnic_attachment
+            secondary_eni_count = sum(
+                1 for e in eni_list if e.get("device_index", 0) != 0
+            ) if eni_list else 0
+            eni_note_count = len(eni_list) - secondary_eni_count  # primary ENIs noted only
 
-            total_resources = vpc_count + subnet_count + sg_count + rt_count + igw_count + nat_count
+            total_resources = (
+                vpc_count + subnet_count + sg_count + rt_count + igw_count + nat_count
+                + secondary_eni_count
+            )
             if total_resources == 0:
                 total_resources = 1
 
-            # Conservative estimate: most resources map 1:1 or expand slightly
-            mapped_resources = max(0, total_resources - 1)
+            # All network resources have OCI equivalents; actual gaps found by reviewer
+            mapped_resources = total_resources
 
             resource_summary = {
                 "vpcs": vpc_count,
@@ -173,6 +186,7 @@ class NetworkTranslationOrchestrator(BaseTranslationOrchestrator):
                 "route_tables": rt_count,
                 "internet_gateways": igw_count,
                 "nat_gateways": nat_count,
+                "network_interfaces": len(eni_list),
             }
 
         except Exception:

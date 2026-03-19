@@ -64,14 +64,19 @@ def _group_resources(
 
     skill = phase_def.skill_type
 
-    # -- VPCs: one workload per VPC resource ---------------------------------
+    # -- Network resources: one workload per VPC (all types aggregated) ------
     if skill == "network_translation":
-        groups: list[tuple[str, str, list[Resource]]] = []
+        buckets: dict[str, list[Resource]] = {}
         for r in matched_resources:
-            vpc_id = _safe_raw(r).get("vpc_id", r.name or "unknown")
+            raw = _safe_raw(r)
+            # VPC resources carry their own vpc_id; subnets/SGs/ENIs carry it too
+            vpc_id = raw.get("vpc_id", r.name or "unknown")
+            buckets.setdefault(vpc_id, []).append(r)
+        groups: list[tuple[str, str, list[Resource]]] = []
+        for vpc_id, resources in buckets.items():
             name = f"VPC {vpc_id} workload"
-            desc = f"Migrate VPC {vpc_id}"
-            groups.append((name, desc, [r]))
+            desc = f"Migrate VPC {vpc_id} networking ({len(resources)} resource(s))"
+            groups.append((name, desc, resources))
         return groups
 
     # -- EC2 instances: group by VPC ID --------------------------------------
@@ -143,6 +148,12 @@ def _group_resources(
             groups.append((name, desc, [r]))
         return groups
 
+    # -- EBS volumes: single workload with all volumes -----------------------
+    if skill == "storage_translation":
+        name = "Storage workload"
+        desc = f"Migrate {len(matched_resources)} EBS volume(s) to OCI Block Volume"
+        return [(name, desc, matched_resources)]
+
     # -- Lambda / future: single workload -----------------------------------
     name = "Lambda workload"
     desc = f"Migrate {len(matched_resources)} Lambda function(s)"
@@ -166,14 +177,19 @@ class _PhaseDef:
 PHASE_DEFINITIONS: list[_PhaseDef] = [
     _PhaseDef(
         name="Networking Foundation",
-        description="Translate VPCs, subnets, and security groups to OCI VCNs.",
-        aws_types=("AWS::EC2::VPC",),
+        description="Translate VPCs, subnets, security groups, and network interfaces to OCI VCNs.",
+        aws_types=(
+            "AWS::EC2::VPC",
+            "AWS::EC2::Subnet",
+            "AWS::EC2::SecurityGroup",
+            "AWS::EC2::NetworkInterface",
+        ),
         skill_type="network_translation",
     ),
     _PhaseDef(
         name="Data Layer",
-        description="Translate RDS instances to OCI database services.",
-        aws_types=("AWS::RDS::DBInstance",),
+        description="Translate RDS instances and clusters to OCI database services.",
+        aws_types=("AWS::RDS::DBInstance", "AWS::RDS::DBCluster"),
         skill_type="database_translation",
     ),
     _PhaseDef(
@@ -183,6 +199,12 @@ PHASE_DEFINITIONS: list[_PhaseDef] = [
         skill_type="ec2_translation",
     ),
     _PhaseDef(
+        name="Storage",
+        description="Translate EBS volumes to OCI Block Volumes.",
+        aws_types=("AWS::EC2::Volume",),
+        skill_type="storage_translation",
+    ),
+    _PhaseDef(
         name="Traffic Management",
         description="Translate ALB / NLB load balancers to OCI Load Balancer.",
         aws_types=("AWS::ElasticLoadBalancingV2::LoadBalancer",),
@@ -190,7 +212,7 @@ PHASE_DEFINITIONS: list[_PhaseDef] = [
     ),
     _PhaseDef(
         name="Serverless",
-        description="Lambda function translation (Phase 3 -- future).",
+        description="Lambda function translation.",
         aws_types=("AWS::Lambda::Function",),
         skill_type=None,
     ),
@@ -202,8 +224,8 @@ PHASE_DEFINITIONS: list[_PhaseDef] = [
     ),
     _PhaseDef(
         name="Identity & Access",
-        description="Translate IAM policies to OCI IAM policy statements.",
-        aws_types=("AWS::IAM::Policy",),
+        description="Translate IAM policies and roles to OCI IAM policy statements.",
+        aws_types=("AWS::IAM::Policy", "AWS::IAM::Role"),
         skill_type="iam_translation",
     ),
 ]
@@ -456,32 +478,17 @@ def _format_input(skill_type: str, resources: list[Resource]) -> Optional[str]:
     if not raw_configs:
         return None
 
-    if skill_type == "network_translation":
-        # The network skill expects a single VPC JSON object.  When multiple
-        # VPCs exist we take the first -- multi-VPC support can be added later.
-        return json.dumps(raw_configs[0], indent=2)
-
-    if skill_type == "ec2_translation":
-        instances = [
-            cfg
-            for cfg, r in zip(raw_configs, resources)
-            if r.aws_type == "AWS::EC2::Instance"
-        ]
-        asgs = [
-            cfg
-            for cfg, r in zip(raw_configs, resources)
-            if r.aws_type == "AWS::AutoScaling::AutoScalingGroup"
-        ]
-        return json.dumps(
-            {"instances": instances, "auto_scaling_groups": asgs},
-            indent=2,
-        )
-
-    if skill_type == "database_translation":
-        return json.dumps({"db_instances": raw_configs}, indent=2)
-
-    if skill_type == "loadbalancer_translation":
-        return json.dumps({"load_balancers": raw_configs}, indent=2)
+    # For aggregated skills, return None so the job_runner builds the proper
+    # composite input from config["resource_ids"] via its _AGGREGATED_SKILLS map.
+    # This ensures VPC/subnet/SG/ENI are all passed together, EC2+EBS together, etc.
+    if skill_type in (
+        "network_translation",
+        "ec2_translation",
+        "database_translation",
+        "loadbalancer_translation",
+        "storage_translation",
+    ):
+        return None
 
     if skill_type == "cfn_terraform":
         # CloudFormation template stored as the raw_config dict.

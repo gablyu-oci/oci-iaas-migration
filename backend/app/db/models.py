@@ -108,10 +108,10 @@ class Resource(Base):
 
 
 # ---------------------------------------------------------------------------
-# SkillRun
+# TranslationJob
 # ---------------------------------------------------------------------------
-class SkillRun(Base):
-    __tablename__ = "skill_runs"
+class TranslationJob(Base):
+    __tablename__ = "translation_jobs"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), nullable=False)
@@ -135,19 +135,19 @@ class SkillRun(Base):
     completed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
 
-    interactions: Mapped[list["SkillRunInteraction"]] = relationship(back_populates="skill_run")
-    artifacts: Mapped[list["Artifact"]] = relationship(back_populates="skill_run")
+    interactions: Mapped[list["TranslationJobInteraction"]] = relationship(back_populates="translation_job")
+    artifacts: Mapped[list["Artifact"]] = relationship(back_populates="translation_job")
 
 
 # ---------------------------------------------------------------------------
-# SkillRunInteraction
+# TranslationJobInteraction
 # ---------------------------------------------------------------------------
-class SkillRunInteraction(Base):
-    __tablename__ = "skill_run_interactions"
+class TranslationJobInteraction(Base):
+    __tablename__ = "translation_job_interactions"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
-    skill_run_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("skill_runs.id"), nullable=False
+    translation_job_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("translation_jobs.id"), nullable=False
     )
     agent_type: Mapped[Optional[str]] = mapped_column(String(64))
     model: Mapped[Optional[str]] = mapped_column(String(128))
@@ -163,7 +163,7 @@ class SkillRunInteraction(Base):
     duration_seconds: Mapped[Optional[float]] = mapped_column(Float)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
 
-    skill_run: Mapped["SkillRun"] = relationship(back_populates="interactions")
+    translation_job: Mapped["TranslationJob"] = relationship(back_populates="interactions")
 
 
 # ---------------------------------------------------------------------------
@@ -173,8 +173,8 @@ class Artifact(Base):
     __tablename__ = "artifacts"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
-    skill_run_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("skill_runs.id"), nullable=False
+    translation_job_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("translation_jobs.id"), nullable=False
     )
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), nullable=False)
     file_type: Mapped[Optional[str]] = mapped_column(String(64))
@@ -183,7 +183,7 @@ class Artifact(Base):
     data: Mapped[Optional[bytes]] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
 
-    skill_run: Mapped["SkillRun"] = relationship(back_populates="artifacts")
+    translation_job: Mapped["TranslationJob"] = relationship(back_populates="artifacts")
 
 
 # ---------------------------------------------------------------------------
@@ -278,8 +278,8 @@ class Workload(Base):
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     skill_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="pending")
-    skill_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        ForeignKey("skill_runs.id"), nullable=True
+    translation_job_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("translation_jobs.id"), nullable=True
     )
 
     phase: Mapped["PlanPhase"] = relationship(back_populates="workloads")

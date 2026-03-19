@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { usePlan, useExecuteWorkload } from '../api/plans';
 import type { Workload, PlanPhase, MigrationPlan } from '../api/plans';
-import { useSkillRun, useSkillRunArtifacts } from '../api/hooks/useSkillRuns';
+import { useTranslationJob, useTranslationJobArtifacts } from '../api/hooks/useTranslationJobs';
 import { formatDate, formatCost, cn } from '../lib/utils';
 import SkillProgressTracker from '../components/SkillProgressTracker';
 import ArtifactViewer from '../components/ArtifactViewer';
@@ -65,8 +65,8 @@ export default function WorkloadDetail() {
   const { workloadId } = useParams<{ workloadId: string }>();
   const executeMut = useExecuteWorkload();
 
-  // We store the planId and the skill_run_id in local state because we might
-  // receive a new skill_run_id after executing.
+  // We store the planId and the translation_job_id in local state because we might
+  // receive a new translation_job_id after executing.
   const [planId, setPlanId] = useState<string | null>(null);
   const [skillRunId, setSkillRunId] = useState<string | null>(null);
 
@@ -95,17 +95,17 @@ export default function WorkloadDetail() {
     }
   }, [plan, planId]);
 
-  // Track the skill_run_id (may update when workload is executed)
+  // Track the translation_job_id (may update when workload is executed)
   useEffect(() => {
-    if (workload?.skill_run_id && !skillRunId) {
-      setSkillRunId(workload.skill_run_id);
+    if (workload?.translation_job_id && !skillRunId) {
+      setSkillRunId(workload.translation_job_id);
     }
-  }, [workload?.skill_run_id, skillRunId]);
+  }, [workload?.translation_job_id, skillRunId]);
 
-  // Load the skill run data if we have a skill_run_id
-  const activeSkillRunId = skillRunId || workload?.skill_run_id || '';
-  const { data: skillRun } = useSkillRun(activeSkillRunId);
-  const { data: artifacts } = useSkillRunArtifacts(activeSkillRunId);
+  // Load the translation job data if we have a translation_job_id
+  const activeSkillRunId = skillRunId || workload?.translation_job_id || '';
+  const { data: skillRun } = useTranslationJob(activeSkillRunId);
+  const { data: artifacts } = useTranslationJobArtifacts(activeSkillRunId);
 
   // Determine effective status (from live skill run or workload)
   const effectiveStatus = skillRun
@@ -140,7 +140,7 @@ export default function WorkloadDetail() {
     if (!workloadId) return;
     if (!confirm(`Execute this workload? This will translate ${workload?.resource_count ?? 0} AWS resources using the ${workload?.skill_type} skill.`)) return;
     const result = await executeMut.mutateAsync(workloadId);
-    setSkillRunId(result.skill_run_id);
+    setSkillRunId(result.translation_job_id);
     setTab('progress');
   };
 

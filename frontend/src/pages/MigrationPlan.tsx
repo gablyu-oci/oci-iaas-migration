@@ -25,6 +25,7 @@ const SKILL_CHIP_COLORS: Record<string, string> = {
   network_translation:      'bg-cyan-100 text-cyan-800',
   database_translation:     'bg-amber-100 text-amber-800',
   ec2_translation:          'bg-purple-100 text-purple-800',
+  storage_translation:      'bg-green-100 text-green-800',
   loadbalancer_translation: 'bg-indigo-100 text-indigo-800',
   cfn_terraform:            'bg-teal-100 text-teal-800',
   iam_translation:          'bg-orange-100 text-orange-800',
@@ -174,7 +175,9 @@ function WorkloadCard({
           )}
           <p className="text-xs text-gray-400 mt-1">Resources: {workload.resource_count}</p>
         </div>
-        <StatusBadge status={workload.status} />
+        <div className="flex flex-col items-end gap-1">
+          <StatusBadge status={workload.status} />
+        </div>
       </div>
 
       {/* Action area */}
@@ -182,14 +185,14 @@ function WorkloadCard({
         {workload.status === 'pending' && phaseUnlocked && (
           <button
             onClick={() => {
-              if (confirm(`Execute this workload? This will translate ${workload.resource_count} AWS resources using the ${workload.skill_type} skill.`)) {
+              if (confirm(`Run translation job for this workload? This will translate ${workload.resource_count} resource${workload.resource_count !== 1 ? 's' : ''} using ${workload.skill_type}.`)) {
                 onExecute(workload.id);
               }
             }}
             disabled={executing}
             className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium text-sm disabled:opacity-75 disabled:cursor-not-allowed"
           >
-            {executing ? 'Starting...' : 'Execute'}
+            {executing ? 'Starting...' : 'Run Translation Job'}
           </button>
         )}
         {workload.status === 'pending' && !phaseUnlocked && (
@@ -201,7 +204,15 @@ function WorkloadCard({
             Blocked
           </button>
         )}
-        {workload.status === 'running' && (
+        {workload.status === 'running' && workload.translation_job_id && (
+          <Link
+            to={`/translation-jobs/${workload.translation_job_id}`}
+            className="text-sm text-blue-600 hover:text-blue-800 font-medium"
+          >
+            View Progress →
+          </Link>
+        )}
+        {workload.status === 'running' && !workload.translation_job_id && (
           <Link
             to={`/workloads/${workload.id}`}
             className="text-sm text-blue-600 hover:text-blue-800 font-medium"
@@ -209,7 +220,15 @@ function WorkloadCard({
             View Progress
           </Link>
         )}
-        {workload.status === 'complete' && (
+        {workload.status === 'complete' && workload.translation_job_id && (
+          <Link
+            to={`/translation-jobs/${workload.translation_job_id}/results`}
+            className="text-sm text-green-600 hover:text-green-800 font-medium"
+          >
+            View Results →
+          </Link>
+        )}
+        {workload.status === 'complete' && !workload.translation_job_id && (
           <Link
             to={`/workloads/${workload.id}`}
             className="text-sm text-green-600 hover:text-green-800 font-medium"
@@ -226,12 +245,21 @@ function WorkloadCard({
             >
               Retry
             </button>
-            <Link
-              to={`/workloads/${workload.id}`}
-              className="text-sm text-gray-600 hover:text-gray-800 font-medium"
-            >
-              View Details
-            </Link>
+            {workload.translation_job_id ? (
+              <Link
+                to={`/translation-jobs/${workload.translation_job_id}/results`}
+                className="text-sm text-gray-600 hover:text-gray-800 font-medium"
+              >
+                View Details →
+              </Link>
+            ) : (
+              <Link
+                to={`/workloads/${workload.id}`}
+                className="text-sm text-gray-600 hover:text-gray-800 font-medium"
+              >
+                View Details
+              </Link>
+            )}
           </>
         )}
       </div>

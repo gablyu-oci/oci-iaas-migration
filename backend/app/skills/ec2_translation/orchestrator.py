@@ -215,7 +215,8 @@ Output ONLY a JSON object with the same schema as the enhancement output, plus:
                 + volume_count * 2
                 + asg_count * 2
             )
-            mapped_resources = max(0, total_resources - 1)  # conservative estimate
+            # All EC2 resources have OCI equivalents; actual gaps found by reviewer
+            mapped_resources = total_resources
 
         except Exception:
             instance_count   = 1

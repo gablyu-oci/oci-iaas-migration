@@ -17,7 +17,7 @@ export interface Workload {
   description: string | null;
   skill_type: string | null;
   status: string;
-  skill_run_id: string | null;
+  translation_job_id: string | null;
   resource_count: number;
 }
 
@@ -40,7 +40,7 @@ export interface MigrationPlan {
 }
 
 export interface ExecuteOut {
-  skill_run_id: string;
+  translation_job_id: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -67,10 +67,10 @@ export function deletePlan(planId: string): Promise<void> {
   return client.delete(`/api/plans/${planId}`).then(() => undefined);
 }
 
-export function getWorkloadStreamUrl(skillRunId: string): string {
+export function getWorkloadStreamUrl(translationJobId: string): string {
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
   const token = localStorage.getItem('token');
-  return `${API_URL}/api/skill-runs/${skillRunId}/stream?token=${token}`;
+  return `${API_URL}/api/translation-jobs/${translationJobId}/stream?token=${token}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,8 +93,7 @@ export function usePlanStatus(planId: string) {
     refetchInterval: (query) => {
       const plan = query.state.data;
       if (plan && (plan.status === 'complete' || plan.status === 'failed')) return false;
-      if (plan?.phases?.some((p) => p.status === 'running')) return 3000;
-      return false;
+      return 4000; // always poll while plan is not done
     },
   });
 }
@@ -116,6 +115,7 @@ export function useExecuteWorkload() {
     mutationFn: (workloadId: string) => executeWorkload(workloadId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['plans'] });
+      qc.invalidateQueries({ queryKey: ['translation-jobs'] });
     },
   });
 }

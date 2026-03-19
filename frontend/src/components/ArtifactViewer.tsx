@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import {
-  useSkillRunArtifacts,
+  useTranslationJobArtifacts,
   getArtifactDownloadUrl,
-} from '../api/hooks/useSkillRuns';
+} from '../api/hooks/useTranslationJobs';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
@@ -27,7 +27,7 @@ const typeColors: Record<string, string> = {
 };
 
 export default function ArtifactViewer({ skillRunId }: Props) {
-  const { data: artifacts, isLoading } = useSkillRunArtifacts(skillRunId);
+  const { data: artifacts, isLoading } = useTranslationJobArtifacts(skillRunId);
   const [previewContent, setPreviewContent] = useState<Record<string, string>>({});
   const [modalId, setModalId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);

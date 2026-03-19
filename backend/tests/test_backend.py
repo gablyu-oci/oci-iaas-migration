@@ -13,7 +13,7 @@ from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 from app.main import app
-from app.db.models import Base, Tenant, AWSConnection, Migration, Resource, SkillRun, Artifact
+from app.db.models import Base, Tenant, AWSConnection, Migration, Resource, TranslationJob, Artifact
 from app.db.base import get_db
 from app.services.auth_service import hash_password, create_access_token
 
@@ -234,17 +234,17 @@ async def test_upload_file(client, auth_headers):
     assert "cloudtrail" in data.get("aws_type", "").lower() or data.get("aws_type") in ("AWS::CloudTrail::Log", "CloudTrail")
 
 
-# ── Skill Runs ────────────────────────────────────────────────────────────────
+# ── Translation Jobs ──────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_create_skill_run_invalid_skill_type(client, auth_headers):
+async def test_create_translation_job_invalid_skill_type(client, auth_headers):
     """Unknown skill_type should return 400 or 422."""
     with patch("arq.create_pool") as mock_pool_factory:
         mock_pool = AsyncMock()
         mock_pool.enqueue_job = AsyncMock()
         mock_pool.aclose = AsyncMock()
         mock_pool_factory.return_value = mock_pool
-        r = await client.post("/api/skill-runs", json={
+        r = await client.post("/api/translation-jobs", json={
             "skill_type": "totally_unknown_skill",
             "input_content": "some content"
         }, headers=auth_headers)
@@ -252,33 +252,33 @@ async def test_create_skill_run_invalid_skill_type(client, auth_headers):
 
 
 @pytest.mark.asyncio
-async def test_create_skill_run_valid(client, auth_headers):
-    """Valid YAML input should enqueue and return skill run data."""
+async def test_create_translation_job_valid(client, auth_headers):
+    """Valid YAML input should enqueue and return translation job data."""
     yaml_input = "AWSTemplateFormatVersion: '2010-09-09'\nResources: {}"
     with patch("arq.create_pool") as mock_pool_factory:
         mock_pool = AsyncMock()
         mock_pool.enqueue_job = AsyncMock()
         mock_pool.aclose = AsyncMock()
         mock_pool_factory.return_value = mock_pool
-        r = await client.post("/api/skill-runs", json={
+        r = await client.post("/api/translation-jobs", json={
             "skill_type": "cfn_terraform",
             "input_content": yaml_input,
         }, headers=auth_headers)
     assert r.status_code == 201, r.text
     data = r.json()
-    assert "id" in data or "skill_run_id" in data
+    assert "id" in data or "translation_job_id" in data
 
 
 @pytest.mark.asyncio
-async def test_list_skill_runs(client, auth_headers):
-    r = await client.get("/api/skill-runs", headers=auth_headers)
+async def test_list_translation_jobs(client, auth_headers):
+    r = await client.get("/api/translation-jobs", headers=auth_headers)
     assert r.status_code == 200
     assert isinstance(r.json(), list)
 
 
 @pytest.mark.asyncio
-async def test_get_skill_run_not_found(client, auth_headers):
-    r = await client.get(f"/api/skill-runs/{uuid.uuid4()}", headers=auth_headers)
+async def test_get_translation_job_not_found(client, auth_headers):
+    r = await client.get(f"/api/translation-jobs/{uuid.uuid4()}", headers=auth_headers)
     assert r.status_code == 404
 
 
@@ -744,3 +744,112 @@ async def test_workload_resources_not_found(client, auth_headers):
 async def test_workload_execute_not_found(client, auth_headers):
     r = await client.post(f"/api/workloads/{uuid.uuid4()}/execute", headers=auth_headers)
     assert r.status_code == 404
+
+
+# ── Translation Jobs: migration_id filter + resource_name ────────────────────
+
+@pytest.mark.asyncio
+async def test_list_translation_jobs_with_migration_filter(client, auth_headers):
+    """GET /api/translation-jobs?migration_id=... returns filtered results."""
+    r = await client.get(f"/api/translation-jobs?migration_id={uuid.uuid4()}", headers=auth_headers)
+    assert r.status_code == 200
+    assert isinstance(r.json(), list)
+
+
+@pytest.mark.asyncio
+async def test_translation_job_out_has_resource_fields(client, auth_headers):
+    """Translation job response includes resource_name, input_resource_id, migration_id."""
+    r = await client.get("/api/translation-jobs", headers=auth_headers)
+    assert r.status_code == 200
+    runs = r.json()
+    if runs:
+        run = runs[0]
+        assert "resource_name" in run
+        assert "input_resource_id" in run
+        assert "migration_id" in run
+
+
+# ── Resources: unassigned endpoint ───────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_list_unassigned_resources(client, auth_headers):
+    """GET /api/resources/unassigned returns resources with no migration."""
+    r = await client.get("/api/resources/unassigned", headers=auth_headers)
+    assert r.status_code == 200
+    assert isinstance(r.json(), list)
+
+
+# ── Resources: assign to migration ──────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_assign_resources_to_migration(client, auth_headers, db, tenant):
+    """POST /api/migrations/{id}/resources assigns resources."""
+    # Create a migration
+    mig_r = await client.post("/api/migrations", json={"name": "Assign Test"}, headers=auth_headers)
+    mig_id = mig_r.json()["id"]
+
+    # Create a resource with no migration
+    from app.db.models import Resource
+    res = Resource(
+        tenant_id=tenant.id,
+        migration_id=None,
+        aws_type="AWS::EC2::Instance",
+        name="test-instance",
+        status="discovered",
+    )
+    db.add(res)
+    await db.commit()
+    await db.refresh(res)
+
+    # Assign it
+    r = await client.post(
+        f"/api/migrations/{mig_id}/resources",
+        json={"resource_ids": [str(res.id)]},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["assigned"] == 1
+
+
+@pytest.mark.asyncio
+async def test_assign_resources_migration_not_found(client, auth_headers):
+    """POST /api/migrations/{bad_id}/resources returns 404."""
+    r = await client.post(
+        f"/api/migrations/{uuid.uuid4()}/resources",
+        json={"resource_ids": []},
+        headers=auth_headers,
+    )
+    assert r.status_code == 404
+
+
+# ── Resources: raw_config in response ────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_resource_out_has_raw_config(client, auth_headers):
+    """Resource list response includes raw_config field."""
+    r = await client.get("/api/aws/resources", headers=auth_headers)
+    assert r.status_code == 200
+    resources = r.json()
+    # If there are resources, check they have raw_config
+    if resources:
+        assert "raw_config" in resources[0]
+
+
+# ── Plans: list by migration (for delete plan feature) ───────────────────────
+
+@pytest.mark.asyncio
+async def test_delete_plan(client, auth_headers):
+    """DELETE /api/plans/{plan_id} removes the plan."""
+    # Create migration and generate plan
+    mig_r = await client.post("/api/migrations", json={"name": "Delete Plan Test"}, headers=auth_headers)
+    mig_id = mig_r.json()["id"]
+    gen_r = await client.post(f"/api/migrations/{mig_id}/plan", headers=auth_headers)
+    plan_id = gen_r.json()["id"]
+
+    # Delete it
+    r = await client.delete(f"/api/plans/{plan_id}", headers=auth_headers)
+    assert r.status_code == 204
+
+    # Verify it's gone
+    r2 = await client.get(f"/api/plans/{plan_id}", headers=auth_headers)
+    assert r2.status_code == 404

@@ -119,6 +119,31 @@ class _MessagesResource:
 
         return _AgentMessage(holder[0] or "", holder[2])
 
+    def stream(self, **kwargs) -> "_StreamContextManager":
+        """Context manager shim: calls create() and wraps result for stream API compatibility."""
+        message = self.create(**kwargs)
+        return _StreamContextManager(message)
+
+
+class _StreamContextManager:
+    """Thin wrapper so `with client.messages.stream(...) as s:` works."""
+
+    def __init__(self, message: "_AgentMessage"):
+        self._message = message
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        pass
+
+    def get_final_message(self) -> "_AgentMessage":
+        return self._message
+
+    def get_final_text(self) -> str:
+        blocks = self._message.content
+        return blocks[0].text if blocks else ""
+
 
 class AgentSDKClient:
     """

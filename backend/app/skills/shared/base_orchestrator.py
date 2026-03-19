@@ -84,8 +84,11 @@ def make_decision_from_review(review: dict, gap_analysis: dict) -> tuple[ReviewD
     """Deterministic decision from gap_analysis counts + reviewer issues."""
     issues       = review.get("issues", [])
     total        = gap_analysis.get("total_resources", 1)
+    # Use mapped_resources from gap analysis if present (reflects known gaps like SQL Server),
+    # otherwise assume all resources are initially mappable.
+    mapped_from_gap = gap_analysis.get("mapped_resources", total)
     critical_cnt = sum(1 for i in issues if i.get("severity") == "CRITICAL")
-    mapped_count = max(0, total - critical_cnt)
+    mapped_count = max(0, mapped_from_gap - critical_cnt)
 
     confidence = ConfidenceCalculator.calculate(
         total_items=total,

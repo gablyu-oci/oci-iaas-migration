@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import client from '../client';
 
-export interface SkillRun {
+export interface TranslationJob {
   id: string;
   skill_type: string;
   status: string;
@@ -16,6 +16,10 @@ export interface SkillRun {
   completed_at: string | null;
   created_at: string;
   config?: Record<string, unknown>;
+  resource_name?: string | null;
+  resource_names?: string[];
+  input_resource_id?: string | null;
+  migration_id?: string | null;
 }
 
 export interface Artifact {
@@ -26,17 +30,26 @@ export interface Artifact {
   created_at: string;
 }
 
-export function useSkillRuns() {
-  return useQuery<SkillRun[]>({
-    queryKey: ['skill-runs'],
-    queryFn: () => client.get('/api/skill-runs').then((r) => r.data),
+export function useTranslationJobs() {
+  return useQuery<TranslationJob[]>({
+    queryKey: ['translation-jobs'],
+    queryFn: () => client.get('/api/translation-jobs').then((r) => r.data),
   });
 }
 
-export function useSkillRun(id: string) {
-  return useQuery<SkillRun>({
-    queryKey: ['skill-runs', id],
-    queryFn: () => client.get(`/api/skill-runs/${id}`).then((r) => r.data),
+export function useResourceTranslationJobs(resourceId: string) {
+  return useQuery<TranslationJob[]>({
+    queryKey: ['translation-jobs', 'resource', resourceId],
+    queryFn: () =>
+      client.get('/api/translation-jobs', { params: { resource_id: resourceId } }).then((r) => r.data),
+    enabled: !!resourceId,
+  });
+}
+
+export function useTranslationJob(id: string) {
+  return useQuery<TranslationJob>({
+    queryKey: ['translation-jobs', id],
+    queryFn: () => client.get(`/api/translation-jobs/${id}`).then((r) => r.data),
     enabled: !!id,
     refetchInterval: (query) => {
       const data = query.state.data;
@@ -47,7 +60,7 @@ export function useSkillRun(id: string) {
   });
 }
 
-export function useCreateSkillRun() {
+export function useCreateTranslationJob() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: {
@@ -56,34 +69,34 @@ export function useCreateSkillRun() {
       input_resource_id?: string;
       migration_id?: string;
       config?: Record<string, unknown>;
-    }) => client.post('/api/skill-runs', data).then((r) => r.data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['skill-runs'] }),
+    }) => client.post('/api/translation-jobs', data).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['translation-jobs'] }),
   });
 }
 
-export function useDeleteSkillRun() {
+export function useDeleteTranslationJob() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => client.delete(`/api/skill-runs/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['skill-runs'] }),
+    mutationFn: (id: string) => client.delete(`/api/translation-jobs/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['translation-jobs'] }),
   });
 }
 
-export function useSkillRunInteractions(skillRunId: string) {
+export function useTranslationJobInteractions(translationJobId: string) {
   return useQuery<InteractionEvent[]>({
-    queryKey: ['skill-runs', skillRunId, 'interactions'],
+    queryKey: ['translation-jobs', translationJobId, 'interactions'],
     queryFn: () =>
-      client.get(`/api/skill-runs/${skillRunId}/interactions`).then((r) => r.data),
-    enabled: !!skillRunId,
+      client.get(`/api/translation-jobs/${translationJobId}/interactions`).then((r) => r.data),
+    enabled: !!translationJobId,
   });
 }
 
-export function useSkillRunArtifacts(skillRunId: string) {
+export function useTranslationJobArtifacts(translationJobId: string) {
   return useQuery<Artifact[]>({
-    queryKey: ['skill-runs', skillRunId, 'artifacts'],
+    queryKey: ['translation-jobs', translationJobId, 'artifacts'],
     queryFn: () =>
-      client.get(`/api/skill-runs/${skillRunId}/artifacts`).then((r) => r.data),
-    enabled: !!skillRunId,
+      client.get(`/api/translation-jobs/${translationJobId}/artifacts`).then((r) => r.data),
+    enabled: !!translationJobId,
   });
 }
 
@@ -110,19 +123,19 @@ interface SSEEvent {
   new_interactions?: InteractionEvent[];
 }
 
-export function useSkillRunStream(skillRunId: string) {
+export function useTranslationJobStream(translationJobId: string) {
   const [event, setEvent] = useState<SSEEvent | null>(null);
   const [connected, setConnected] = useState(false);
   const [interactions, setInteractions] = useState<InteractionEvent[]>([]);
 
   useEffect(() => {
-    if (!skillRunId) return;
-    // Reset interactions when skillRunId changes
+    if (!translationJobId) return;
+    // Reset interactions when translationJobId changes
     setInteractions([]);
 
     const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
     const token = localStorage.getItem('token');
-    const url = `${API_URL}/api/skill-runs/${skillRunId}/stream?token=${token}`;
+    const url = `${API_URL}/api/translation-jobs/${translationJobId}/stream?token=${token}`;
     const es = new EventSource(url);
 
     const parseAndSet = (e: MessageEvent) => {
@@ -149,7 +162,7 @@ export function useSkillRunStream(skillRunId: string) {
       es.close();
       setConnected(false);
     };
-  }, [skillRunId]);
+  }, [translationJobId]);
 
   return { event, connected, interactions };
 }

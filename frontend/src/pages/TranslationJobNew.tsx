@@ -1,6 +1,6 @@
 import { useState, useRef, type FormEvent, type DragEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { useCreateSkillRun } from '../api/hooks/useSkillRuns';
+import { useCreateTranslationJob } from '../api/hooks/useTranslationJobs';
 import { useResources } from '../api/hooks/useResources';
 import ResourceTable, { type Resource } from '../components/ResourceTable';
 
@@ -8,7 +8,7 @@ const SKILL_TYPES = [
   {
     value: 'cfn_terraform',
     label: 'CloudFormation to Terraform',
-    description: 'Convert AWS CloudFormation templates to OCI Terraform',
+    description: 'Convert AWS CloudFormation templates to OCI Terraform HCL',
     accept: '.yaml,.yml,.json',
     hint: 'YAML or JSON CloudFormation template',
   },
@@ -22,13 +22,41 @@ const SKILL_TYPES = [
   {
     value: 'dependency_discovery',
     label: 'Dependency Discovery',
-    description: 'Discover and map resource dependencies',
+    description: 'Discover and map resource dependencies from CloudTrail',
     accept: '.json,.csv,.log',
     hint: 'CloudTrail JSON or VPC Flow Log',
   },
+  {
+    value: 'network_translation',
+    label: 'Network Translation',
+    description: 'Translate VPC, Subnets, and Security Groups to OCI VCN',
+    accept: '.json,.yaml,.yml,.tf',
+    hint: 'VPC/Subnet/SG configuration (JSON, YAML, or Terraform)',
+  },
+  {
+    value: 'ec2_translation',
+    label: 'EC2 Translation',
+    description: 'Translate EC2 instances and ASGs to OCI Compute',
+    accept: '.json,.yaml,.yml,.tf',
+    hint: 'EC2 instance or ASG configuration',
+  },
+  {
+    value: 'database_translation',
+    label: 'Database Translation',
+    description: 'Translate RDS instances to OCI Database System',
+    accept: '.json,.yaml,.yml,.tf',
+    hint: 'RDS instance configuration',
+  },
+  {
+    value: 'loadbalancer_translation',
+    label: 'Load Balancer Translation',
+    description: 'Translate ALB/NLB to OCI Load Balancer',
+    accept: '.json,.yaml,.yml,.tf',
+    hint: 'ALB or NLB configuration',
+  },
 ];
 
-export default function SkillRunNew() {
+export default function TranslationJobNew() {
   const [searchParams] = useSearchParams();
   const preselectedResourceId = searchParams.get('resource_id') || '';
 
@@ -40,6 +68,7 @@ export default function SkillRunNew() {
     preselectedResourceId
   );
   const [inputContent, setInputContent] = useState('');
+  const [pastedContent, setPastedContent] = useState('');
   const [fileName, setFileName] = useState('');
   const [isDragging, setIsDragging] = useState(false);
   const [fileError, setFileError] = useState('');
@@ -57,6 +86,7 @@ export default function SkillRunNew() {
     const reader = new FileReader();
     reader.onload = (e) => {
       setInputContent(e.target?.result as string);
+      setPastedContent('');
       setFileName(file.name);
     };
     reader.onerror = () => setFileError('Failed to read file.');
@@ -75,8 +105,18 @@ export default function SkillRunNew() {
     if (file) loadFile(file);
   };
 
+  const handlePasteChange = (value: string) => {
+    setPastedContent(value);
+    if (value.trim()) {
+      setInputContent(value);
+      setFileName('');
+    } else if (!fileName) {
+      setInputContent('');
+    }
+  };
+
   const navigate = useNavigate();
-  const createSkillRun = useCreateSkillRun();
+  const createSkillRun = useCreateTranslationJob();
   const { data: resources, isLoading: loadingResources } = useResources();
 
   const handleSubmit = (e: FormEvent) => {
@@ -100,7 +140,7 @@ export default function SkillRunNew() {
 
     createSkillRun.mutate(payload, {
       onSuccess: (data: { id: string }) => {
-        navigate(`/skill-runs/${data.id}`);
+        navigate(`/translation-jobs/${data.id}`);
       },
     });
   };
@@ -112,16 +152,22 @@ export default function SkillRunNew() {
   return (
     <div className="space-y-6 max-w-4xl">
       <div>
-        <h1 className="text-2xl font-bold">New Skill Run</h1>
+        <button
+          onClick={() => navigate(-1)}
+          className="flex items-center text-sm text-gray-500 hover:text-gray-700 mb-2"
+        >
+          ← Back
+        </button>
+        <h1 className="text-2xl font-bold">New Translation Job</h1>
         <p className="text-gray-600 mt-1">
-          Configure and launch an AI-powered migration skill.
+          Configure and launch an AI-powered migration translation job.
         </p>
       </div>
 
       {createSkillRun.isError && (
         <div className="p-3 bg-red-50 text-red-700 rounded-lg text-sm" role="alert">
           {(createSkillRun.error as any)?.response?.data?.detail ||
-            'Failed to create skill run.'}
+            'Failed to create translation job.'}
         </div>
       )}
 
@@ -129,7 +175,7 @@ export default function SkillRunNew() {
         {/* Skill Type */}
         <div className="bg-white rounded-lg shadow p-6">
           <h2 className="text-lg font-semibold mb-4">Skill Type</h2>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4">
             {SKILL_TYPES.map((st) => (
               <label
                 key={st.value}
@@ -179,7 +225,7 @@ export default function SkillRunNew() {
                 onChange={() => setInputMode('file')}
                 className="text-blue-600"
               />
-              <span className="text-sm font-medium">Upload file</span>
+              <span className="text-sm font-medium">Upload file or paste text</span>
             </label>
           </div>
 
@@ -213,7 +259,7 @@ export default function SkillRunNew() {
           )}
 
           {inputMode === 'file' && (
-            <div className="space-y-3">
+            <div className="space-y-4">
               {/* Drop zone */}
               <div
                 onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
@@ -237,9 +283,9 @@ export default function SkillRunNew() {
                 />
                 {fileName ? (
                   <div className="space-y-1">
-                    <p className="text-green-700 font-medium">✓ {fileName}</p>
+                    <p className="text-green-700 font-medium">&#10003; {fileName}</p>
                     <p className="text-xs text-gray-500">
-                      {(inputContent.length / 1024).toFixed(1)} KB loaded — click to replace
+                      {(inputContent.length / 1024).toFixed(1)} KB loaded -- click to replace
                     </p>
                   </div>
                 ) : (
@@ -256,15 +302,36 @@ export default function SkillRunNew() {
                 <p className="text-sm text-red-600">{fileError}</p>
               )}
 
+              {/* Or paste content */}
+              <div>
+                <div className="flex items-center gap-3 mb-2">
+                  <div className="flex-1 h-px bg-gray-200" />
+                  <span className="text-xs text-gray-400 font-medium uppercase">Or paste content</span>
+                  <div className="flex-1 h-px bg-gray-200" />
+                </div>
+                <textarea
+                  value={pastedContent}
+                  onChange={(e) => handlePasteChange(e.target.value)}
+                  placeholder={`Paste your ${currentSkill.hint.toLowerCase()} here...`}
+                  rows={6}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-y"
+                />
+                {pastedContent.trim() && (
+                  <p className="mt-1 text-xs text-green-600">
+                    {(pastedContent.length / 1024).toFixed(1)} KB of pasted content ready
+                  </p>
+                )}
+              </div>
+
               {/* Preview */}
-              {inputContent && (
+              {inputContent && !pastedContent.trim() && (
                 <details className="text-sm">
                   <summary className="cursor-pointer text-gray-500 hover:text-gray-700">
                     Preview content
                   </summary>
                   <pre className="mt-2 p-3 bg-gray-50 border rounded-lg overflow-auto max-h-48 text-xs font-mono text-gray-700">
                     {inputContent.slice(0, 2000)}
-                    {inputContent.length > 2000 && '\n… (truncated for preview)'}
+                    {inputContent.length > 2000 && '\n... (truncated for preview)'}
                   </pre>
                 </details>
               )}
@@ -310,7 +377,7 @@ export default function SkillRunNew() {
             }
             className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
           >
-            {createSkillRun.isPending ? 'Launching...' : 'Launch Skill Run'}
+            {createSkillRun.isPending ? 'Launching...' : 'Launch Translation Job'}
           </button>
           <button
             type="button"

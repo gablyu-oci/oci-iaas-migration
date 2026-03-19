@@ -8,7 +8,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import cast, or_, select, Text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -18,7 +18,7 @@ from app.db.models import (
     MigrationPlan,
     PlanPhase,
     Resource,
-    SkillRun,
+    TranslationJob,
     Tenant,
     Workload,
     WorkloadResource,
@@ -52,7 +52,7 @@ class WorkloadDetailOut(BaseModel):
     description: Optional[str] = None
     skill_type: Optional[str] = None
     status: str
-    skill_run_id: Optional[str] = None
+    translation_job_id: Optional[str] = None
     phase_id: str
     phase_name: str
     resource_count: int = 0
@@ -66,7 +66,7 @@ class WorkloadOut(BaseModel):
     description: Optional[str] = None
     skill_type: Optional[str] = None
     status: str
-    skill_run_id: Optional[str] = None
+    translation_job_id: Optional[str] = None
     resource_count: int = 0
 
     model_config = {"from_attributes": True}
@@ -95,7 +95,7 @@ class PlanOut(BaseModel):
 
 
 class ExecuteOut(BaseModel):
-    skill_run_id: str
+    translation_job_id: str
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +108,7 @@ def _workload_to_out(w: Workload) -> WorkloadOut:
         description=w.description,
         skill_type=w.skill_type,
         status=w.status,
-        skill_run_id=_s(w.skill_run_id),
+        translation_job_id=_s(w.translation_job_id),
         resource_count=len(w.resources) if w.resources else 0,
     )
 
@@ -135,11 +135,11 @@ def _plan_to_out(plan: MigrationPlan) -> PlanOut:
     )
 
 
-def _run_skill_in_process(skill_run_id: str) -> None:
-    """Entry point for child process that executes a skill run.
+def _run_job_in_process(translation_job_id: str) -> None:
+    """Entry point for child process that executes a translation job.
 
     Creates a new process group so all descendants (e.g. claude CLI) can be
-    cleaned up together if the run is cancelled.
+    cleaned up together if the job is cancelled.
     """
     import os
     import asyncio as _asyncio
@@ -147,12 +147,12 @@ def _run_skill_in_process(skill_run_id: str) -> None:
     os.setpgrp()
     # Unset CLAUDECODE so the Agent SDK can launch inside this process
     os.environ.pop("CLAUDECODE", None)
-    from app.services.skill_runner import run_skill_job
+    from app.services.job_runner import run_translation_job
 
-    _asyncio.run(run_skill_job({}, skill_run_id))
+    _asyncio.run(run_translation_job({}, translation_job_id))
 
 
-async def _enqueue_or_run(skill_run_id: str) -> None:
+async def _enqueue_or_run(translation_job_id: str) -> None:
     """Try to enqueue the job via ARQ/Redis; fall back to a child process."""
     try:
         import arq
@@ -161,14 +161,14 @@ async def _enqueue_or_run(skill_run_id: str) -> None:
         redis = await arq.create_pool(
             arq.connections.RedisSettings.from_dsn(settings.REDIS_URL)
         )
-        await redis.enqueue_job("run_skill_job", skill_run_id)
+        await redis.enqueue_job("run_translation_job", translation_job_id)
         await redis.close()
     except Exception:
         # Redis not available -- run in a spawned child process so it can be
         # terminated cleanly if needed.
         ctx = multiprocessing.get_context("spawn")
         p = ctx.Process(
-            target=_run_skill_in_process, args=(skill_run_id,), daemon=True
+            target=_run_job_in_process, args=(translation_job_id,), daemon=True
         )
         p.start()
 
@@ -240,6 +240,29 @@ async def generate_migration_plan(
     return _plan_to_out(loaded)
 
 
+@router.get("/plans", response_model=list[PlanOut])
+async def list_plans(
+    migration_id: Optional[str] = None,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """List plans, optionally filtered by migration_id."""
+    query = (
+        select(MigrationPlan)
+        .where(MigrationPlan.tenant_id == tenant.id)
+        .options(
+            selectinload(MigrationPlan.phases)
+            .selectinload(PlanPhase.workloads)
+            .selectinload(Workload.resources)
+        )
+    )
+    if migration_id:
+        query = query.where(MigrationPlan.migration_id == uuid.UUID(migration_id))
+    result = await db.execute(query)
+    plans = result.scalars().all()
+    return [_plan_to_out(p) for p in plans]
+
+
 @router.get("/plans/{plan_id}", response_model=PlanOut)
 async def get_plan(
     plan_id: str,
@@ -277,6 +300,37 @@ async def delete_plan(
 
     plan_uuid = uuid.UUID(plan_id)
 
+    # Cancel any running or queued translation jobs linked to workloads in this plan
+    for phase in plan.phases:
+        for workload in phase.workloads:
+            if workload.translation_job_id and workload.status in ("running", "queued"):
+                job_result = await db.execute(
+                    select(TranslationJob).where(TranslationJob.id == workload.translation_job_id)
+                )
+                job = job_result.scalar_one_or_none()
+                if job and job.status in ("running", "queued"):
+                    job.status = "failed"
+                    job.errors = {"error": "Plan deleted — job cancelled"}
+
+                    # Attempt to cancel the ARQ job in Redis
+                    try:
+                        import arq
+                        from app.config import settings
+
+                        redis = await arq.create_pool(
+                            arq.connections.RedisSettings.from_dsn(
+                                settings.REDIS_URL
+                            )
+                        )
+                        try:
+                            await redis.abort_job(str(workload.translation_job_id))
+                        except AttributeError:
+                            pass  # abort_job may not exist on this arq version
+                        finally:
+                            await redis.close()
+                    except Exception:
+                        pass  # Redis unavailable or other error — continue
+
     # Delete in FK-safe order: workload_resources -> workloads -> phases -> plan
     for phase in plan.phases:
         for workload in phase.workloads:
@@ -301,10 +355,10 @@ async def execute_workload(
     tenant: Tenant = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create and queue a SkillRun for the workload.
+    """Create and queue a TranslationJob for the workload.
 
     Prepares input content from the workload's linked resources, creates a
-    SkillRun record, links it to the workload, and enqueues the job via
+    TranslationJob record, links it to the workload, and enqueues the job via
     ARQ (Redis) or falls back to a child-process execution.
     """
     # Load workload with its linked resources
@@ -375,29 +429,40 @@ async def execute_workload(
     # Prepare input content from linked resources
     input_content = await build_workload_input(workload.id, db)
 
-    # Create a SkillRun record
-    run = SkillRun(
+    # Resolve the actual resource IDs for this workload (for name lookup)
+    resource_ids = [str(wr.resource_id) for wr in (workload.resources or [])]
+    first_resource_id = (
+        uuid.UUID(resource_ids[0]) if resource_ids else None
+    )
+
+    # Create a TranslationJob record
+    job = TranslationJob(
         tenant_id=tenant.id,
         skill_type=workload.skill_type,
         input_content=input_content,
         migration_id=migration_id,
-        config={"workload_id": str(workload.id), "workload_name": workload.name},
+        input_resource_id=first_resource_id,
+        config={
+            "workload_id": str(workload.id),
+            "workload_name": workload.name,
+            "resource_ids": resource_ids,
+        },
         status="queued",
     )
-    db.add(run)
+    db.add(job)
     await db.flush()
 
-    # Link workload to this skill run and mark it as running
-    workload.skill_run_id = run.id
+    # Link workload to this translation job and mark it as running
+    workload.translation_job_id = job.id
     workload.status = "running"
 
     await db.commit()
-    await db.refresh(run)
+    await db.refresh(job)
 
     # Enqueue the job (ARQ or child-process fallback)
-    await _enqueue_or_run(str(run.id))
+    await _enqueue_or_run(str(job.id))
 
-    return ExecuteOut(skill_run_id=str(run.id))
+    return ExecuteOut(translation_job_id=str(job.id))
 
 
 @router.get("/plans/{plan_id}/status", response_model=PlanOut)
@@ -408,7 +473,7 @@ async def get_plan_status(
 ):
     """Return plan status with per-phase and per-workload progress.
 
-    Reconciles workload statuses with their linked SkillRuns and derives
+    Reconciles workload statuses with their linked TranslationJobs and derives
     phase and plan statuses before returning.
     """
     try:
@@ -419,29 +484,64 @@ async def get_plan_status(
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found")
 
-    # Reconcile workload statuses with their linked SkillRuns
+    # Batch-load all translation jobs for this migration to reconcile workload statuses
+    # (handles both workloads linked via translation_job_id AND those linked via resource overlap)
+    all_jobs_result = await db.execute(
+        select(TranslationJob)
+        .where(
+            TranslationJob.tenant_id == tenant.id,
+            TranslationJob.migration_id == plan.migration_id,
+        )
+        .order_by(TranslationJob.created_at.desc())
+    )
+    all_runs: list[TranslationJob] = list(all_jobs_result.scalars().all())
+
+    # Build resource_id -> latest TranslationJob index
+    resource_run_index: dict[uuid.UUID, TranslationJob] = {}
+    for sr in reversed(all_runs):  # reversed so latest wins
+        if sr.input_resource_id:
+            resource_run_index[sr.input_resource_id] = sr
+        if isinstance(sr.config, dict):
+            for rid_str in sr.config.get("resource_ids", []):
+                try:
+                    resource_run_index[uuid.UUID(rid_str)] = sr
+                except (ValueError, AttributeError):
+                    pass
+
+    # Build id -> TranslationJob for direct lookup by translation_job_id
+    run_by_id: dict[uuid.UUID, TranslationJob] = {sr.id: sr for sr in all_runs}
+
+    # Reconcile workload statuses with their linked TranslationJobs
     dirty = False
     for phase in plan.phases:
         phase_statuses: list[str] = []
         for workload in phase.workloads:
-            if workload.skill_run_id:
-                sr_result = await db.execute(
-                    select(SkillRun).where(SkillRun.id == workload.skill_run_id)
-                )
-                sr = sr_result.scalar_one_or_none()
-                if sr:
-                    # Map SkillRun status to workload status
-                    new_status = workload.status
-                    if sr.status == "complete":
-                        new_status = "complete"
-                    elif sr.status == "failed":
-                        new_status = "failed"
-                    elif sr.status in ("running", "queued"):
-                        new_status = "running"
-
-                    if new_status != workload.status:
-                        workload.status = new_status
+            sr: TranslationJob | None = None
+            if workload.translation_job_id:
+                sr = run_by_id.get(workload.translation_job_id)
+            else:
+                # Try to find a matching job via resource overlap
+                for wr in (workload.resources or []):
+                    candidate = resource_run_index.get(wr.resource_id)
+                    if candidate:
+                        sr = candidate
+                        # Persist the link so future polls are fast
+                        workload.translation_job_id = sr.id
                         dirty = True
+                        break
+
+            if sr:
+                new_status = workload.status
+                if sr.status == "complete":
+                    new_status = "complete"
+                elif sr.status == "failed":
+                    new_status = "failed"
+                elif sr.status in ("running", "queued"):
+                    new_status = "running"
+
+                if new_status != workload.status:
+                    workload.status = new_status
+                    dirty = True
 
             phase_statuses.append(workload.status)
 
@@ -533,7 +633,7 @@ async def get_workload_detail(
         description=workload.description,
         skill_type=workload.skill_type,
         status=workload.status,
-        skill_run_id=_s(workload.skill_run_id),
+        translation_job_id=_s(workload.translation_job_id),
         phase_id=str(workload.phase_id),
         phase_name=phase_name,
         resource_count=len(resources),

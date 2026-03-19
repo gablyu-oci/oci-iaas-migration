@@ -1,12 +1,11 @@
 import { useParams, Link } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import {
-  useSkillRun,
-  useSkillRunArtifacts,
-  useSkillRunInteractions,
-} from '../api/hooks/useSkillRuns';
-import type { InteractionEvent } from '../api/hooks/useSkillRuns';
-import { formatDate, formatCost, cn } from '../lib/utils';
+  useTranslationJob,
+  useTranslationJobArtifacts,
+  useTranslationJobInteractions,
+} from '../api/hooks/useTranslationJobs';
+import { formatDate, formatCost, cn, getSkillRunName } from '../lib/utils';
 import ArtifactViewer from '../components/ArtifactViewer';
 import DependencyGraph from '../components/DependencyGraph';
 import client from '../api/client';
@@ -30,39 +29,14 @@ const DECISION_STYLES: Record<string, string> = {
   NEEDS_FIXES: 'text-red-600',
 };
 
-function InteractionRow({ ix }: { ix: InteractionEvent }) {
-  const totalTokens = (ix.tokens_input ?? 0) + (ix.tokens_output ?? 0);
-  const decisionStyle = ix.decision
-    ? (DECISION_STYLES[ix.decision] ?? 'text-gray-600')
-    : 'text-gray-400';
-  return (
-    <tr className="hover:bg-gray-50">
-      <td className="px-4 py-1.5 text-gray-700 whitespace-nowrap">{ix.agent_type ?? '—'}</td>
-      <td className="px-4 py-1.5 text-gray-500 text-center">{ix.iteration ?? '—'}</td>
-      <td className={`px-4 py-1.5 whitespace-nowrap font-medium ${decisionStyle}`}>{ix.decision ?? '—'}</td>
-      <td className="px-4 py-1.5 text-right text-gray-600">
-        {ix.confidence != null ? `${Math.round(ix.confidence * 100)}%` : '—'}
-      </td>
-      <td className="px-4 py-1.5 text-right text-gray-500">
-        {totalTokens > 0 ? totalTokens.toLocaleString() : '—'}
-      </td>
-      <td className="px-4 py-1.5 text-right text-gray-500">
-        {ix.cost_usd != null ? `$${ix.cost_usd.toFixed(4)}` : '—'}
-      </td>
-      <td className="px-4 py-1.5 text-right text-gray-400">
-        {ix.duration_seconds != null ? `${ix.duration_seconds.toFixed(1)}s` : '—'}
-      </td>
-    </tr>
-  );
-}
 
 type Tab = 'summary' | 'log' | 'artifacts';
 
-export default function SkillRunResults() {
+export default function TranslationJobResults() {
   const { id } = useParams<{ id: string }>();
-  const { data: run, isLoading, isError } = useSkillRun(id || '');
-  const { data: artifacts } = useSkillRunArtifacts(id || '');
-  const { data: interactions } = useSkillRunInteractions(id || '');
+  const { data: run, isLoading, isError } = useTranslationJob(id || '');
+  const { data: artifacts } = useTranslationJobArtifacts(id || '');
+  const { data: interactions } = useTranslationJobInteractions(id || '');
   const [graphData, setGraphData] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('summary');
 
@@ -84,7 +58,7 @@ export default function SkillRunResults() {
     }
   }, [run?.skill_type, artifacts]);
 
-  if (!id) return <div className="text-center py-12 text-gray-500">No skill run ID provided.</div>;
+  if (!id) return <div className="text-center py-12 text-gray-500">No translation job ID provided.</div>;
   if (isLoading) return (
     <div className="flex justify-center py-12">
       <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500" />
@@ -92,7 +66,7 @@ export default function SkillRunResults() {
   );
   if (isError || !run) return (
     <div className="text-center py-12">
-      <p className="text-red-500 mb-4">Failed to load skill run results.</p>
+      <p className="text-red-500 mb-4">Failed to load translation job results.</p>
       <Link to="/dashboard" className="text-blue-600 hover:text-blue-800">Back to Dashboard</Link>
     </div>
   );
@@ -121,8 +95,10 @@ export default function SkillRunResults() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Skill Run Results</h1>
-          <p className="text-gray-600 mt-1">{run.skill_type} &middot; {run.status}</p>
+          <h1 className="text-2xl font-bold">Translation Job Results</h1>
+          <p className="text-gray-600 mt-1">
+            {getSkillRunName(run.skill_type, run.resource_names, run.resource_name)} &middot; {run.status}
+          </p>
         </div>
         <Link
           to="/dashboard"
@@ -165,6 +141,20 @@ export default function SkillRunResults() {
         <div className="space-y-6">
           <div className="bg-white rounded-lg shadow p-6">
             <h2 className="text-lg font-semibold mb-4">Summary</h2>
+            <div className="mb-4">
+              <p className="text-sm text-gray-500">
+                {run.resource_names && run.resource_names.length > 1 ? `Resources (${run.resource_names.length})` : 'Resource'}
+              </p>
+              {run.resource_names && run.resource_names.length > 1 ? (
+                <ul className="mt-1 space-y-0.5">
+                  {run.resource_names.map((name, i) => (
+                    <li key={i} className="text-sm font-medium">{name || '—'}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm mt-1 font-medium">{run.resource_name || '—'}</p>
+              )}
+            </div>
             <div className="grid grid-cols-2 md:grid-cols-5 gap-6">
               <div>
                 <p className="text-sm text-gray-500">Skill Type</p>

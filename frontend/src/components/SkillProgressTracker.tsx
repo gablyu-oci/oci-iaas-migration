@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
-import { useSkillRunStream, useSkillRun, useSkillRunInteractions } from '../api/hooks/useSkillRuns';
-import type { InteractionEvent } from '../api/hooks/useSkillRuns';
+import { useTranslationJobStream, useTranslationJob } from '../api/hooks/useTranslationJobs';
+import type { InteractionEvent } from '../api/hooks/useTranslationJobs';
 
 interface Props {
   skillRunId: string;
@@ -36,8 +36,8 @@ const SKILL_LABELS: Record<string, string> = {
 };
 
 export default function SkillProgressTracker({ skillRunId, onComplete }: Props) {
-  const { data: run } = useSkillRun(skillRunId);
-  const { event, interactions } = useSkillRunStream(skillRunId);
+  const { data: run } = useTranslationJob(skillRunId);
+  const { event, interactions } = useTranslationJobStream(skillRunId);
   const completeFired = useRef(false);
   const logEndRef = useRef<HTMLDivElement>(null);
 

@@ -607,7 +607,11 @@ class ConfidenceCalculator:
         if architectural_mismatch:
             penalty += 0.25
 
-        return max(0.0, min(0.95, base - penalty))
+        result = max(0.0, min(0.95, base - penalty))
+        # Floor: if no issues and not architectural mismatch, confidence should be at least 0.6
+        if total_items > 0 and not issues and not architectural_mismatch:
+            result = max(0.6, result)
+        return result
 
     @staticmethod
     def make_decision(confidence: float, issues: list) -> 'ReviewDecision':

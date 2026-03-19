@@ -1,22 +1,52 @@
-import { Link } from 'react-router-dom';
+import { useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { useResources } from '../api/hooks/useResources';
-import { useSkillRuns, useDeleteSkillRun } from '../api/hooks/useSkillRuns';
-import { useMigrations } from '../api/hooks/useMigrations';
-import { formatDate, formatCost, cn } from '../lib/utils';
+import { useTranslationJobs, useDeleteTranslationJob } from '../api/hooks/useTranslationJobs';
+import { useCreateMigration, useMigrations } from '../api/hooks/useMigrations';
+import { useConnections } from '../api/hooks/useConnections';
+import { formatDate, formatCost, cn, getSkillRunName } from '../lib/utils';
 
 export default function Dashboard() {
+  const navigate = useNavigate();
   const { data: resources, isLoading: loadingResources } = useResources();
-  const { data: skillRuns, isLoading: loadingSkillRuns } = useSkillRuns();
+  const { data: skillRuns, isLoading: loadingSkillRuns } = useTranslationJobs();
   const { data: migrations, isLoading: loadingMigrations } = useMigrations();
+  const { data: connections } = useConnections();
+  const createMigration = useCreateMigration();
 
   const recentRuns = (skillRuns || []).slice(0, 10);
-  const deleteSkillRun = useDeleteSkillRun();
+  const deleteSkillRun = useDeleteTranslationJob();
+
+  const [showNewMigrationModal, setShowNewMigrationModal] = useState(false);
+  const [newMigrationName, setNewMigrationName] = useState('');
+  const [selectedConnectionId, setSelectedConnectionId] = useState('');
+
+  const handleCreateMigration = () => {
+    if (!newMigrationName.trim()) return;
+    const payload: { name: string; aws_connection_id?: string } = {
+      name: newMigrationName.trim(),
+    };
+    if (selectedConnectionId) {
+      payload.aws_connection_id = selectedConnectionId;
+    }
+    createMigration.mutate(payload, {
+      onSuccess: (newMigration) => {
+        setShowNewMigrationModal(false);
+        setNewMigrationName('');
+        setSelectedConnectionId('');
+        navigate(`/migrations/${newMigration.id}`);
+      },
+    });
+  };
 
   const statusColors: Record<string, string> = {
     queued: 'bg-gray-100 text-gray-800',
     running: 'bg-blue-100 text-blue-800',
     complete: 'bg-green-100 text-green-800',
     failed: 'bg-red-100 text-red-800',
+    draft: 'bg-yellow-100 text-yellow-800',
+    planning: 'bg-blue-100 text-blue-800',
+    ready: 'bg-green-100 text-green-800',
   };
 
   const cards = [
@@ -32,7 +62,7 @@ export default function Dashboard() {
       link: '/resources',
     },
     {
-      label: 'Skill Runs',
+      label: 'Translation Jobs',
       count: skillRuns?.length ?? 0,
       loading: loadingSkillRuns,
       icon: (
@@ -40,7 +70,7 @@ export default function Dashboard() {
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
         </svg>
       ),
-      link: '/skill-runs/new',
+      link: '/translation-jobs',
     },
     {
       label: 'Migrations',
@@ -88,11 +118,17 @@ export default function Dashboard() {
       {/* Quick Actions */}
       <div className="flex gap-4">
         <Link
-          to="/skill-runs/new"
+          to="/translation-jobs/new"
           className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
         >
-          New Skill Run
+          New Translation Job
         </Link>
+        <button
+          onClick={() => setShowNewMigrationModal(true)}
+          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
+        >
+          New Migration
+        </button>
         <Link
           to="/settings"
           className="px-4 py-2 bg-white text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 font-medium"
@@ -101,10 +137,150 @@ export default function Dashboard() {
         </Link>
       </div>
 
+      {/* New Migration Modal */}
+      {showNewMigrationModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowNewMigrationModal(false);
+          }}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Create new migration"
+        >
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-6 space-y-4">
+            <h2 className="text-lg font-semibold">New Migration</h2>
+
+            {createMigration.isError && (
+              <div className="p-3 bg-red-50 text-red-700 rounded-lg text-sm" role="alert">
+                {(createMigration.error as any)?.response?.data?.detail ||
+                  'Failed to create migration.'}
+              </div>
+            )}
+
+            <div>
+              <label htmlFor="migration-name" className="block text-sm font-medium text-gray-700 mb-1">
+                Migration Name
+              </label>
+              <input
+                id="migration-name"
+                type="text"
+                value={newMigrationName}
+                onChange={(e) => setNewMigrationName(e.target.value)}
+                placeholder="e.g., Production VPC Migration"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                autoFocus
+              />
+            </div>
+
+            <div>
+              <label htmlFor="aws-connection" className="block text-sm font-medium text-gray-700 mb-1">
+                AWS Connection (optional)
+              </label>
+              <select
+                id="aws-connection"
+                value={selectedConnectionId}
+                onChange={(e) => setSelectedConnectionId(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="">No connection</option>
+                {(connections || []).map((conn) => (
+                  <option key={conn.id} value={conn.id}>
+                    {conn.name} ({conn.region})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowNewMigrationModal(false);
+                  setNewMigrationName('');
+                  setSelectedConnectionId('');
+                  createMigration.reset();
+                }}
+                className="px-4 py-2 bg-white text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 font-medium text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleCreateMigration}
+                disabled={!newMigrationName.trim() || createMigration.isPending}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium text-sm"
+              >
+                {createMigration.isPending ? 'Creating...' : 'Create'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Migrations */}
+      <div className="bg-white rounded-lg shadow">
+        <div className="p-6 border-b flex items-center justify-between">
+          <h2 className="text-lg font-semibold">Migrations</h2>
+        </div>
+        {loadingMigrations ? (
+          <div className="p-6">
+            <div className="animate-pulse space-y-3">
+              {[...Array(2)].map((_, i) => <div key={i} className="h-12 bg-gray-100 rounded" />)}
+            </div>
+          </div>
+        ) : !migrations?.length ? (
+          <div className="p-6 text-center text-gray-500">
+            No migrations yet. Upload a CloudFormation template or IAM policy to get started.
+          </div>
+        ) : (
+          <div className="divide-y divide-gray-100">
+            {migrations.map((m) => (
+              <div key={m.id} className="p-4 flex items-center justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <Link
+                      to={`/migrations/${m.id}`}
+                      className="font-medium text-sm text-blue-600 hover:text-blue-800 truncate"
+                    >
+                      {m.name}
+                    </Link>
+                    <span
+                      className={cn(
+                        'px-2 py-0.5 rounded text-xs font-medium flex-shrink-0',
+                        statusColors[m.status] || statusColors.queued
+                      )}
+                    >
+                      {m.status}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3 mt-0.5">
+                    <p className="text-xs text-gray-400">{formatDate(m.created_at)}</p>
+                    {(m as any).resource_count !== undefined && (m as any).resource_count !== null && (
+                      <p className="text-xs text-gray-400">
+                        {(m as any).resource_count} resource{(m as any).resource_count !== 1 ? 's' : ''}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <Link
+                    to={`/migrations/${m.id}`}
+                    className="px-3 py-1.5 text-sm bg-white text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 font-medium"
+                  >
+                    View Details
+                  </Link>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* Recent Skill Runs */}
       <div className="bg-white rounded-lg shadow">
         <div className="p-6 border-b">
-          <h2 className="text-lg font-semibold">Recent Skill Runs</h2>
+          <h2 className="text-lg font-semibold">Recent Translation Jobs</h2>
         </div>
 
         {loadingSkillRuns ? (
@@ -117,8 +293,8 @@ export default function Dashboard() {
           </div>
         ) : recentRuns.length === 0 ? (
           <div className="p-6 text-center text-gray-500">
-            No skill runs yet.{' '}
-            <Link to="/skill-runs/new" className="text-blue-600 hover:text-blue-800">
+            No translation jobs yet.{' '}
+            <Link to="/translation-jobs/new" className="text-blue-600 hover:text-blue-800">
               Create one
             </Link>
           </div>
@@ -128,7 +304,7 @@ export default function Dashboard() {
               <thead className="bg-gray-50">
                 <tr>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
-                    Skill Type
+                    Run Name
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
                     Status
@@ -150,8 +326,8 @@ export default function Dashboard() {
               <tbody className="divide-y divide-gray-200">
                 {recentRuns.map((run) => (
                   <tr key={run.id}>
-                    <td className="px-4 py-3 text-sm font-mono">
-                      {run.skill_type}
+                    <td className="px-4 py-3 text-sm text-gray-900 font-medium">
+                      {getSkillRunName(run.skill_type, run.resource_names, run.resource_name)}
                     </td>
                     <td className="px-4 py-3">
                       <span
@@ -176,21 +352,21 @@ export default function Dashboard() {
                       <div className="flex items-center gap-3">
                         {run.status === 'complete' ? (
                           <Link
-                            to={`/skill-runs/${run.id}/results`}
+                            to={`/translation-jobs/${run.id}/results`}
                             className="text-blue-600 hover:text-blue-800 text-sm font-medium"
                           >
                             View Results
                           </Link>
                         ) : run.status === 'running' || run.status === 'queued' ? (
                           <Link
-                            to={`/skill-runs/${run.id}`}
+                            to={`/translation-jobs/${run.id}`}
                             className="text-blue-600 hover:text-blue-800 text-sm font-medium"
                           >
                             View Progress
                           </Link>
                         ) : (
                           <Link
-                            to={`/skill-runs/${run.id}/results`}
+                            to={`/translation-jobs/${run.id}/results`}
                             className="text-gray-600 hover:text-gray-800 text-sm font-medium"
                           >
                             View Details
@@ -198,7 +374,7 @@ export default function Dashboard() {
                         )}
                         <button
                           onClick={() => {
-                            if (confirm('Delete this skill run?')) {
+                            if (confirm('Delete this translation job?')) {
                               deleteSkillRun.mutate(run.id);
                             }
                           }}

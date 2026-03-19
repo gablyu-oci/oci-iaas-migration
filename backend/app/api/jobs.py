@@ -1,4 +1,4 @@
-"""Skill run CRUD, SSE streaming, and artifact download endpoints."""
+"""Translation job CRUD, SSE streaming, and artifact download endpoints."""
 
 import asyncio
 import json
@@ -7,34 +7,35 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-# Registry of in-process skill run jobs keyed by skill_run_id (str).
-# Used to terminate jobs when a run is deleted.
-_running_processes: dict[str, multiprocessing.Process] = {}
+# Registry of in-process translation job processes keyed by translation_job_id (str).
+# Used to terminate jobs when a job is deleted.
+_running_job_processes: dict[str, multiprocessing.Process] = {}
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, or_, cast, Text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
 from app.db.base import get_db
 from app.db.models import (
     Artifact,
-    SkillRun,
-    SkillRunInteraction,
+    Resource,
+    TranslationJob,
+    TranslationJobInteraction,
     Tenant,
 )
 from app.api.deps import get_current_tenant
 
-router = APIRouter(prefix="/api", tags=["skills"])
+router = APIRouter(prefix="/api", tags=["jobs"])
 
 
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
-class SkillRunCreate(BaseModel):
+class TranslationJobCreate(BaseModel):
     skill_type: str  # cfn_terraform | iam_translation | dependency_discovery
     input_content: Optional[str] = None
     input_resource_id: Optional[str] = None
@@ -42,7 +43,7 @@ class SkillRunCreate(BaseModel):
     config: Optional[dict] = None
 
 
-class SkillRunOut(BaseModel):
+class TranslationJobOut(BaseModel):
     id: str
     skill_type: str
     status: str
@@ -55,6 +56,10 @@ class SkillRunOut(BaseModel):
     started_at: Optional[str]
     completed_at: Optional[str]
     created_at: str
+    resource_name: Optional[str] = None
+    resource_names: list[str] = []
+    input_resource_id: Optional[str] = None
+    migration_id: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -94,8 +99,8 @@ def _to_str(val):
     return str(val)
 
 
-def _run_to_out(r: SkillRun) -> SkillRunOut:
-    return SkillRunOut(
+def _job_to_out(r: TranslationJob, resource_name: Optional[str] = None, resource_names: Optional[list[str]] = None) -> TranslationJobOut:
+    return TranslationJobOut(
         id=str(r.id),
         skill_type=r.skill_type,
         status=r.status,
@@ -108,6 +113,10 @@ def _run_to_out(r: SkillRun) -> SkillRunOut:
         started_at=_to_str(r.started_at),
         completed_at=_to_str(r.completed_at),
         created_at=str(r.created_at),
+        resource_name=resource_name,
+        resource_names=resource_names or ([resource_name] if resource_name else []),
+        input_resource_id=_to_str(r.input_resource_id),
+        migration_id=_to_str(r.migration_id),
     )
 
 
@@ -128,7 +137,7 @@ def _validate_input(content: str) -> str:
     raise ValueError("input_content must be valid JSON or YAML")
 
 
-async def _enqueue_or_run(skill_run_id: str):
+async def _enqueue_or_run(translation_job_id: str):
     """
     Try to enqueue via ARQ/Redis. If Redis is unavailable, run the job
     directly in a background task (for development without Redis).
@@ -140,20 +149,20 @@ async def _enqueue_or_run(skill_run_id: str):
         redis = await arq.create_pool(
             arq.connections.RedisSettings.from_dsn(settings.REDIS_URL)
         )
-        await redis.enqueue_job("run_skill_job", skill_run_id)
+        await redis.enqueue_job("run_translation_job", translation_job_id)
         await redis.close()
     except Exception:
         # Redis not available -- run in a child process so it can be
-        # terminated cleanly if the run is deleted mid-execution.
-        # run_skill_job creates its own DB engine, so there is no shared
+        # terminated cleanly if the job is deleted mid-execution.
+        # run_translation_job creates its own DB engine, so there is no shared
         # connection pool between the parent and child.
         ctx = multiprocessing.get_context("spawn")
-        p = ctx.Process(target=_run_skill_in_process, args=(skill_run_id,), daemon=True)
-        _running_processes[skill_run_id] = p
+        p = ctx.Process(target=_run_job_in_process, args=(translation_job_id,), daemon=True)
+        _running_job_processes[translation_job_id] = p
         p.start()
 
 
-def _run_skill_in_process(skill_run_id: str) -> None:
+def _run_job_in_process(translation_job_id: str) -> None:
     """Entry point for the child process. Must be a module-level function.
 
     Calls os.setpgrp() immediately so this process becomes the leader of a
@@ -167,22 +176,26 @@ def _run_skill_in_process(skill_run_id: str) -> None:
     # Unset CLAUDECODE so the Agent SDK (claude CLI) can launch inside this process.
     # When running under Claude Code, this env var is set and blocks nested sessions.
     os.environ.pop("CLAUDECODE", None)
-    from app.services.skill_runner import run_skill_job
-    _asyncio.run(run_skill_job({}, skill_run_id))
+    from app.services.job_runner import run_translation_job
+    _asyncio.run(run_translation_job({}, translation_job_id))
 
 
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
-@router.post("/skill-runs", response_model=SkillRunOut, status_code=201)
-async def create_skill_run(
-    body: SkillRunCreate,
+@router.post("/translation-jobs", response_model=TranslationJobOut, status_code=201)
+async def create_translation_job(
+    body: TranslationJobCreate,
     tenant: Tenant = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a new skill run and enqueue it for processing."""
+    """Create a new translation job and enqueue it for processing."""
     # Validate skill_type
-    valid_types = {"cfn_terraform", "iam_translation", "dependency_discovery"}
+    valid_types = {
+        "cfn_terraform", "iam_translation", "dependency_discovery",
+        "network_translation", "ec2_translation", "database_translation",
+        "loadbalancer_translation", "storage_translation",
+    }
     if body.skill_type not in valid_types:
         raise HTTPException(
             status_code=400,
@@ -196,7 +209,7 @@ async def create_skill_run(
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
-    run = SkillRun(
+    job = TranslationJob(
         tenant_id=tenant.id,
         skill_type=body.skill_type,
         input_content=body.input_content,
@@ -209,50 +222,100 @@ async def create_skill_run(
         config=body.config,
         status="queued",
     )
-    db.add(run)
+    db.add(job)
     await db.commit()
-    await db.refresh(run)
+    await db.refresh(job)
 
     # Enqueue the job
-    await _enqueue_or_run(str(run.id))
+    await _enqueue_or_run(str(job.id))
 
-    return _run_to_out(run)
+    return _job_to_out(job)
 
 
-@router.get("/skill-runs", response_model=list[SkillRunOut])
-async def list_skill_runs(
+@router.get("/translation-jobs", response_model=list[TranslationJobOut])
+async def list_translation_jobs(
+    migration_id: Optional[str] = None,
+    resource_id: Optional[str] = None,
     tenant: Tenant = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(SkillRun)
-        .where(SkillRun.tenant_id == tenant.id)
-        .order_by(SkillRun.created_at.desc())
-    )
+    query = select(TranslationJob).where(TranslationJob.tenant_id == tenant.id)
+    if migration_id:
+        query = query.where(TranslationJob.migration_id == uuid.UUID(migration_id))
+    if resource_id:
+        resource_uuid = uuid.UUID(resource_id)
+        # Match jobs where this resource is the primary resource OR in the batch list
+        query = query.where(
+            or_(
+                TranslationJob.input_resource_id == resource_uuid,
+                cast(TranslationJob.config["resource_ids"], Text).contains(str(resource_uuid)),
+            )
+        )
+    query = query.order_by(TranslationJob.created_at.desc())
+    result = await db.execute(query)
     rows = result.scalars().all()
-    return [_run_to_out(r) for r in rows]
+
+    # Batch-load resource names for all resource IDs referenced by any job
+    all_lookup_ids: set[uuid.UUID] = set()
+    for r in rows:
+        if r.input_resource_id:
+            all_lookup_ids.add(r.input_resource_id)
+        if r.config and r.config.get("resource_ids"):
+            for rid_str in r.config["resource_ids"]:
+                try:
+                    all_lookup_ids.add(uuid.UUID(rid_str))
+                except (ValueError, TypeError):
+                    pass
+
+    resource_name_map: dict[uuid.UUID, str] = {}
+    if all_lookup_ids:
+        res_result = await db.execute(
+            select(Resource.id, Resource.name).where(Resource.id.in_(list(all_lookup_ids)))
+        )
+        for rid, rname in res_result.all():
+            resource_name_map[rid] = rname or ""
+
+    def _resource_names_for(r: TranslationJob) -> list[str]:
+        ordered_ids: list[uuid.UUID] = []
+        if r.input_resource_id:
+            ordered_ids.append(r.input_resource_id)
+        if r.config and r.config.get("resource_ids"):
+            for rid_str in r.config["resource_ids"]:
+                try:
+                    rid = uuid.UUID(rid_str)
+                    if rid not in ordered_ids:
+                        ordered_ids.append(rid)
+                except (ValueError, TypeError):
+                    pass
+        return [resource_name_map[rid] for rid in ordered_ids if rid in resource_name_map]
+
+    def _job_out_for(r: TranslationJob) -> TranslationJobOut:
+        names = _resource_names_for(r)
+        return _job_to_out(r, resource_name=names[0] if names else None, resource_names=names)
+
+    return [_job_out_for(r) for r in rows]
 
 
-@router.delete("/skill-runs/{run_id}", status_code=204)
-async def delete_skill_run(
-    run_id: str,
+@router.delete("/translation-jobs/{job_id}", status_code=204)
+async def delete_translation_job(
+    job_id: str,
     tenant: Tenant = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(SkillRun).where(
-            SkillRun.id == uuid.UUID(run_id),
-            SkillRun.tenant_id == tenant.id,
+        select(TranslationJob).where(
+            TranslationJob.id == uuid.UUID(job_id),
+            TranslationJob.tenant_id == tenant.id,
         )
     )
-    run = result.scalar_one_or_none()
-    if not run:
-        raise HTTPException(status_code=404, detail="Skill run not found")
+    job = result.scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Translation job not found")
 
     # Terminate the child process and all its descendants (e.g. the `claude`
     # CLI subprocess spawned by AgentSDKClient) so in-flight model calls stop.
     # The child called os.setpgrp(), making proc.pid the process group ID.
-    proc = _running_processes.pop(run_id, None)
+    proc = _running_job_processes.pop(job_id, None)
     if proc is not None and proc.is_alive():
         import os, signal
         try:
@@ -268,35 +331,59 @@ async def delete_skill_run(
 
     # Delete child records first (FK constraints have no CASCADE)
     from sqlalchemy import delete as _delete
-    run_uuid = uuid.UUID(run_id)
-    await db.execute(_delete(SkillRunInteraction).where(SkillRunInteraction.skill_run_id == run_uuid))
-    await db.execute(_delete(Artifact).where(Artifact.skill_run_id == run_uuid))
+    job_uuid = uuid.UUID(job_id)
+    await db.execute(_delete(TranslationJobInteraction).where(TranslationJobInteraction.translation_job_id == job_uuid))
+    await db.execute(_delete(Artifact).where(Artifact.translation_job_id == job_uuid))
 
-    await db.delete(run)
+    await db.delete(job)
     await db.commit()
 
 
-@router.get("/skill-runs/{run_id}", response_model=SkillRunOut)
-async def get_skill_run(
-    run_id: str,
+@router.get("/translation-jobs/{job_id}", response_model=TranslationJobOut)
+async def get_translation_job(
+    job_id: str,
     tenant: Tenant = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(SkillRun).where(
-            SkillRun.id == uuid.UUID(run_id),
-            SkillRun.tenant_id == tenant.id,
+        select(TranslationJob).where(
+            TranslationJob.id == uuid.UUID(job_id),
+            TranslationJob.tenant_id == tenant.id,
         )
     )
-    run = result.scalar_one_or_none()
-    if not run:
-        raise HTTPException(status_code=404, detail="Skill run not found")
-    return _run_to_out(run)
+    job = result.scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Translation job not found")
+
+    # Collect all resource IDs this job covers
+    all_resource_ids: list[uuid.UUID] = []
+    if job.input_resource_id:
+        all_resource_ids.append(job.input_resource_id)
+    if job.config and job.config.get("resource_ids"):
+        for rid_str in job.config["resource_ids"]:
+            try:
+                rid = uuid.UUID(rid_str)
+                if rid not in all_resource_ids:
+                    all_resource_ids.append(rid)
+            except (ValueError, TypeError):
+                pass
+
+    resource_names: list[str] = []
+    if all_resource_ids:
+        res_result = await db.execute(
+            select(Resource.id, Resource.name).where(Resource.id.in_(all_resource_ids))
+        )
+        id_to_name = {row[0]: row[1] or "" for row in res_result.all()}
+        # Preserve insertion order
+        resource_names = [id_to_name[rid] for rid in all_resource_ids if rid in id_to_name]
+
+    resource_name = resource_names[0] if resource_names else None
+    return _job_to_out(job, resource_name=resource_name, resource_names=resource_names)
 
 
-@router.get("/skill-runs/{run_id}/stream")
-async def stream_skill_run(
-    run_id: str,
+@router.get("/translation-jobs/{job_id}/stream")
+async def stream_translation_job(
+    job_id: str,
     token: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
@@ -320,33 +407,33 @@ async def stream_skill_run(
 
     # Verify ownership
     result = await db.execute(
-        select(SkillRun).where(
-            SkillRun.id == uuid.UUID(run_id),
-            SkillRun.tenant_id == tenant.id,
+        select(TranslationJob).where(
+            TranslationJob.id == uuid.UUID(job_id),
+            TranslationJob.tenant_id == tenant.id,
         )
     )
-    run = result.scalar_one_or_none()
-    if not run:
-        raise HTTPException(status_code=404, detail="Skill run not found")
+    job = result.scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Translation job not found")
 
-    run_uuid = uuid.UUID(run_id)
+    job_uuid = uuid.UUID(job_id)
     last_interaction_ts = None  # track last seen interaction timestamp
 
     async def event_generator():
-        """Yield SSE events by polling the skill_run row."""
+        """Yield SSE events by polling the translation_jobs row."""
         nonlocal last_interaction_ts
         from app.db.base import async_session as session_factory
 
         while True:
             async with session_factory() as poll_db:
                 res = await poll_db.execute(
-                    select(SkillRun).where(SkillRun.id == run_uuid)
+                    select(TranslationJob).where(TranslationJob.id == job_uuid)
                 )
                 current = res.scalar_one_or_none()
                 if not current:
                     yield {
                         "event": "error",
-                        "data": json.dumps({"error": "Run not found"}),
+                        "data": json.dumps({"error": "Job not found"}),
                     }
                     return
 
@@ -358,13 +445,13 @@ async def stream_skill_run(
                 # Fetch any new interactions since last poll
                 new_interactions = []
                 interaction_query = (
-                    select(SkillRunInteraction)
-                    .where(SkillRunInteraction.skill_run_id == run_uuid)
-                    .order_by(SkillRunInteraction.created_at.asc())
+                    select(TranslationJobInteraction)
+                    .where(TranslationJobInteraction.translation_job_id == job_uuid)
+                    .order_by(TranslationJobInteraction.created_at.asc())
                 )
                 if last_interaction_ts is not None:
                     interaction_query = interaction_query.where(
-                        SkillRunInteraction.created_at > last_interaction_ts
+                        TranslationJobInteraction.created_at > last_interaction_ts
                     )
                 itr_res = await poll_db.execute(interaction_query)
                 rows = itr_res.scalars().all()
@@ -418,25 +505,25 @@ async def stream_skill_run(
     return EventSourceResponse(event_generator())
 
 
-@router.get("/skill-runs/{run_id}/interactions", response_model=list[InteractionOut])
+@router.get("/translation-jobs/{job_id}/interactions", response_model=list[InteractionOut])
 async def list_interactions(
-    run_id: str,
+    job_id: str,
     tenant: Tenant = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
 ):
-    run_result = await db.execute(
-        select(SkillRun).where(
-            SkillRun.id == uuid.UUID(run_id),
-            SkillRun.tenant_id == tenant.id,
+    job_result = await db.execute(
+        select(TranslationJob).where(
+            TranslationJob.id == uuid.UUID(job_id),
+            TranslationJob.tenant_id == tenant.id,
         )
     )
-    if not run_result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Skill run not found")
+    if not job_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Translation job not found")
 
     result = await db.execute(
-        select(SkillRunInteraction)
-        .where(SkillRunInteraction.skill_run_id == uuid.UUID(run_id))
-        .order_by(SkillRunInteraction.created_at.asc())
+        select(TranslationJobInteraction)
+        .where(TranslationJobInteraction.translation_job_id == uuid.UUID(job_id))
+        .order_by(TranslationJobInteraction.created_at.asc())
     )
     rows = result.scalars().all()
     return [
@@ -457,24 +544,24 @@ async def list_interactions(
     ]
 
 
-@router.get("/skill-runs/{run_id}/artifacts", response_model=list[ArtifactOut])
+@router.get("/translation-jobs/{job_id}/artifacts", response_model=list[ArtifactOut])
 async def list_artifacts(
-    run_id: str,
+    job_id: str,
     tenant: Tenant = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
 ):
     # Verify ownership
-    run_result = await db.execute(
-        select(SkillRun).where(
-            SkillRun.id == uuid.UUID(run_id),
-            SkillRun.tenant_id == tenant.id,
+    job_result = await db.execute(
+        select(TranslationJob).where(
+            TranslationJob.id == uuid.UUID(job_id),
+            TranslationJob.tenant_id == tenant.id,
         )
     )
-    if not run_result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Skill run not found")
+    if not job_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Translation job not found")
 
     result = await db.execute(
-        select(Artifact).where(Artifact.skill_run_id == uuid.UUID(run_id))
+        select(Artifact).where(Artifact.translation_job_id == uuid.UUID(job_id))
     )
     rows = result.scalars().all()
     return [

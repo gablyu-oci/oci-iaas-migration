@@ -7,6 +7,7 @@ export interface Migration {
   status: string;
   aws_connection_id: string | null;
   created_at: string;
+  resource_count?: number | null;
 }
 
 export function useMigrations() {
@@ -39,6 +40,37 @@ export function useExtractResources() {
     mutationFn: (migrationId: string) =>
       client.post(`/api/migrations/${migrationId}/extract`).then((r) => r.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['resources'] }),
+  });
+}
+
+export function useExtractWithInstance() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      migrationId,
+      instanceId,
+    }: {
+      migrationId: string;
+      instanceId?: string;
+    }) => {
+      const params = instanceId ? { instance_id: instanceId } : undefined;
+      return client
+        .post(`/api/migrations/${migrationId}/extract`, null, { params })
+        .then((r) => r.data);
+    },
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: ['resources'] });
+      qc.invalidateQueries({ queryKey: ['migrations', variables.migrationId] });
+    },
+  });
+}
+
+export function useDeleteMigration() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (migrationId: string) =>
+      client.delete(`/api/migrations/${migrationId}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['migrations'] }),
   });
 }
 

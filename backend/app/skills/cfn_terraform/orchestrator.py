@@ -354,8 +354,8 @@ def run_gap_analysis_from_text(template_text: str) -> dict:
         if any("EKS" in t for t in detected_types):
             container_target = "OKE"
 
-        # Estimate: most resources can be mapped
-        mapped_resources = max(0, total_resources - 1)  # conservative
+        # Optimistic baseline; reviewer issues will reduce final confidence
+        mapped_resources = total_resources
 
     except Exception:
         total_resources = 1

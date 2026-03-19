@@ -1,16 +1,16 @@
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { useSkillRun } from '../api/hooks/useSkillRuns';
+import { useTranslationJob } from '../api/hooks/useTranslationJobs';
 import SkillProgressTracker from '../components/SkillProgressTracker';
 
-export default function SkillRunProgress() {
+export default function TranslationJobProgress() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { data: run, isLoading, isError } = useSkillRun(id || '');
+  const { data: run, isLoading, isError } = useTranslationJob(id || '');
 
   if (!id) {
     return (
       <div className="text-center py-12 text-gray-500">
-        No skill run ID provided.
+        No translation job ID provided.
       </div>
     );
   }
@@ -30,7 +30,7 @@ export default function SkillRunProgress() {
   if (isError) {
     return (
       <div className="text-center py-12">
-        <p className="text-red-500 mb-4">Failed to load skill run.</p>
+        <p className="text-red-500 mb-4">Failed to load translation job.</p>
         <Link to="/dashboard" className="text-blue-600 hover:text-blue-800">
           Back to Dashboard
         </Link>
@@ -41,20 +41,20 @@ export default function SkillRunProgress() {
   return (
     <div className="max-w-2xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">Skill Run Progress</h1>
+        <h1 className="text-2xl font-bold">Translation Job Progress</h1>
         <p className="text-gray-600 mt-1">
-          {run?.skill_type ? `Type: ${run.skill_type}` : 'Monitoring skill run...'}
+          {run?.skill_type ? `Type: ${run.skill_type}` : 'Monitoring translation job...'}
         </p>
       </div>
 
       <SkillProgressTracker
         skillRunId={id}
-        onComplete={() => navigate(`/skill-runs/${id}/results`)}
+        onComplete={() => navigate(`/translation-jobs/${id}/results`)}
       />
 
       {run?.status === 'failed' && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-          <h3 className="text-red-800 font-semibold mb-2">Skill Run Failed</h3>
+          <h3 className="text-red-800 font-semibold mb-2">Translation Job Failed</h3>
           <p className="text-red-700 text-sm">
             {run.errors
               ? JSON.stringify(run.errors, null, 2)
@@ -62,7 +62,7 @@ export default function SkillRunProgress() {
           </p>
           <div className="mt-4 flex gap-3">
             <Link
-              to="/skill-runs/new"
+              to="/translation-jobs/new"
               className="text-sm text-blue-600 hover:text-blue-800 font-medium"
             >
               Try Again

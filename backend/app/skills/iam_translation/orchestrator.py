@@ -411,7 +411,17 @@ def run_gap_analysis(policy_text: str) -> dict:
                       "kms", "vpc", "logs", "cloudwatch", "sqs", "sns",
                       "ecs", "eks", "secretsmanager", "ssm", "elasticloadbalancing",
                       "autoscaling", "cloudformation", "codecommit", "codebuild",
-                      "codepipeline", "ecr", "route53", "cloudfront", "waf"}
+                      "codepipeline", "ecr", "route53", "cloudfront", "waf",
+                      "bedrock", "sagemaker", "glue", "athena", "redshift", "emr",
+                      "kinesis", "firehose", "kafka", "es", "opensearch", "elasticache",
+                      "memorydb", "dax", "neptune", "timestream", "qldb", "docdb",
+                      "fsx", "backup", "transfer", "datasync", "storagegateway",
+                      "workspaces", "connect", "pinpoint", "ses", "eventbridge",
+                      "states", "batch", "amplify", "appsync", "apigateway",
+                      "execute-api", "xray", "guardduty", "inspector", "macie",
+                      "securityhub", "wafv2", "shield", "detective", "access-analyzer",
+                      "sso", "identitystore", "organizations", "controltower", "config",
+                      "cloudtrail", "ce", "pricing", "iot", "greengrass", "braket"}
     unmapped = detected_services - KNOWN_SERVICES
     mapped_statements = max(0, total - len(unmapped))
 
