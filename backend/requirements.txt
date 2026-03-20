@@ -16,3 +16,4 @@ python-dotenv
 pydantic-settings
 python-multipart
 email-validator
+json-repair>=0.30.0

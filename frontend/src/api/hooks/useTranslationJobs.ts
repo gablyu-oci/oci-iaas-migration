@@ -172,3 +172,21 @@ export function getArtifactDownloadUrl(artifactId: string) {
   const token = localStorage.getItem('token');
   return `${API_URL}/api/artifacts/${artifactId}/download?token=${token}`;
 }
+
+export async function downloadArtifactsAsZip(artifactIds: string[]): Promise<void> {
+  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+  const token = localStorage.getItem('token') ?? '';
+  const resp = await fetch(`${API_URL}/api/artifacts/download-zip`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ artifact_ids: artifactIds, token }),
+  });
+  if (!resp.ok) throw new Error('Failed to download zip');
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'migration-output.zip';
+  a.click();
+  URL.revokeObjectURL(url);
+}

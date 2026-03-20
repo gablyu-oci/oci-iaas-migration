@@ -43,6 +43,21 @@ export interface ExecuteOut {
   translation_job_id: string;
 }
 
+export interface SynthesisOut {
+  translation_job_id: string;
+  job_count: number;
+}
+
+export interface SynthesisJob {
+  id: string;
+  status: string;
+  confidence: number;
+  current_phase: string | null;
+  created_at: string;
+  completed_at: string | null;
+  errors: Record<string, unknown> | null;
+}
+
 // ---------------------------------------------------------------------------
 // API functions
 // ---------------------------------------------------------------------------
@@ -65,6 +80,14 @@ export function executeWorkload(workloadId: string): Promise<ExecuteOut> {
 
 export function deletePlan(planId: string): Promise<void> {
   return client.delete(`/api/plans/${planId}`).then(() => undefined);
+}
+
+export function synthesizeMigration(migrationId: string): Promise<SynthesisOut> {
+  return client.post(`/api/migrations/${migrationId}/synthesize`).then((r) => r.data);
+}
+
+export function getLatestSynthesis(migrationId: string): Promise<SynthesisJob | null> {
+  return client.get(`/api/migrations/${migrationId}/synthesize/latest`).then((r) => r.data);
 }
 
 export function getWorkloadStreamUrl(translationJobId: string): string {
@@ -127,6 +150,30 @@ export function useDeletePlan() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['plans'] });
       qc.invalidateQueries({ queryKey: ['migrations'] });
+    },
+  });
+}
+
+export function useSynthesizeMigration() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (migrationId: string) => synthesizeMigration(migrationId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['synthesis'] });
+      qc.invalidateQueries({ queryKey: ['translation-jobs'] });
+    },
+  });
+}
+
+export function useLatestSynthesis(migrationId: string) {
+  return useQuery<SynthesisJob | null>({
+    queryKey: ['synthesis', migrationId],
+    queryFn: () => getLatestSynthesis(migrationId),
+    enabled: !!migrationId,
+    refetchInterval: (query) => {
+      const job = query.state.data;
+      if (!job || job.status === 'complete' || job.status === 'failed') return false;
+      return 3000;
     },
   });
 }

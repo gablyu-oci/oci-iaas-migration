@@ -194,7 +194,7 @@ async def create_translation_job(
     valid_types = {
         "cfn_terraform", "iam_translation", "dependency_discovery",
         "network_translation", "ec2_translation", "database_translation",
-        "loadbalancer_translation", "storage_translation",
+        "loadbalancer_translation", "storage_translation", "migration_synthesis",
     }
     if body.skill_type not in valid_types:
         raise HTTPException(
@@ -579,10 +579,25 @@ async def list_artifacts(
 @router.get("/artifacts/{artifact_id}/download")
 async def download_artifact(
     artifact_id: str,
-    tenant: Tenant = Depends(get_current_tenant),
+    token: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Download an artifact as a file attachment."""
+    # Browser <a download> links cannot send headers, so accept JWT as ?token= query param.
+    from app.services.auth_service import decode_token as _decode
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    try:
+        payload = _decode(token)
+        tenant_id = payload.get("sub")
+        if not tenant_id:
+            raise ValueError
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    t_res = await db.execute(select(Tenant).where(Tenant.id == uuid.UUID(tenant_id)))
+    tenant = t_res.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Tenant not found")
+
     result = await db.execute(
         select(Artifact).where(
             Artifact.id == uuid.UUID(artifact_id),
@@ -604,4 +619,54 @@ async def download_artifact(
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
         },
+    )
+
+
+class ZipDownloadRequest(BaseModel):
+    artifact_ids: list[str]
+    token: str
+
+
+@router.post("/artifacts/download-zip")
+async def download_artifacts_zip(
+    body: ZipDownloadRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Download multiple artifacts as a single ZIP file."""
+    import zipfile
+    from io import BytesIO as _BytesIO
+    from app.services.auth_service import decode_token as _decode
+
+    try:
+        payload = _decode(body.token)
+        tenant_id = payload.get("sub")
+        if not tenant_id:
+            raise ValueError
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    t_res = await db.execute(select(Tenant).where(Tenant.id == uuid.UUID(tenant_id)))
+    tenant = t_res.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Tenant not found")
+
+    artifact_uuids = [uuid.UUID(aid) for aid in body.artifact_ids]
+    result = await db.execute(
+        select(Artifact).where(
+            Artifact.id.in_(artifact_uuids),
+            Artifact.tenant_id == tenant.id,
+        )
+    )
+    artifacts = result.scalars().all()
+
+    buf = _BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for art in artifacts:
+            zf.writestr(art.file_name or str(art.id), art.data or b"")
+    buf.seek(0)
+
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="migration-output.zip"'},
     )

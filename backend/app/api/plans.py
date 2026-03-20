@@ -153,24 +153,17 @@ def _run_job_in_process(translation_job_id: str) -> None:
 
 
 async def _enqueue_or_run(translation_job_id: str) -> None:
-    """Try to enqueue the job via ARQ/Redis; fall back to a child process."""
-    try:
-        import arq
-        from app.config import settings
+    """Run a translation job in a spawned child process.
 
-        redis = await arq.create_pool(
-            arq.connections.RedisSettings.from_dsn(settings.REDIS_URL)
-        )
-        await redis.enqueue_job("run_translation_job", translation_job_id)
-        await redis.close()
-    except Exception:
-        # Redis not available -- run in a spawned child process so it can be
-        # terminated cleanly if needed.
-        ctx = multiprocessing.get_context("spawn")
-        p = ctx.Process(
-            target=_run_job_in_process, args=(translation_job_id,), daemon=True
-        )
-        p.start()
+    Child processes unset CLAUDECODE so the Agent SDK can launch cleanly,
+    and run without a job-level timeout that would conflict with long-running
+    synthesis or translation jobs.
+    """
+    ctx = multiprocessing.get_context("spawn")
+    p = ctx.Process(
+        target=_run_job_in_process, args=(translation_job_id,), daemon=True
+    )
+    p.start()
 
 
 async def _load_plan_eager(
@@ -238,6 +231,94 @@ async def generate_migration_plan(
         raise HTTPException(status_code=500, detail="Failed to load generated plan")
 
     return _plan_to_out(loaded)
+
+
+@router.post("/migrations/{mig_id}/synthesize", status_code=202)
+async def synthesize_migration(
+    mig_id: str,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a migration_synthesis job that reads all completed translation
+    job artifacts for the migration and produces a unified Terraform plan."""
+    try:
+        mig_uuid = uuid.UUID(mig_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid migration ID format")
+
+    result = await db.execute(
+        select(Migration).where(
+            Migration.id == mig_uuid,
+            Migration.tenant_id == tenant.id,
+        )
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Migration not found")
+
+    completed_result = await db.execute(
+        select(TranslationJob).where(
+            TranslationJob.migration_id == mig_uuid,
+            TranslationJob.status == "complete",
+            TranslationJob.skill_type != "migration_synthesis",
+        )
+    )
+    completed_jobs = list(completed_result.scalars().all())
+    if not completed_jobs:
+        raise HTTPException(
+            status_code=400,
+            detail="No completed translation jobs found. Run translation jobs on workloads first.",
+        )
+
+    job = TranslationJob(
+        tenant_id=tenant.id,
+        migration_id=mig_uuid,
+        skill_type="migration_synthesis",
+        status="queued",
+        config={"job_count": len(completed_jobs)},
+    )
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+
+    await _enqueue_or_run(str(job.id))
+
+    return {"translation_job_id": str(job.id), "job_count": len(completed_jobs)}
+
+
+@router.get("/migrations/{mig_id}/synthesize/latest")
+async def get_latest_synthesis(
+    mig_id: str,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the most recent migration_synthesis job for a migration, or null."""
+    try:
+        mig_uuid = uuid.UUID(mig_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid migration ID format")
+
+    result = await db.execute(
+        select(TranslationJob)
+        .where(
+            TranslationJob.migration_id == mig_uuid,
+            TranslationJob.tenant_id == tenant.id,
+            TranslationJob.skill_type == "migration_synthesis",
+        )
+        .order_by(TranslationJob.created_at.desc())
+        .limit(1)
+    )
+    job = result.scalar_one_or_none()
+    if not job:
+        return None
+    return {
+        "id": str(job.id),
+        "status": job.status,
+        "confidence": job.confidence,
+        "current_phase": job.current_phase,
+        "created_at": str(job.created_at),
+        "completed_at": str(job.completed_at) if job.completed_at else None,
+        "errors": job.errors,
+    }
 
 
 @router.get("/plans", response_model=list[PlanOut])

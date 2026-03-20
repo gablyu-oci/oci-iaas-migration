@@ -5,55 +5,13 @@ import { useResources } from '../api/hooks/useResources';
 import ResourceTable, { type Resource } from '../components/ResourceTable';
 
 const SKILL_TYPES = [
-  {
-    value: 'cfn_terraform',
-    label: 'CloudFormation to Terraform',
-    description: 'Convert AWS CloudFormation templates to OCI Terraform HCL',
-    accept: '.yaml,.yml,.json',
-    hint: 'YAML or JSON CloudFormation template',
-  },
-  {
-    value: 'iam_translation',
-    label: 'IAM Translation',
-    description: 'Translate AWS IAM policies to OCI IAM policies',
-    accept: '.json',
-    hint: 'JSON IAM policy document',
-  },
-  {
-    value: 'dependency_discovery',
-    label: 'Dependency Discovery',
-    description: 'Discover and map resource dependencies from CloudTrail',
-    accept: '.json,.csv,.log',
-    hint: 'CloudTrail JSON or VPC Flow Log',
-  },
-  {
-    value: 'network_translation',
-    label: 'Network Translation',
-    description: 'Translate VPC, Subnets, and Security Groups to OCI VCN',
-    accept: '.json,.yaml,.yml,.tf',
-    hint: 'VPC/Subnet/SG configuration (JSON, YAML, or Terraform)',
-  },
-  {
-    value: 'ec2_translation',
-    label: 'EC2 Translation',
-    description: 'Translate EC2 instances and ASGs to OCI Compute',
-    accept: '.json,.yaml,.yml,.tf',
-    hint: 'EC2 instance or ASG configuration',
-  },
-  {
-    value: 'database_translation',
-    label: 'Database Translation',
-    description: 'Translate RDS instances to OCI Database System',
-    accept: '.json,.yaml,.yml,.tf',
-    hint: 'RDS instance configuration',
-  },
-  {
-    value: 'loadbalancer_translation',
-    label: 'Load Balancer Translation',
-    description: 'Translate ALB/NLB to OCI Load Balancer',
-    accept: '.json,.yaml,.yml,.tf',
-    hint: 'ALB or NLB configuration',
-  },
+  { value: 'cfn_terraform', label: 'CFN → Terraform', description: 'Convert CloudFormation to OCI Terraform HCL', accept: '.yaml,.yml,.json', hint: 'YAML or JSON CloudFormation template' },
+  { value: 'iam_translation', label: 'IAM Translation', description: 'Translate AWS IAM policies to OCI IAM', accept: '.json', hint: 'JSON IAM policy document' },
+  { value: 'dependency_discovery', label: 'Dependency Discovery', description: 'Discover resource dependencies from CloudTrail', accept: '.json,.csv,.log', hint: 'CloudTrail JSON or VPC Flow Log' },
+  { value: 'network_translation', label: 'Network Translation', description: 'VPC, Subnets, SGs → OCI VCN', accept: '.json,.yaml,.yml,.tf', hint: 'VPC/Subnet/SG config' },
+  { value: 'ec2_translation', label: 'EC2 Translation', description: 'EC2 / ASGs → OCI Compute', accept: '.json,.yaml,.yml,.tf', hint: 'EC2 or ASG config' },
+  { value: 'database_translation', label: 'Database Translation', description: 'RDS → OCI Database System', accept: '.json,.yaml,.yml,.tf', hint: 'RDS instance config' },
+  { value: 'loadbalancer_translation', label: 'Load Balancer', description: 'ALB / NLB → OCI Load Balancer', accept: '.json,.yaml,.yml,.tf', hint: 'ALB or NLB config' },
 ];
 
 export default function TranslationJobNew() {
@@ -61,12 +19,8 @@ export default function TranslationJobNew() {
   const preselectedResourceId = searchParams.get('resource_id') || '';
 
   const [skillType, setSkillType] = useState('cfn_terraform');
-  const [inputMode, setInputMode] = useState<'resource' | 'file'>(
-    preselectedResourceId ? 'resource' : 'file'
-  );
-  const [selectedResourceId, setSelectedResourceId] = useState(
-    preselectedResourceId
-  );
+  const [inputMode, setInputMode] = useState<'resource' | 'file'>(preselectedResourceId ? 'resource' : 'file');
+  const [selectedResourceId, setSelectedResourceId] = useState(preselectedResourceId);
   const [inputContent, setInputContent] = useState('');
   const [pastedContent, setPastedContent] = useState('');
   const [fileName, setFileName] = useState('');
@@ -76,13 +30,13 @@ export default function TranslationJobNew() {
   const [maxIterations, setMaxIterations] = useState(3);
 
   const currentSkill = SKILL_TYPES.find((s) => s.value === skillType)!;
+  const navigate = useNavigate();
+  const createSkillRun = useCreateTranslationJob();
+  const { data: resources, isLoading: loadingResources } = useResources();
 
   const loadFile = (file: File) => {
     setFileError('');
-    if (file.size > 5 * 1024 * 1024) {
-      setFileError('File is too large. Maximum size is 5 MB.');
-      return;
-    }
+    if (file.size > 5 * 1024 * 1024) { setFileError('File is too large. Maximum size is 5 MB.'); return; }
     const reader = new FileReader();
     reader.onload = (e) => {
       setInputContent(e.target?.result as string);
@@ -91,11 +45,6 @@ export default function TranslationJobNew() {
     };
     reader.onerror = () => setFileError('Failed to read file.');
     reader.readAsText(file);
-  };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) loadFile(file);
   };
 
   const handleDrop = (e: DragEvent<HTMLDivElement>) => {
@@ -107,21 +56,12 @@ export default function TranslationJobNew() {
 
   const handlePasteChange = (value: string) => {
     setPastedContent(value);
-    if (value.trim()) {
-      setInputContent(value);
-      setFileName('');
-    } else if (!fileName) {
-      setInputContent('');
-    }
+    if (value.trim()) { setInputContent(value); setFileName(''); }
+    else if (!fileName) setInputContent('');
   };
-
-  const navigate = useNavigate();
-  const createSkillRun = useCreateTranslationJob();
-  const { data: resources, isLoading: loadingResources } = useResources();
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
-
     const payload: {
       skill_type: string;
       input_content?: string;
@@ -131,223 +71,222 @@ export default function TranslationJobNew() {
       skill_type: skillType,
       config: { max_iterations: maxIterations },
     };
-
     if (inputMode === 'resource' && selectedResourceId) {
       payload.input_resource_id = selectedResourceId;
     } else if (inputMode === 'file' && inputContent.trim()) {
       payload.input_content = inputContent;
     }
-
     createSkillRun.mutate(payload, {
-      onSuccess: (data: { id: string }) => {
-        navigate(`/translation-jobs/${data.id}`);
-      },
+      onSuccess: (data: { id: string }) => navigate(`/translation-jobs/${data.id}`),
     });
   };
 
-  const handleResourceSelect = (resource: Resource) => {
-    setSelectedResourceId(resource.id);
-  };
-
   return (
-    <div className="space-y-6 max-w-4xl">
+    <div className="space-y-6 max-w-4xl animate-fade-in">
       <div>
         <button
           onClick={() => navigate(-1)}
-          className="flex items-center text-sm text-gray-500 hover:text-gray-700 mb-2"
+          className="back-link"
+          style={{ background: 'none', border: 'none', cursor: 'pointer' }}
         >
-          ← Back
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          </svg>
+          Back
         </button>
-        <h1 className="text-2xl font-bold">New Translation Job</h1>
-        <p className="text-gray-600 mt-1">
-          Configure and launch an AI-powered migration translation job.
-        </p>
+        <h1 className="page-title">New Translation Job</h1>
+        <p className="page-subtitle">Configure and launch an AI-powered migration translation job.</p>
       </div>
 
       {createSkillRun.isError && (
-        <div className="p-3 bg-red-50 text-red-700 rounded-lg text-sm" role="alert">
-          {(createSkillRun.error as any)?.response?.data?.detail ||
-            'Failed to create translation job.'}
+        <div className="alert alert-error" role="alert">
+          {(createSkillRun.error as any)?.response?.data?.detail || 'Failed to create translation job.'}
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className="space-y-6">
+      <form onSubmit={handleSubmit} className="space-y-4">
         {/* Skill Type */}
-        <div className="bg-white rounded-lg shadow p-6">
-          <h2 className="text-lg font-semibold mb-4">Skill Type</h2>
-          <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4">
-            {SKILL_TYPES.map((st) => (
-              <label
-                key={st.value}
-                className={`border-2 rounded-lg p-4 cursor-pointer transition-colors ${
-                  skillType === st.value
-                    ? 'border-blue-500 bg-blue-50'
-                    : 'border-gray-200 hover:border-gray-300'
-                }`}
-              >
-                <input
-                  type="radio"
-                  name="skill_type"
-                  value={st.value}
-                  checked={skillType === st.value}
-                  onChange={() => setSkillType(st.value)}
-                  className="sr-only"
-                />
-                <p className="font-medium text-sm">{st.label}</p>
-                <p className="text-xs text-gray-500 mt-1">{st.description}</p>
-              </label>
-            ))}
+        <div className="panel">
+          <div className="panel-header">
+            <h2 className="text-sm font-semibold" style={{ color: '#0f172a' }}>Skill Type</h2>
+          </div>
+          <div className="panel-body">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+              {SKILL_TYPES.map((st) => (
+                <label
+                  key={st.value}
+                  className="rounded-lg p-3 cursor-pointer transition-colors"
+                  style={{
+                    background: skillType === st.value ? 'rgba(249,115,22,0.08)' : 'var(--color-well)',
+                    border: `1px solid ${skillType === st.value ? 'rgba(249,115,22,0.35)' : 'var(--color-fence)'}`,
+                  }}
+                >
+                  <input
+                    type="radio"
+                    name="skill_type"
+                    value={st.value}
+                    checked={skillType === st.value}
+                    onChange={() => setSkillType(st.value)}
+                    className="sr-only"
+                  />
+                  <p className="text-xs font-semibold" style={{ color: skillType === st.value ? 'var(--color-ember)' : '#0f172a' }}>
+                    {st.label}
+                  </p>
+                  <p className="text-xs mt-0.5" style={{ color: '#64748b' }}>{st.description}</p>
+                </label>
+              ))}
+            </div>
           </div>
         </div>
 
         {/* Input Source */}
-        <div className="bg-white rounded-lg shadow p-6">
-          <h2 className="text-lg font-semibold mb-4">Input Source</h2>
-
-          <div className="flex gap-4 mb-4">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="radio"
-                name="input_mode"
-                value="resource"
-                checked={inputMode === 'resource'}
-                onChange={() => setInputMode('resource')}
-                className="text-blue-600"
-              />
-              <span className="text-sm font-medium">Select from resources</span>
-            </label>
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="radio"
-                name="input_mode"
-                value="file"
-                checked={inputMode === 'file'}
-                onChange={() => setInputMode('file')}
-                className="text-blue-600"
-              />
-              <span className="text-sm font-medium">Upload file or paste text</span>
-            </label>
+        <div className="panel">
+          <div className="panel-header">
+            <h2 className="text-sm font-semibold" style={{ color: '#0f172a' }}>Input Source</h2>
           </div>
-
-          {inputMode === 'resource' && (
-            <div>
-              {loadingResources ? (
-                <div className="animate-pulse space-y-3">
-                  {[...Array(3)].map((_, i) => (
-                    <div key={i} className="h-10 bg-gray-100 rounded" />
-                  ))}
-                </div>
-              ) : resources && resources.length > 0 ? (
-                <div className="max-h-80 overflow-auto border rounded-lg">
-                  <ResourceTable
-                    resources={resources}
-                    onSelect={handleResourceSelect}
-                    selectedId={selectedResourceId}
+          <div className="panel-body space-y-4">
+            <div className="flex gap-5">
+              {(['resource', 'file'] as const).map((mode) => (
+                <label key={mode} className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="input_mode"
+                    value={mode}
+                    checked={inputMode === mode}
+                    onChange={() => setInputMode(mode)}
+                    style={{ accentColor: 'var(--color-ember)' }}
                   />
-                </div>
-              ) : (
-                <p className="text-gray-500 text-sm">
-                  No resources available. Upload or extract resources first.
-                </p>
-              )}
-              {selectedResourceId && (
-                <p className="mt-2 text-sm text-green-600">
-                  Selected resource: {selectedResourceId}
-                </p>
-              )}
+                  <span className="text-sm" style={{ color: '#475569' }}>
+                    {mode === 'resource' ? 'Select from resources' : 'Upload file or paste text'}
+                  </span>
+                </label>
+              ))}
             </div>
-          )}
 
-          {inputMode === 'file' && (
-            <div className="space-y-4">
-              {/* Drop zone */}
-              <div
-                onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-                onDragLeave={() => setIsDragging(false)}
-                onDrop={handleDrop}
-                onClick={() => fileInputRef.current?.click()}
-                className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
-                  isDragging
-                    ? 'border-blue-500 bg-blue-50'
-                    : fileName
-                    ? 'border-green-400 bg-green-50'
-                    : 'border-gray-300 hover:border-gray-400 bg-gray-50'
-                }`}
-              >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept={currentSkill.accept}
-                  onChange={handleFileChange}
-                  className="hidden"
-                />
-                {fileName ? (
-                  <div className="space-y-1">
-                    <p className="text-green-700 font-medium">&#10003; {fileName}</p>
-                    <p className="text-xs text-gray-500">
-                      {(inputContent.length / 1024).toFixed(1)} KB loaded -- click to replace
-                    </p>
+            {inputMode === 'resource' && (
+              <div>
+                {loadingResources ? (
+                  <div className="space-y-2">
+                    {[...Array(3)].map((_, i) => <div key={i} className="skel h-10" />)}
+                  </div>
+                ) : resources && resources.length > 0 ? (
+                  <div
+                    className="rounded-lg overflow-auto"
+                    style={{ maxHeight: '20rem', border: '1px solid var(--color-rule)' }}
+                  >
+                    <ResourceTable
+                      resources={resources}
+                      onSelect={(r: Resource) => setSelectedResourceId(r.id)}
+                      selectedId={selectedResourceId}
+                    />
                   </div>
                 ) : (
-                  <div className="space-y-1">
-                    <p className="text-gray-600 font-medium">
-                      Drop file here or click to browse
-                    </p>
-                    <p className="text-xs text-gray-400">{currentSkill.hint}</p>
-                  </div>
+                  <p className="text-sm" style={{ color: '#64748b' }}>
+                    No resources available. Extract or upload resources first.
+                  </p>
                 )}
-              </div>
-
-              {fileError && (
-                <p className="text-sm text-red-600">{fileError}</p>
-              )}
-
-              {/* Or paste content */}
-              <div>
-                <div className="flex items-center gap-3 mb-2">
-                  <div className="flex-1 h-px bg-gray-200" />
-                  <span className="text-xs text-gray-400 font-medium uppercase">Or paste content</span>
-                  <div className="flex-1 h-px bg-gray-200" />
-                </div>
-                <textarea
-                  value={pastedContent}
-                  onChange={(e) => handlePasteChange(e.target.value)}
-                  placeholder={`Paste your ${currentSkill.hint.toLowerCase()} here...`}
-                  rows={6}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-y"
-                />
-                {pastedContent.trim() && (
-                  <p className="mt-1 text-xs text-green-600">
-                    {(pastedContent.length / 1024).toFixed(1)} KB of pasted content ready
+                {selectedResourceId && (
+                  <p className="mt-2 text-xs" style={{ color: '#16a34a' }}>
+                    ✓ Resource selected: <span style={{ fontFamily: 'var(--font-mono)' }}>{selectedResourceId}</span>
                   </p>
                 )}
               </div>
+            )}
 
-              {/* Preview */}
-              {inputContent && !pastedContent.trim() && (
-                <details className="text-sm">
-                  <summary className="cursor-pointer text-gray-500 hover:text-gray-700">
-                    Preview content
-                  </summary>
-                  <pre className="mt-2 p-3 bg-gray-50 border rounded-lg overflow-auto max-h-48 text-xs font-mono text-gray-700">
-                    {inputContent.slice(0, 2000)}
-                    {inputContent.length > 2000 && '\n... (truncated for preview)'}
-                  </pre>
-                </details>
-              )}
-            </div>
-          )}
+            {inputMode === 'file' && (
+              <div className="space-y-4">
+                <div
+                  onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                  onDragLeave={() => setIsDragging(false)}
+                  onDrop={handleDrop}
+                  onClick={() => fileInputRef.current?.click()}
+                  className="rounded-lg p-8 text-center cursor-pointer transition-colors"
+                  style={{
+                    border: `2px dashed ${isDragging ? 'var(--color-ember)' : fileName ? 'rgba(74,222,128,0.4)' : 'var(--color-fence)'}`,
+                    background: isDragging ? 'rgba(249,115,22,0.04)' : fileName ? 'rgba(74,222,128,0.04)' : 'var(--color-well)',
+                  }}
+                >
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept={currentSkill.accept}
+                    onChange={(e) => { const f = e.target.files?.[0]; if (f) loadFile(f); }}
+                    className="hidden"
+                  />
+                  {fileName ? (
+                    <div>
+                      <p className="text-sm font-medium" style={{ color: '#16a34a' }}>✓ {fileName}</p>
+                      <p className="text-xs mt-1" style={{ color: '#475569' }}>
+                        {(inputContent.length / 1024).toFixed(1)} KB loaded · click to replace
+                      </p>
+                    </div>
+                  ) : (
+                    <div>
+                      <p className="text-sm" style={{ color: '#64748b' }}>Drop file here or click to browse</p>
+                      <p className="text-xs mt-1" style={{ color: '#475569' }}>{currentSkill.hint}</p>
+                    </div>
+                  )}
+                </div>
+
+                {fileError && <p className="text-xs" style={{ color: '#dc2626' }}>{fileError}</p>}
+
+                <div>
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className="flex-1 h-px" style={{ background: 'var(--color-rule)' }} />
+                    <span className="text-xs uppercase" style={{ color: '#475569' }}>Or paste content</span>
+                    <div className="flex-1 h-px" style={{ background: 'var(--color-rule)' }} />
+                  </div>
+                  <textarea
+                    value={pastedContent}
+                    onChange={(e) => handlePasteChange(e.target.value)}
+                    placeholder={`Paste your ${currentSkill.hint.toLowerCase()} here…`}
+                    rows={6}
+                    className="field-input"
+                    style={{ fontFamily: 'var(--font-mono)', resize: 'vertical' }}
+                  />
+                  {pastedContent.trim() && (
+                    <p className="mt-1 text-xs" style={{ color: '#16a34a' }}>
+                      ✓ {(pastedContent.length / 1024).toFixed(1)} KB ready
+                    </p>
+                  )}
+                </div>
+
+                {inputContent && !pastedContent.trim() && (
+                  <details className="text-sm">
+                    <summary
+                      className="cursor-pointer text-xs"
+                      style={{ color: '#475569' }}
+                    >
+                      Preview content
+                    </summary>
+                    <pre
+                      className="mt-2 p-3 rounded-lg overflow-auto text-xs"
+                      style={{
+                        background: 'var(--color-well)',
+                        border: '1px solid var(--color-fence)',
+                        color: '#64748b',
+                        fontFamily: 'var(--font-mono)',
+                        maxHeight: '12rem',
+                      }}
+                    >
+                      {inputContent.slice(0, 2000)}
+                      {inputContent.length > 2000 && '\n… (truncated for preview)'}
+                    </pre>
+                  </details>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Configuration */}
-        <div className="bg-white rounded-lg shadow p-6">
-          <h2 className="text-lg font-semibold mb-4">Configuration</h2>
-          <div>
-            <label
-              htmlFor="max-iterations"
-              className="block text-sm font-medium text-gray-700 mb-1"
-            >
-              Max Iterations: {maxIterations}
+        <div className="panel">
+          <div className="panel-header">
+            <h2 className="text-sm font-semibold" style={{ color: '#0f172a' }}>Configuration</h2>
+          </div>
+          <div className="panel-body">
+            <label htmlFor="max-iterations" className="field-label">
+              Max Iterations: <span style={{ color: 'var(--color-ember)' }}>{maxIterations}</span>
             </label>
             <input
               id="max-iterations"
@@ -356,18 +295,19 @@ export default function TranslationJobNew() {
               max={5}
               value={maxIterations}
               onChange={(e) => setMaxIterations(Number(e.target.value))}
-              className="w-full"
+              className="w-full mt-2"
+              style={{ accentColor: 'var(--color-ember)' }}
             />
-            <div className="flex justify-between text-xs text-gray-400 mt-1">
-              <span>1 (Fast)</span>
-              <span>3 (Balanced)</span>
-              <span>5 (Thorough)</span>
+            <div className="flex justify-between text-xs mt-1" style={{ color: '#475569' }}>
+              <span>1 — Fast</span>
+              <span>3 — Balanced</span>
+              <span>5 — Thorough</span>
             </div>
           </div>
         </div>
 
         {/* Submit */}
-        <div className="flex gap-4">
+        <div className="flex items-center gap-3">
           <button
             type="submit"
             disabled={
@@ -375,15 +315,11 @@ export default function TranslationJobNew() {
               (inputMode === 'resource' && !selectedResourceId) ||
               (inputMode === 'file' && !inputContent.trim())
             }
-            className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+            className="btn btn-primary btn-lg"
           >
-            {createSkillRun.isPending ? 'Launching...' : 'Launch Translation Job'}
+            {createSkillRun.isPending ? <><span className="spinner" />Launching…</> : 'Launch Translation Job'}
           </button>
-          <button
-            type="button"
-            onClick={() => navigate(-1)}
-            className="px-6 py-2 bg-white text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 font-medium"
-          >
+          <button type="button" onClick={() => navigate(-1)} className="btn btn-secondary btn-lg">
             Cancel
           </button>
         </div>

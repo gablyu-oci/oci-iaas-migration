@@ -11,7 +11,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 from app.config import settings
-from app.db.models import TranslationJob, Resource, Artifact, TranslationJobInteraction
+from app.db.models import TranslationJob, Resource, Artifact, TranslationJobInteraction, Migration
 from app.gateway.model_gateway import get_anthropic_client
 
 
@@ -163,6 +163,66 @@ def _build_loadbalancer_input(resources: list) -> str:
     return json.dumps({"load_balancers": lbs})
 
 
+async def _build_synthesis_input_async(
+    db: AsyncSession, migration_id: UUID
+) -> str | None:
+    """Load all completed translation job artifacts for a migration and build
+    the JSON input the synthesis orchestrator expects."""
+    from app.db.models import Artifact, Migration as MigModel
+
+    mig_result = await db.execute(
+        select(MigModel).where(MigModel.id == migration_id)
+    )
+    migration = mig_result.scalar_one_or_none()
+    migration_name = migration.name if migration else "Unknown"
+
+    jobs_result = await db.execute(
+        select(TranslationJob).where(
+            TranslationJob.migration_id == migration_id,
+            TranslationJob.status == "complete",
+            TranslationJob.skill_type != "migration_synthesis",
+        ).order_by(TranslationJob.created_at.asc())
+    )
+    jobs = list(jobs_result.scalars().all())
+    if not jobs:
+        return None
+
+    job_data = []
+    for job in jobs:
+        art_result = await db.execute(
+            select(Artifact).where(Artifact.translation_job_id == job.id)
+        )
+        artifacts = list(art_result.scalars().all())
+        artifact_dict: dict[str, str] = {}
+        for art in artifacts:
+            if not art.file_name or not art.data:
+                continue
+            fname = art.file_name
+            # Include .tf files and migration-guide .md files; skip internal logs
+            if fname.endswith(".tf") or (
+                fname.endswith(".md")
+                and fname not in ("ORCHESTRATION-SUMMARY.md",)
+                and not fname.startswith("terraform-validate")
+            ):
+                content = art.data.decode("utf-8", errors="replace").strip()
+                if content and content not in (
+                    "# main.tf", "# variables.tf", "# outputs.tf",
+                    "# terraform.tfvars.example",
+                ):
+                    artifact_dict[fname] = content
+        if artifact_dict:
+            job_data.append({"skill_type": job.skill_type, "artifacts": artifact_dict})
+
+    if not job_data:
+        return None
+
+    return json.dumps({
+        "migration_id":   str(migration_id),
+        "migration_name": migration_name,
+        "jobs":           job_data,
+    })
+
+
 async def _load_all_job_resources(db: AsyncSession, job: TranslationJob) -> list:
     """Load all Resource objects referenced by a job (deduped)."""
     all_ids: list[UUID] = []
@@ -274,7 +334,7 @@ async def run_translation_job(ctx, translation_job_id: str):
                         raw = configs[0] if len(configs) == 1 else configs
                         input_content = _extract_input_content(raw, job.skill_type)
 
-                if not input_content:
+                if not input_content and job.skill_type != "migration_synthesis":
                     raise ValueError("No input content available")
 
                 # 4. Build a sync progress callback that updates current_phase in the DB
@@ -375,6 +435,15 @@ async def run_translation_job(ctx, translation_job_id: str):
                 elif job.skill_type == "storage_translation":
                     from app.skills.storage_translation.orchestrator import run as run_storage
                     result_data = run_storage(
+                        input_content, progress_callback, client, max_iterations
+                    )
+                elif job.skill_type == "migration_synthesis":
+                    if not input_content and job.migration_id:
+                        input_content = await _build_synthesis_input_async(db, job.migration_id)
+                    if not input_content:
+                        raise ValueError("No completed translation job artifacts found to synthesize")
+                    from app.skills.synthesis.orchestrator import run as run_synthesis
+                    result_data = run_synthesis(
                         input_content, progress_callback, client, max_iterations
                     )
                 else:

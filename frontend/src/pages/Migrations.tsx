@@ -2,17 +2,20 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useMigrations, useCreateMigration } from '../api/hooks/useMigrations';
 import { useConnections } from '../api/hooks/useConnections';
-import { formatDate, cn } from '../lib/utils';
+import { formatDate } from '../lib/utils';
 
-const STATUS_COLORS: Record<string, string> = {
-  active: 'bg-green-100 text-green-800',
-  complete: 'bg-blue-100 text-blue-800',
-  failed: 'bg-red-100 text-red-800',
-  created: 'bg-gray-100 text-gray-800',
-  extracting: 'bg-blue-100 text-blue-800',
-  extracted: 'bg-green-100 text-green-800',
-  planning: 'bg-yellow-100 text-yellow-800',
-};
+function statusBadge(status: string) {
+  const map: Record<string, string> = {
+    active: 'badge badge-success',
+    complete: 'badge badge-success',
+    failed: 'badge badge-error',
+    created: 'badge badge-neutral',
+    extracting: 'badge badge-info',
+    extracted: 'badge badge-success',
+    planning: 'badge badge-warning',
+  };
+  return map[status] || 'badge badge-neutral';
+}
 
 export default function Migrations() {
   const navigate = useNavigate();
@@ -26,94 +29,84 @@ export default function Migrations() {
 
   const handleCreate = () => {
     if (!newName.trim()) return;
-    const payload: { name: string; aws_connection_id?: string } = {
-      name: newName.trim(),
-    };
-    if (selectedConnectionId) {
-      payload.aws_connection_id = selectedConnectionId;
-    }
+    const payload: { name: string; aws_connection_id?: string } = { name: newName.trim() };
+    if (selectedConnectionId) payload.aws_connection_id = selectedConnectionId;
     createMigration.mutate(payload, {
-      onSuccess: (newMigration) => {
+      onSuccess: (m) => {
         setShowModal(false);
         setNewName('');
         setSelectedConnectionId('');
-        navigate(`/migrations/${newMigration.id}`);
+        navigate(`/migrations/${m.id}`);
       },
     });
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Migrations</h1>
-        <button
-          onClick={() => setShowModal(true)}
-          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium text-sm"
-        >
+        <div>
+          <h1 className="page-title">Migrations</h1>
+          <p className="page-subtitle">AWS to OCI migration projects</p>
+        </div>
+        <button onClick={() => setShowModal(true)} className="btn btn-primary">
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+          </svg>
           New Migration
         </button>
       </div>
 
-      <div className="bg-white rounded-lg shadow">
+      <div className="panel">
         {isLoading ? (
-          <div className="p-6">
-            <div className="animate-pulse space-y-3">
-              {[...Array(3)].map((_, i) => (
-                <div key={i} className="h-12 bg-gray-100 rounded" />
-              ))}
-            </div>
+          <div className="panel-body space-y-2">
+            {[...Array(4)].map((_, i) => <div key={i} className="skel h-11" />)}
           </div>
         ) : !migrations?.length ? (
-          <div className="p-8 text-center text-gray-500">
-            No migrations yet.{' '}
-            <button
-              onClick={() => setShowModal(true)}
-              className="text-blue-600 hover:text-blue-800 font-medium"
-            >
-              Create one
+          <div className="empty-state">
+            <p>No migrations yet.</p>
+            <button onClick={() => setShowModal(true)} className="btn btn-secondary btn-sm mt-3">
+              Create your first migration
             </button>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
+          <div style={{ overflowX: 'auto' }}>
+            <table className="dt">
+              <thead>
                 <tr>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Resources</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Created</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                  <th>Name</th>
+                  <th>Status</th>
+                  <th>Resources</th>
+                  <th>Created</th>
+                  <th></th>
                 </tr>
               </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
+              <tbody>
                 {migrations.map((m) => (
-                  <tr key={m.id} className="hover:bg-gray-50">
-                    <td className="px-4 py-3">
+                  <tr key={m.id}>
+                    <td className="td-primary">
                       <Link
                         to={`/migrations/${m.id}`}
-                        className="text-sm font-medium text-blue-600 hover:text-blue-800"
+                        style={{ color: 'var(--color-ember)', textDecoration: 'none' }}
+                        className="hover:opacity-80 transition-opacity"
                       >
                         {m.name}
                       </Link>
                     </td>
-                    <td className="px-4 py-3">
-                      <span className={cn(
-                        'px-2 py-0.5 rounded text-xs font-medium',
-                        STATUS_COLORS[m.status] || 'bg-gray-100 text-gray-800'
-                      )}>
+                    <td>
+                      <span className={statusBadge(m.status)}>
+                        <span className="badge-dot" />
                         {m.status}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-sm text-gray-600">
-                      {m.resource_count != null ? `${m.resource_count} resource${m.resource_count !== 1 ? 's' : ''}` : '—'}
+                    <td>
+                      {m.resource_count != null
+                        ? `${m.resource_count} resource${m.resource_count !== 1 ? 's' : ''}`
+                        : '—'}
                     </td>
-                    <td className="px-4 py-3 text-sm text-gray-500">{formatDate(m.created_at)}</td>
-                    <td className="px-4 py-3">
-                      <Link
-                        to={`/migrations/${m.id}`}
-                        className="text-sm font-medium text-blue-600 hover:text-blue-800"
-                      >
-                        View
+                    <td>{formatDate(m.created_at)}</td>
+                    <td>
+                      <Link to={`/migrations/${m.id}`} className="btn btn-ghost btn-sm">
+                        View →
                       </Link>
                     </td>
                   </tr>
@@ -124,71 +117,63 @@ export default function Migrations() {
         )}
       </div>
 
-      {/* New Migration Modal */}
+      {/* Modal */}
       {showModal && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setShowModal(false);
-          }}
+          className="modal-overlay"
+          onClick={(e) => { if (e.target === e.currentTarget) setShowModal(false); }}
           role="dialog"
           aria-modal="true"
           aria-label="Create new migration"
         >
-          <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-6 space-y-4">
-            <h2 className="text-lg font-semibold">New Migration</h2>
-
-            {createMigration.isError && (
-              <div className="p-3 bg-red-50 text-red-700 rounded-lg text-sm" role="alert">
-                {(createMigration.error as any)?.response?.data?.detail || 'Failed to create migration.'}
+          <div className="modal">
+            <div className="modal-header">
+              <h3 className="text-sm font-semibold" style={{ color: '#0f172a' }}>New Migration</h3>
+              <button onClick={() => setShowModal(false)} className="btn btn-ghost btn-sm" aria-label="Close">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="modal-body space-y-4">
+              {createMigration.isError && (
+                <div className="alert alert-error" role="alert">
+                  {(createMigration.error as any)?.response?.data?.detail || 'Failed to create migration.'}
+                </div>
+              )}
+              <div>
+                <label htmlFor="migration-name" className="field-label">Migration Name</label>
+                <input
+                  id="migration-name"
+                  type="text"
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  placeholder="e.g., Production VPC Migration"
+                  className="field-input"
+                  autoFocus
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleCreate(); }}
+                />
               </div>
-            )}
-
-            <div>
-              <label htmlFor="migration-name" className="block text-sm font-medium text-gray-700 mb-1">
-                Migration Name
-              </label>
-              <input
-                id="migration-name"
-                type="text"
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                placeholder="e.g., Production VPC Migration"
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                autoFocus
-                onKeyDown={(e) => { if (e.key === 'Enter') handleCreate(); }}
-              />
+              <div>
+                <label htmlFor="aws-connection" className="field-label">AWS Connection (optional)</label>
+                <select
+                  id="aws-connection"
+                  value={selectedConnectionId}
+                  onChange={(e) => setSelectedConnectionId(e.target.value)}
+                  className="field-input field-select"
+                >
+                  <option value="">No connection</option>
+                  {(connections || []).map((conn) => (
+                    <option key={conn.id} value={conn.id}>{conn.name} ({conn.region})</option>
+                  ))}
+                </select>
+              </div>
             </div>
-
-            <div>
-              <label htmlFor="aws-connection" className="block text-sm font-medium text-gray-700 mb-1">
-                AWS Connection (optional)
-              </label>
-              <select
-                id="aws-connection"
-                value={selectedConnectionId}
-                onChange={(e) => setSelectedConnectionId(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              >
-                <option value="">No connection</option>
-                {(connections || []).map((conn) => (
-                  <option key={conn.id} value={conn.id}>
-                    {conn.name} ({conn.region})
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="flex justify-end gap-3 pt-2">
+            <div className="modal-footer">
               <button
                 type="button"
-                onClick={() => {
-                  setShowModal(false);
-                  setNewName('');
-                  setSelectedConnectionId('');
-                  createMigration.reset();
-                }}
-                className="px-4 py-2 bg-white text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 font-medium text-sm"
+                onClick={() => { setShowModal(false); setNewName(''); setSelectedConnectionId(''); createMigration.reset(); }}
+                className="btn btn-secondary"
               >
                 Cancel
               </button>
@@ -196,9 +181,9 @@ export default function Migrations() {
                 type="button"
                 onClick={handleCreate}
                 disabled={!newName.trim() || createMigration.isPending}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium text-sm"
+                className="btn btn-primary"
               >
-                {createMigration.isPending ? 'Creating...' : 'Create'}
+                {createMigration.isPending ? <><span className="spinner" />Creating…</> : 'Create'}
               </button>
             </div>
           </div>

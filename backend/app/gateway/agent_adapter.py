@@ -67,6 +67,7 @@ class _MessagesResource:
             if sys_text.strip():
                 parts.append(sys_text)
 
+        prefill: str | None = None
         if messages:
             for msg in messages:
                 content = msg.get("content", "")
@@ -75,9 +76,21 @@ class _MessagesResource:
                         c.get("text", "") if isinstance(c, dict) else str(c)
                         for c in content
                     )
-                # Only include user turns (assistant turns are context, not re-sent)
                 if msg.get("role") == "user" and content.strip():
                     parts.append(content)
+                elif msg.get("role") == "assistant" and content.strip():
+                    # Capture assistant prefill — used by orchestrators to force
+                    # JSON output. We'll inject it as an explicit instruction.
+                    prefill = content.strip()
+
+        # If the caller used assistant prefilling (e.g. `{"` to start JSON),
+        # add an explicit instruction so the Agent SDK model honours it.
+        if prefill is not None:
+            parts.append(
+                f"IMPORTANT: Your response MUST begin with exactly the following "
+                f"characters and contain ONLY valid JSON — no prose, no markdown "
+                f"fences, no explanation:\n{prefill}"
+            )
 
         prompt = "\n\n".join(parts)
 

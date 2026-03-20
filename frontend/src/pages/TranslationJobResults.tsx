@@ -5,7 +5,7 @@ import {
   useTranslationJobArtifacts,
   useTranslationJobInteractions,
 } from '../api/hooks/useTranslationJobs';
-import { formatDate, formatCost, cn, getSkillRunName } from '../lib/utils';
+import { formatDate, formatCost, getSkillRunName } from '../lib/utils';
 import ArtifactViewer from '../components/ArtifactViewer';
 import DependencyGraph from '../components/DependencyGraph';
 import client from '../api/client';
@@ -19,18 +19,26 @@ function formatDuration(seconds: number): string {
   }
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.round(seconds % 60);
-  return s > 0 ? `${h}h ${m}m ${s}s` : m > 0 ? `${h}h ${m}m` : `${h}h`;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
 
-const DECISION_STYLES: Record<string, string> = {
-  APPROVED: 'text-green-600',
-  APPROVED_WITH_NOTES: 'text-amber-600',
-  NEEDS_FIXES: 'text-red-600',
+type Tab = 'summary' | 'log';
+
+function statusBadge(status: string) {
+  const map: Record<string, string> = {
+    complete: 'badge badge-success',
+    running: 'badge badge-running',
+    failed: 'badge badge-error',
+    queued: 'badge badge-neutral',
+  };
+  return map[status] || 'badge badge-neutral';
+}
+
+const DECISION_COLORS: Record<string, string> = {
+  APPROVED: '#16a34a',
+  APPROVED_WITH_NOTES: '#d97706',
+  NEEDS_FIXES: '#dc2626',
 };
-
-
-type Tab = 'summary' | 'log' | 'artifacts';
 
 export default function TranslationJobResults() {
   const { id } = useParams<{ id: string }>();
@@ -41,11 +49,7 @@ export default function TranslationJobResults() {
   const [tab, setTab] = useState<Tab>('summary');
 
   useEffect(() => {
-    if (
-      run?.skill_type === 'dependency_discovery' &&
-      artifacts &&
-      artifacts.length > 0
-    ) {
+    if (run?.skill_type === 'dependency_discovery' && artifacts?.length) {
       const depArtifact = artifacts.find(
         (a) => a.file_type === 'dependency_json' || a.file_name.includes('dependency')
       );
@@ -58,29 +62,33 @@ export default function TranslationJobResults() {
     }
   }, [run?.skill_type, artifacts]);
 
-  if (!id) return <div className="text-center py-12 text-gray-500">No translation job ID provided.</div>;
+  if (!id) return <div className="empty-state"><p>No translation job ID provided.</p></div>;
   if (isLoading) return (
-    <div className="flex justify-center py-12">
-      <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500" />
+    <div className="flex justify-center py-16">
+      <span className="spinner spinner-lg" role="status" aria-label="Loading" />
     </div>
   );
   if (isError || !run) return (
-    <div className="text-center py-12">
-      <p className="text-red-500 mb-4">Failed to load translation job results.</p>
-      <Link to="/dashboard" className="text-blue-600 hover:text-blue-800">Back to Dashboard</Link>
+    <div className="space-y-4">
+      <Link to="/dashboard" className="back-link">
+        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+        </svg>
+        Back to Dashboard
+      </Link>
+      <div className="alert alert-error">Failed to load translation job results.</div>
     </div>
   );
 
   const confidencePercent = (run.confidence * 100).toFixed(0);
   const confidenceColor =
-    run.confidence >= 0.8 ? 'text-green-600' : run.confidence >= 0.5 ? 'text-yellow-600' : 'text-red-600';
+    run.confidence >= 0.8 ? '#16a34a' : run.confidence >= 0.5 ? '#d97706' : '#dc2626';
 
   const durationSecs =
     run.started_at && run.completed_at
       ? (new Date(run.completed_at).getTime() - new Date(run.started_at).getTime()) / 1000
       : null;
 
-  // Prefer output.iterations (set at completion), fall back to current_iteration
   const iterationCount =
     (run.output as Record<string, unknown> | null)?.iterations as number | undefined
     ?? run.current_iteration;
@@ -88,173 +96,189 @@ export default function TranslationJobResults() {
   const TABS: { key: Tab; label: string; count?: number }[] = [
     { key: 'summary', label: 'Summary' },
     { key: 'log', label: 'Agent Log', count: interactions?.length },
-    { key: 'artifacts', label: 'Artifacts', count: artifacts?.length },
   ];
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="space-y-6 animate-fade-in">
+      <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold">Translation Job Results</h1>
-          <p className="text-gray-600 mt-1">
-            {getSkillRunName(run.skill_type, run.resource_names, run.resource_name)} &middot; {run.status}
+          <Link to="/translation-jobs" className="back-link">
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+            </svg>
+            Translation Jobs
+          </Link>
+          <div className="flex items-center gap-3">
+            <h1 className="page-title">Translation Job Results</h1>
+            <span className={statusBadge(run.status)}>
+              <span className="badge-dot" />
+              {run.status}
+            </span>
+          </div>
+          <p className="page-subtitle">
+            {getSkillRunName(run.skill_type, run.resource_names, run.resource_name)}
           </p>
         </div>
-        <Link
-          to="/dashboard"
-          className="px-4 py-2 bg-white text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 font-medium"
-        >
-          Back to Dashboard
-        </Link>
       </div>
 
       {/* Tabs */}
-      <div className="border-b border-gray-200">
-        <nav className="-mb-px flex gap-6">
-          {TABS.map((t) => (
-            <button
-              key={t.key}
-              onClick={() => setTab(t.key)}
-              className={cn(
-                'py-3 px-1 text-sm font-medium border-b-2 transition-colors whitespace-nowrap',
-                tab === t.key
-                  ? 'border-blue-500 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              )}
-            >
-              {t.label}
-              {t.count != null && (
-                <span className={cn(
-                  'ml-2 px-1.5 py-0.5 rounded-full text-xs',
-                  tab === t.key ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-500'
-                )}>
-                  {t.count}
-                </span>
-              )}
-            </button>
-          ))}
-        </nav>
+      <div className="tabs">
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={`tab-btn ${tab === t.key ? 'active' : ''}`}
+          >
+            {t.label}
+            {t.count != null && <span className="tab-count">{t.count}</span>}
+          </button>
+        ))}
       </div>
 
-      {/* Summary tab */}
+      {/* Summary */}
       {tab === 'summary' && (
-        <div className="space-y-6">
-          <div className="bg-white rounded-lg shadow p-6">
-            <h2 className="text-lg font-semibold mb-4">Summary</h2>
-            <div className="mb-4">
-              <p className="text-sm text-gray-500">
-                {run.resource_names && run.resource_names.length > 1 ? `Resources (${run.resource_names.length})` : 'Resource'}
-              </p>
-              {run.resource_names && run.resource_names.length > 1 ? (
-                <ul className="mt-1 space-y-0.5">
-                  {run.resource_names.map((name, i) => (
-                    <li key={i} className="text-sm font-medium">{name || '—'}</li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="text-sm mt-1 font-medium">{run.resource_name || '—'}</p>
-              )}
+        <div className="space-y-4 animate-fade-in">
+          <div className="panel">
+            <div className="panel-header">
+              <h2 className="text-sm font-semibold" style={{ color: '#0f172a' }}>Summary</h2>
             </div>
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-6">
+            <div className="panel-body space-y-5">
+              {/* Resource(s) */}
               <div>
-                <p className="text-sm text-gray-500">Skill Type</p>
-                <p className="font-mono text-sm mt-1">{run.skill_type}</p>
+                <p className="field-label mb-1.5">
+                  {run.resource_names && run.resource_names.length > 1
+                    ? `Resources (${run.resource_names.length})`
+                    : 'Resource'}
+                </p>
+                {run.resource_names && run.resource_names.length > 1 ? (
+                  <ul className="space-y-0.5">
+                    {run.resource_names.map((n, i) => (
+                      <li key={i} className="text-sm" style={{ color: '#0f172a', fontFamily: 'var(--font-mono)' }}>{n || '—'}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-sm" style={{ color: '#0f172a', fontFamily: 'var(--font-mono)' }}>
+                    {run.resource_name || '—'}
+                  </p>
+                )}
               </div>
-              <div>
-                <p className="text-sm text-gray-500">Confidence</p>
-                <p className={cn('text-2xl font-bold mt-1', confidenceColor)}>{confidencePercent}%</p>
+
+              {/* Stats grid */}
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                {[
+                  { label: 'Skill Type', value: run.skill_type, mono: true },
+                  { label: 'Confidence', value: <span style={{ color: confidenceColor, fontSize: '1.375rem', fontWeight: 700 }}>{confidencePercent}%</span>, mono: false },
+                  { label: 'Total Cost', value: formatCost(run.total_cost_usd), mono: true },
+                  { label: 'Iterations', value: iterationCount ?? '—', mono: false },
+                  { label: 'Duration', value: durationSecs != null ? formatDuration(durationSecs) : '—', mono: false },
+                ].map(({ label, value, mono }) => (
+                  <div
+                    key={label}
+                    className="rounded-lg p-3"
+                    style={{ background: 'var(--color-well)', border: '1px solid var(--color-rule)' }}
+                  >
+                    <p className="field-label">{label}</p>
+                    <p className="text-sm mt-1" style={{ color: '#0f172a', fontFamily: mono ? 'var(--font-mono)' : undefined }}>
+                      {value}
+                    </p>
+                  </div>
+                ))}
               </div>
-              <div>
-                <p className="text-sm text-gray-500">Total Cost</p>
-                <p className="font-mono text-sm mt-1">{formatCost(run.total_cost_usd)}</p>
+
+              {/* Dates */}
+              <div
+                className="grid grid-cols-2 gap-4 pt-4 text-xs"
+                style={{ borderTop: '1px solid var(--color-rule)', color: '#64748b' }}
+              >
+                <div><span>Started: </span><span style={{ color: '#475569' }}>{formatDate(run.started_at)}</span></div>
+                <div><span>Completed: </span><span style={{ color: '#475569' }}>{formatDate(run.completed_at)}</span></div>
               </div>
-              <div>
-                <p className="text-sm text-gray-500">Iterations</p>
-                <p className="text-sm mt-1">{iterationCount ?? '—'}</p>
-              </div>
-              <div>
-                <p className="text-sm text-gray-500">Duration</p>
-                <p className="text-sm mt-1">{durationSecs != null ? formatDuration(durationSecs) : '—'}</p>
-              </div>
-            </div>
-            <div className="mt-4 pt-4 border-t grid grid-cols-2 gap-4 text-sm">
-              <div><span className="text-gray-500">Started:</span> {formatDate(run.started_at)}</div>
-              <div><span className="text-gray-500">Completed:</span> {formatDate(run.completed_at)}</div>
             </div>
           </div>
 
           {run.status === 'failed' && run.errors && (
-            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-              <h3 className="text-red-800 font-semibold mb-2">Errors</h3>
-              <pre className="text-red-700 text-sm whitespace-pre-wrap">
+            <div className="alert alert-error">
+              <p className="font-semibold mb-2">Errors</p>
+              <pre className="text-xs whitespace-pre-wrap" style={{ fontFamily: 'var(--font-mono)' }}>
                 {JSON.stringify(run.errors, null, 2)}
               </pre>
             </div>
           )}
 
           {run.skill_type === 'dependency_discovery' && graphData && (
-            <div className="bg-white rounded-lg shadow p-6">
-              <h2 className="text-lg font-semibold mb-4">Dependency Graph</h2>
-              <DependencyGraph data={graphData} />
+            <div className="panel">
+              <div className="panel-header">
+                <h2 className="text-sm font-semibold" style={{ color: '#0f172a' }}>Dependency Graph</h2>
+              </div>
+              <div className="panel-body">
+                <DependencyGraph data={graphData} />
+              </div>
             </div>
           )}
+
+          {artifacts?.length ? (
+            <div className="panel">
+              <div className="panel-body">
+                <ArtifactViewer skillRunId={id} />
+              </div>
+            </div>
+          ) : null}
         </div>
       )}
 
-      {/* Log tab */}
+      {/* Agent Log */}
       {tab === 'log' && (
-        <div className="bg-white rounded-lg shadow overflow-hidden">
-          {!interactions || interactions.length === 0 ? (
-            <div className="p-8 text-center text-gray-400">No agent interactions recorded.</div>
+        <div className="panel animate-fade-in">
+          {!interactions?.length ? (
+            <div className="empty-state">
+              <p>No agent interactions recorded.</p>
+            </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="min-w-full font-mono text-xs">
-                <thead className="bg-gray-50 border-b border-gray-200">
+            <div style={{ overflowX: 'auto' }}>
+              <table className="dt" style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>
+                <thead>
                   <tr>
-                    <th className="px-4 py-3 text-left text-gray-500 font-medium">Agent</th>
-                    <th className="px-4 py-3 text-left text-gray-500 font-medium">Model</th>
-                    <th className="px-4 py-3 text-left text-gray-500 font-medium">Iter</th>
-                    <th className="px-4 py-3 text-left text-gray-500 font-medium">Decision</th>
-                    <th className="px-4 py-3 text-right text-gray-500 font-medium">Conf</th>
-                    <th className="px-4 py-3 text-right text-gray-500 font-medium">Tokens In</th>
-                    <th className="px-4 py-3 text-right text-gray-500 font-medium">Tokens Out</th>
-                    <th className="px-4 py-3 text-right text-gray-500 font-medium">Cost</th>
-                    <th className="px-4 py-3 text-right text-gray-500 font-medium">Duration</th>
-                    <th className="px-4 py-3 text-right text-gray-500 font-medium">Time</th>
+                    <th>Agent</th>
+                    <th>Model</th>
+                    <th>Iter</th>
+                    <th>Decision</th>
+                    <th className="text-right">Conf</th>
+                    <th className="text-right">In</th>
+                    <th className="text-right">Out</th>
+                    <th className="text-right">Cost</th>
+                    <th className="text-right">Dur</th>
+                    <th className="text-right">Time</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {interactions.map((ix) => {
-                    const decisionStyle = ix.decision
-                      ? (DECISION_STYLES[ix.decision] ?? 'text-gray-600')
-                      : 'text-gray-400';
-                    return (
-                      <tr key={ix.id} className="hover:bg-gray-50">
-                        <td className="px-4 py-2 text-gray-700">{ix.agent_type ?? '—'}</td>
-                        <td className="px-4 py-2 text-gray-500">{ix.model ?? '—'}</td>
-                        <td className="px-4 py-2 text-gray-500 text-center">{ix.iteration ?? '—'}</td>
-                        <td className={`px-4 py-2 font-medium ${decisionStyle}`}>{ix.decision ?? '—'}</td>
-                        <td className="px-4 py-2 text-right text-gray-600">
-                          {ix.confidence != null ? `${Math.round(ix.confidence * 100)}%` : '—'}
-                        </td>
-                        <td className="px-4 py-2 text-right text-gray-500">
-                          {ix.tokens_input?.toLocaleString() ?? '—'}
-                        </td>
-                        <td className="px-4 py-2 text-right text-gray-500">
-                          {ix.tokens_output?.toLocaleString() ?? '—'}
-                        </td>
-                        <td className="px-4 py-2 text-right text-gray-500">
-                          {ix.cost_usd != null ? `$${ix.cost_usd.toFixed(4)}` : '—'}
-                        </td>
-                        <td className="px-4 py-2 text-right text-gray-400">
-                          {ix.duration_seconds != null ? `${ix.duration_seconds.toFixed(1)}s` : '—'}
-                        </td>
-                        <td className="px-4 py-2 text-right text-gray-400">
-                          {new Date(ix.created_at).toLocaleTimeString()}
-                        </td>
-                      </tr>
-                    );
-                  })}
+                <tbody>
+                  {interactions.map((ix) => (
+                    <tr key={ix.id}>
+                      <td style={{ color: '#475569' }}>{ix.agent_type ?? '—'}</td>
+                      <td style={{ color: '#64748b' }}>{ix.model ?? '—'}</td>
+                      <td style={{ color: '#64748b', textAlign: 'center' }}>{ix.iteration ?? '—'}</td>
+                      <td style={{ color: ix.decision ? (DECISION_COLORS[ix.decision] ?? '#475569') : '#475569', fontWeight: 600 }}>
+                        {ix.decision ?? '—'}
+                      </td>
+                      <td style={{ textAlign: 'right', color: '#64748b' }}>
+                        {ix.confidence != null ? `${Math.round(ix.confidence * 100)}%` : '—'}
+                      </td>
+                      <td style={{ textAlign: 'right', color: '#475569' }}>
+                        {ix.tokens_input?.toLocaleString() ?? '—'}
+                      </td>
+                      <td style={{ textAlign: 'right', color: '#475569' }}>
+                        {ix.tokens_output?.toLocaleString() ?? '—'}
+                      </td>
+                      <td style={{ textAlign: 'right', color: '#475569' }}>
+                        {ix.cost_usd != null ? `$${ix.cost_usd.toFixed(4)}` : '—'}
+                      </td>
+                      <td style={{ textAlign: 'right', color: '#94a3b8' }}>
+                        {ix.duration_seconds != null ? `${ix.duration_seconds.toFixed(1)}s` : '—'}
+                      </td>
+                      <td style={{ textAlign: 'right', color: '#94a3b8' }}>
+                        {new Date(ix.created_at).toLocaleTimeString()}
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
@@ -262,12 +286,6 @@ export default function TranslationJobResults() {
         </div>
       )}
 
-      {/* Artifacts tab */}
-      {tab === 'artifacts' && (
-        <div className="bg-white rounded-lg shadow p-6">
-          <ArtifactViewer skillRunId={id} />
-        </div>
-      )}
     </div>
   );
 }

@@ -37,14 +37,22 @@ export default function DependencyGraph({ data }: Props) {
         position: { x: (i % 5) * 220 + 50, y: Math.floor(i / 5) * 120 + 50 },
         style: {
           background: n.service?.includes('lambda')
-            ? '#fef3c7'
+            ? 'rgba(251,191,36,0.12)'
             : n.service?.includes('s3')
-              ? '#dbeafe'
-              : '#f3f4f6',
-          border: '1px solid #d1d5db',
+              ? 'rgba(96,165,250,0.12)'
+              : '#192236',
+          border: `1px solid ${
+            n.service?.includes('lambda')
+              ? 'rgba(251,191,36,0.35)'
+              : n.service?.includes('s3')
+                ? 'rgba(96,165,250,0.35)'
+                : '#253552'
+          }`,
           borderRadius: '8px',
           padding: '10px',
           fontSize: '12px',
+          color: '#e2e8f0',
+          fontFamily: '"IBM Plex Mono", ui-monospace, monospace',
         },
         sourcePosition: Position.Right,
         targetPosition: Position.Left,
@@ -57,8 +65,10 @@ export default function DependencyGraph({ data }: Props) {
         label: e.edge_type || '',
         animated: e.edge_type === 'network',
         style: {
-          stroke: e.edge_type === 'network' ? '#60a5fa' : '#9ca3af',
+          stroke: e.edge_type === 'network' ? '#60a5fa' : '#2f4166',
         },
+        labelStyle: { fill: '#64748b', fontSize: 11 },
+        labelBgStyle: { fill: '#0d1221', fillOpacity: 0.85 },
       }));
 
       return { nodes, edges };
@@ -69,18 +79,35 @@ export default function DependencyGraph({ data }: Props) {
 
   if (!rfNodes.length) {
     return (
-      <p className="text-gray-500 text-center py-8">
-        No graph data available.
-      </p>
+      <div className="empty-state">
+        <p>No graph data available.</p>
+      </div>
     );
   }
 
   return (
-    <div style={{ height: '500px' }} className="border rounded-lg overflow-hidden">
-      <ReactFlow nodes={rfNodes} edges={rfEdges} fitView>
-        <Background />
-        <Controls />
-        <MiniMap />
+    <div
+      style={{ height: '500px', borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--color-fence)' }}
+    >
+      <ReactFlow
+        nodes={rfNodes}
+        edges={rfEdges}
+        fitView
+        style={{ background: '#0d1221' }}
+      >
+        <Background color="#1e2d45" gap={20} />
+        <Controls
+          style={{
+            background: '#121828',
+            border: '1px solid #253552',
+            borderRadius: '8px',
+          }}
+        />
+        <MiniMap
+          style={{ background: '#0d1221', border: '1px solid #253552' }}
+          nodeColor={(n) => (n.style?.background as string) ?? '#192236'}
+          maskColor="rgba(8,11,20,0.7)"
+        />
       </ReactFlow>
     </div>
   );

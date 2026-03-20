@@ -3,13 +3,9 @@ import { useParams, Link } from 'react-router-dom';
 import { usePlan, useExecuteWorkload } from '../api/plans';
 import type { Workload, PlanPhase, MigrationPlan } from '../api/plans';
 import { useTranslationJob, useTranslationJobArtifacts } from '../api/hooks/useTranslationJobs';
-import { formatDate, formatCost, cn } from '../lib/utils';
+import { formatDate, formatCost } from '../lib/utils';
 import SkillProgressTracker from '../components/SkillProgressTracker';
 import ArtifactViewer from '../components/ArtifactViewer';
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 function formatDuration(seconds: number): string {
   if (seconds < 60) return `${Math.round(seconds)}s`;
@@ -23,29 +19,19 @@ function formatDuration(seconds: number): string {
   return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
 
-const STATUS_BADGE: Record<string, { bg: string; dot: string }> = {
-  pending:  { bg: 'bg-gray-100 text-gray-700', dot: 'bg-gray-400' },
-  draft:    { bg: 'bg-gray-100 text-gray-700', dot: 'bg-gray-400' },
-  running:  { bg: 'bg-blue-100 text-blue-700', dot: 'bg-blue-500 animate-pulse' },
-  complete: { bg: 'bg-green-100 text-green-700', dot: 'bg-green-500' },
-  failed:   { bg: 'bg-red-100 text-red-700', dot: 'bg-red-500' },
-};
-
-function StatusBadge({ status }: { status: string }) {
-  const s = STATUS_BADGE[status] ?? STATUS_BADGE.pending;
-  return (
-    <span className={cn('inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold', s.bg)}>
-      <span className={cn('w-1.5 h-1.5 rounded-full', s.dot)} />
-      {status.charAt(0).toUpperCase() + status.slice(1)}
-    </span>
-  );
+function statusBadge(status: string): string {
+  const map: Record<string, string> = {
+    pending:  'badge badge-neutral',
+    draft:    'badge badge-neutral',
+    running:  'badge badge-running',
+    complete: 'badge badge-success',
+    failed:   'badge badge-error',
+  };
+  return map[status] ?? 'badge badge-neutral';
 }
 
 type Tab = 'overview' | 'progress' | 'results';
 
-// ---------------------------------------------------------------------------
-// Find workload from plan data
-// ---------------------------------------------------------------------------
 function findWorkloadInPlan(
   plan: MigrationPlan,
   workloadId: string,
@@ -58,56 +44,40 @@ function findWorkloadInPlan(
   return null;
 }
 
-// ---------------------------------------------------------------------------
-// WorkloadDetail Page
-// ---------------------------------------------------------------------------
 export default function WorkloadDetail() {
   const { workloadId } = useParams<{ workloadId: string }>();
   const executeMut = useExecuteWorkload();
 
-  // We store the planId and the translation_job_id in local state because we might
-  // receive a new translation_job_id after executing.
   const [planId, setPlanId] = useState<string | null>(null);
   const [skillRunId, setSkillRunId] = useState<string | null>(null);
 
-  // We need to discover which plan this workload belongs to. We pass planId
-  // from URL search params if available, otherwise we try all known plans.
-  // For simplicity, use search params.
   const searchParams = new URLSearchParams(
     typeof window !== 'undefined' ? window.location.search : '',
   );
   const urlPlanId = searchParams.get('planId') ?? '';
 
-  // Try to load the plan
   const effectivePlanId = planId || urlPlanId;
   const { data: plan, isLoading: planLoading, isError: planError } = usePlan(effectivePlanId);
 
-  // Extract workload, phase, and phase index from the plan
   const found = plan && workloadId ? findWorkloadInPlan(plan, workloadId) : null;
   const workload = found?.workload ?? null;
   const phase = found?.phase ?? null;
   const phaseIndex = found?.phaseIndex ?? 0;
 
-  // Set planId from the plan data when it loads
   useEffect(() => {
-    if (plan && !planId) {
-      setPlanId(plan.id);
-    }
+    if (plan && !planId) setPlanId(plan.id);
   }, [plan, planId]);
 
-  // Track the translation_job_id (may update when workload is executed)
   useEffect(() => {
     if (workload?.translation_job_id && !skillRunId) {
       setSkillRunId(workload.translation_job_id);
     }
   }, [workload?.translation_job_id, skillRunId]);
 
-  // Load the translation job data if we have a translation_job_id
   const activeSkillRunId = skillRunId || workload?.translation_job_id || '';
   const { data: skillRun } = useTranslationJob(activeSkillRunId);
   const { data: artifacts } = useTranslationJobArtifacts(activeSkillRunId);
 
-  // Determine effective status (from live skill run or workload)
   const effectiveStatus = skillRun
     ? (skillRun.status === 'complete' ? 'complete'
        : skillRun.status === 'failed' ? 'failed'
@@ -115,7 +85,6 @@ export default function WorkloadDetail() {
        : workload?.status ?? 'pending')
     : workload?.status ?? 'pending';
 
-  // Default tab based on status
   const defaultTab: Tab =
     effectiveStatus === 'running' ? 'progress'
     : effectiveStatus === 'complete' || effectiveStatus === 'failed' ? 'results'
@@ -123,14 +92,10 @@ export default function WorkloadDetail() {
 
   const [tab, setTab] = useState<Tab>(defaultTab);
 
-  // Update tab when status changes to running or complete
   useEffect(() => {
-    if (effectiveStatus === 'running' && tab === 'overview') {
-      setTab('progress');
-    }
+    if (effectiveStatus === 'running' && tab === 'overview') setTab('progress');
   }, [effectiveStatus, tab]);
 
-  // Is this phase unlocked?
   const phaseUnlocked =
     phaseIndex === 0 ||
     (plan && plan.phases[phaseIndex - 1]?.status === 'complete') ||
@@ -148,27 +113,25 @@ export default function WorkloadDetail() {
     setTab('results');
   }, []);
 
-  // ---------------------------------------------------------------------------
-  // Render
-  // ---------------------------------------------------------------------------
-
   if (!workloadId) {
-    return <div className="text-center py-12 text-gray-500">No workload ID provided.</div>;
+    return <div className="empty-state"><p>No workload ID provided.</p></div>;
   }
 
   if (planLoading) {
     return (
       <div className="flex justify-center py-12">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500" role="status" aria-label="Loading" />
+        <span className="spinner spinner-lg" role="status" aria-label="Loading" />
       </div>
     );
   }
 
   if (planError || !plan || !workload) {
     return (
-      <div className="text-center py-12">
-        <p className="text-red-500 mb-4">Failed to load workload details.</p>
-        <Link to="/dashboard" className="text-blue-600 hover:text-blue-800">Back to Dashboard</Link>
+      <div className="space-y-4 py-12 text-center">
+        <p style={{ color: '#dc2626' }}>Failed to load workload details.</p>
+        <Link to="/dashboard" className="back-link" style={{ justifyContent: 'center' }}>
+          Back to Dashboard
+        </Link>
       </div>
     );
   }
@@ -179,10 +142,12 @@ export default function WorkloadDetail() {
     { key: 'results', label: 'Results', visible: !!activeSkillRunId && (effectiveStatus === 'complete' || effectiveStatus === 'failed') },
   ];
 
-  const confidencePercent = skillRun ? (skillRun.confidence * 100).toFixed(0) : null;
+  const confidencePct = skillRun ? Math.round(skillRun.confidence * 100) : null;
   const confidenceColor = skillRun
-    ? skillRun.confidence >= 0.8 ? 'text-green-600' : skillRun.confidence >= 0.5 ? 'text-yellow-600' : 'text-red-600'
-    : '';
+    ? skillRun.confidence >= 0.8 ? '#16a34a'
+      : skillRun.confidence >= 0.5 ? '#d97706'
+      : '#dc2626'
+    : '#94a3b8';
 
   const durationSecs =
     skillRun?.started_at && skillRun?.completed_at
@@ -190,128 +155,130 @@ export default function WorkloadDetail() {
       : null;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-fade-in">
       {/* Header */}
       <div>
         <Link
           to={effectivePlanId ? `/plans/${effectivePlanId}` : '/dashboard'}
-          className="text-sm text-gray-500 hover:text-gray-700 mb-2 inline-block"
+          className="back-link"
         >
-          &larr; Back to Plan
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          </svg>
+          Back to Plan
         </Link>
-        <div className="flex items-start justify-between">
+        <div className="flex items-start justify-between mt-2">
           <div>
-            <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold">{workload.name}</h1>
-              <StatusBadge status={effectiveStatus} />
+            <div className="flex items-center gap-3 flex-wrap">
+              <h1 className="page-title" style={{ marginBottom: 0 }}>{workload.name}</h1>
+              <span className={statusBadge(effectiveStatus)}>
+                <span className="badge-dot" />
+                {effectiveStatus.charAt(0).toUpperCase() + effectiveStatus.slice(1)}
+              </span>
             </div>
             {phase && (
-              <p className="text-sm text-gray-500 mt-1">
+              <p className="text-xs mt-1" style={{ color: '#64748b' }}>
                 Phase {phase.order_index}: {phase.name}
               </p>
             )}
-            <p className="text-sm text-gray-400 mt-0.5">
-              {workload.skill_type && (
-                <span className="font-mono">{workload.skill_type}</span>
-              )}
-              {workload.skill_type && ' \u00B7 '}
-              {workload.resource_count} resource{workload.resource_count !== 1 ? 's' : ''}
-            </p>
+            {workload.skill_type && (
+              <p className="text-xs mt-0.5" style={{ color: '#475569', fontFamily: 'var(--font-mono)' }}>
+                {workload.skill_type} · {workload.resource_count} resource{workload.resource_count !== 1 ? 's' : ''}
+              </p>
+            )}
           </div>
         </div>
       </div>
 
       {/* Tabs */}
-      <div className="border-b border-gray-200">
-        <nav className="-mb-px flex gap-6" aria-label="Tabs">
-          {TABS.filter((t) => t.visible).map((t) => (
-            <button
-              key={t.key}
-              onClick={() => setTab(t.key)}
-              className={cn(
-                'py-3 px-1 text-sm font-medium border-b-2 transition-colors whitespace-nowrap',
-                tab === t.key
-                  ? 'border-blue-500 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300',
-              )}
-            >
-              {t.label}
-            </button>
-          ))}
-        </nav>
+      <div className="tabs">
+        {TABS.filter((t) => t.visible).map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={`tab-btn ${tab === t.key ? 'active' : ''}`}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
 
       {/* Overview tab */}
       {tab === 'overview' && (
-        <div className="space-y-6">
-          <div className="bg-white rounded-lg shadow p-6">
-            <h2 className="text-lg font-semibold mb-4">Workload Details</h2>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-6 text-sm">
-              <div>
-                <p className="text-gray-500">Skill Type</p>
-                <p className="font-mono mt-1">{workload.skill_type ?? '\u2014'}</p>
-              </div>
-              <div>
-                <p className="text-gray-500">Description</p>
-                <p className="mt-1">{workload.description ?? '\u2014'}</p>
-              </div>
-              <div>
-                <p className="text-gray-500">Status</p>
-                <p className="mt-1">{effectiveStatus}</p>
-              </div>
-              <div>
-                <p className="text-gray-500">Phase</p>
-                <p className="mt-1">{phase ? `${phase.order_index} - ${phase.name}` : '\u2014'}</p>
+        <div className="space-y-4">
+          <div className="panel">
+            <div className="panel-header">
+              <h2 className="text-sm font-semibold" style={{ color: '#0f172a' }}>Workload Details</h2>
+            </div>
+            <div className="panel-body">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-6 text-xs">
+                {[
+                  { label: 'Skill Type', value: workload.skill_type ?? '—', mono: true },
+                  { label: 'Description', value: workload.description ?? '—' },
+                  { label: 'Status', value: effectiveStatus },
+                  { label: 'Phase', value: phase ? `${phase.order_index} — ${phase.name}` : '—' },
+                ].map(({ label, value, mono }) => (
+                  <div key={label}>
+                    <p className="field-label">{label}</p>
+                    <p
+                      className="mt-1 text-xs"
+                      style={{ color: '#0f172a', fontFamily: mono ? 'var(--font-mono)' : undefined }}
+                    >
+                      {value}
+                    </p>
+                  </div>
+                ))}
               </div>
             </div>
           </div>
 
-          {/* Resource count summary */}
-          <div className="bg-white rounded-lg shadow p-6">
-            <h2 className="text-lg font-semibold mb-4">
-              Included Resources ({workload.resource_count})
-            </h2>
-            <p className="text-sm text-gray-500">
-              This workload contains {workload.resource_count} AWS resource{workload.resource_count !== 1 ? 's' : ''} for migration.
-            </p>
+          <div className="panel">
+            <div className="panel-header">
+              <h2 className="text-sm font-semibold" style={{ color: '#0f172a' }}>
+                Included Resources
+                <span className="tab-count ml-2">{workload.resource_count}</span>
+              </h2>
+            </div>
+            <div className="panel-body">
+              <p className="text-xs" style={{ color: '#64748b' }}>
+                This workload contains {workload.resource_count} AWS resource{workload.resource_count !== 1 ? 's' : ''} for migration.
+              </p>
+            </div>
           </div>
 
-          {/* Action area */}
+          {/* Action */}
           <div>
             {effectiveStatus === 'pending' && phaseUnlocked && (
               <button
                 onClick={handleExecute}
                 disabled={executeMut.isPending}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium disabled:opacity-75 disabled:cursor-not-allowed"
+                className="btn btn-primary btn-lg"
               >
-                {executeMut.isPending ? 'Starting...' : 'Execute Workload'}
+                {executeMut.isPending ? <><span className="spinner" />Starting…</> : 'Execute Workload'}
               </button>
             )}
             {effectiveStatus === 'pending' && !phaseUnlocked && (
-              <button
-                disabled
-                className="px-4 py-2 bg-gray-100 text-gray-400 rounded-lg font-medium cursor-not-allowed"
-              >
+              <button disabled className="btn btn-secondary btn-lg" style={{ opacity: 0.5, cursor: 'not-allowed' }}>
                 Blocked: Complete Phase {phaseIndex} first
               </button>
             )}
             {effectiveStatus === 'running' && (
-              <p className="text-sm text-blue-600">
-                Execution in progress... View the Progress tab.
+              <p className="text-sm" style={{ color: '#2563eb' }}>
+                Execution in progress — view the Progress tab.
               </p>
             )}
             {effectiveStatus === 'complete' && (
-              <p className="text-sm text-green-600">
-                Execution complete. View the Results tab.
+              <p className="text-sm" style={{ color: '#16a34a' }}>
+                Execution complete — view the Results tab.
               </p>
             )}
             {effectiveStatus === 'failed' && (
               <button
                 onClick={handleExecute}
                 disabled={executeMut.isPending}
-                className="px-3 py-1.5 bg-red-50 text-red-700 border border-red-200 rounded-lg hover:bg-red-100 text-sm font-medium disabled:opacity-75"
+                className="btn btn-danger btn-lg"
               >
-                {executeMut.isPending ? 'Starting...' : 'Retry Execution'}
+                {executeMut.isPending ? <><span className="spinner" />Starting…</> : 'Retry Execution'}
               </button>
             )}
           </div>
@@ -320,7 +287,7 @@ export default function WorkloadDetail() {
 
       {/* Progress tab */}
       {tab === 'progress' && activeSkillRunId && (
-        <div className="max-w-2xl mx-auto">
+        <div className="max-w-2xl">
           <SkillProgressTracker
             skillRunId={activeSkillRunId}
             onComplete={handleComplete}
@@ -330,54 +297,81 @@ export default function WorkloadDetail() {
 
       {/* Results tab */}
       {tab === 'results' && activeSkillRunId && skillRun && (
-        <div className="space-y-6">
+        <div className="space-y-4">
           {/* Summary */}
-          <div className="bg-white rounded-lg shadow p-6">
-            <h2 className="text-lg font-semibold mb-4">Summary</h2>
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-6">
-              <div>
-                <p className="text-sm text-gray-500">Confidence</p>
-                <p className={cn('text-2xl font-bold mt-1', confidenceColor)}>
-                  {confidencePercent != null ? `${confidencePercent}%` : '\u2014'}
-                </p>
-              </div>
-              <div>
-                <p className="text-sm text-gray-500">Total Cost</p>
-                <p className="font-mono text-sm mt-1">{formatCost(skillRun.total_cost_usd)}</p>
-              </div>
-              <div>
-                <p className="text-sm text-gray-500">Iterations</p>
-                <p className="text-sm mt-1">{skillRun.current_iteration ?? '\u2014'}</p>
-              </div>
-              <div>
-                <p className="text-sm text-gray-500">Duration</p>
-                <p className="text-sm mt-1">{durationSecs != null ? formatDuration(durationSecs) : '\u2014'}</p>
-              </div>
-              <div>
-                <p className="text-sm text-gray-500">Status</p>
-                <p className="text-sm mt-1">{skillRun.status}</p>
-              </div>
+          <div className="panel">
+            <div className="panel-header">
+              <h2 className="text-sm font-semibold" style={{ color: '#0f172a' }}>Summary</h2>
             </div>
-            <div className="mt-4 pt-4 border-t grid grid-cols-2 gap-4 text-sm">
-              <div><span className="text-gray-500">Started:</span> {formatDate(skillRun.started_at)}</div>
-              <div><span className="text-gray-500">Completed:</span> {formatDate(skillRun.completed_at)}</div>
+            <div className="panel-body">
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-6">
+                <div>
+                  <p className="field-label">Confidence</p>
+                  <p
+                    className="text-2xl font-bold mt-1"
+                    style={{ color: confidenceColor }}
+                  >
+                    {confidencePct != null ? `${confidencePct}%` : '—'}
+                  </p>
+                </div>
+                {[
+                  { label: 'Total Cost', value: formatCost(skillRun.total_cost_usd), mono: true },
+                  { label: 'Iterations', value: String(skillRun.current_iteration ?? '—') },
+                  { label: 'Duration', value: durationSecs != null ? formatDuration(durationSecs) : '—', mono: true },
+                  { label: 'Status', value: skillRun.status },
+                ].map(({ label, value, mono }) => (
+                  <div key={label}>
+                    <p className="field-label">{label}</p>
+                    <p
+                      className="text-sm mt-1"
+                      style={{ color: '#0f172a', fontFamily: mono ? 'var(--font-mono)' : undefined }}
+                    >
+                      {value}
+                    </p>
+                  </div>
+                ))}
+              </div>
+              <div
+                className="mt-4 pt-4 grid grid-cols-2 gap-4 text-xs"
+                style={{ borderTop: '1px solid var(--color-rule)', color: '#475569' }}
+              >
+                <div>
+                  <span style={{ color: '#64748b' }}>Started: </span>
+                  {formatDate(skillRun.started_at)}
+                </div>
+                <div>
+                  <span style={{ color: '#64748b' }}>Completed: </span>
+                  {formatDate(skillRun.completed_at)}
+                </div>
+              </div>
             </div>
           </div>
 
           {/* Errors */}
           {skillRun.status === 'failed' && skillRun.errors && (
-            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-              <h3 className="text-red-800 font-semibold mb-2">Errors</h3>
-              <pre className="text-red-700 text-sm whitespace-pre-wrap">
-                {JSON.stringify(skillRun.errors, null, 2)}
-              </pre>
-              <div className="mt-4">
+            <div className="panel">
+              <div className="panel-header">
+                <h2 className="text-sm font-semibold" style={{ color: '#dc2626' }}>Errors</h2>
+              </div>
+              <div className="panel-body space-y-3">
+                <pre
+                  className="text-xs rounded-lg p-4 overflow-auto"
+                  style={{
+                    background: 'var(--color-well)',
+                    border: '1px solid rgba(248,113,113,0.2)',
+                    color: '#dc2626',
+                    fontFamily: 'var(--font-mono)',
+                    whiteSpace: 'pre-wrap',
+                  }}
+                >
+                  {JSON.stringify(skillRun.errors, null, 2)}
+                </pre>
                 <button
                   onClick={handleExecute}
                   disabled={executeMut.isPending}
-                  className="px-3 py-1.5 bg-red-50 text-red-700 border border-red-200 rounded-lg hover:bg-red-100 text-sm font-medium disabled:opacity-75"
+                  className="btn btn-danger btn-sm"
                 >
-                  {executeMut.isPending ? 'Starting...' : 'Retry Execution'}
+                  {executeMut.isPending ? <><span className="spinner" />Starting…</> : 'Retry Execution'}
                 </button>
               </div>
             </div>
@@ -385,8 +379,13 @@ export default function WorkloadDetail() {
 
           {/* Artifacts */}
           {artifacts && artifacts.length > 0 && (
-            <div className="bg-white rounded-lg shadow p-6">
-              <ArtifactViewer skillRunId={activeSkillRunId} />
+            <div className="panel">
+              <div className="panel-header">
+                <h2 className="text-sm font-semibold" style={{ color: '#0f172a' }}>Artifacts</h2>
+              </div>
+              <div className="panel-body">
+                <ArtifactViewer skillRunId={activeSkillRunId} />
+              </div>
             </div>
           )}
         </div>

@@ -6,7 +6,7 @@ import { useCreateTranslationJob, useResourceTranslationJobs, type TranslationJo
 import { useMigrations } from '../api/hooks/useMigrations';
 import ResourceTable from '../components/ResourceTable';
 import client from '../api/client';
-import { cn, formatDate } from '../lib/utils';
+import { formatDate } from '../lib/utils';
 
 const SKILL_FOR_TYPE: Record<string, string> = {
   'AWS::CloudFormation::Stack': 'cfn_terraform',
@@ -20,44 +20,60 @@ const SKILL_FOR_TYPE: Record<string, string> = {
   'AWS::RDS::DBInstance': 'database_translation',
   'AWS::RDS::DBCluster': 'database_translation',
   'AWS::ElasticLoadBalancingV2::LoadBalancer': 'loadbalancer_translation',
-  'CloudTrail': 'dependency_discovery',
-  'FlowLog': 'dependency_discovery',
+  CloudTrail: 'dependency_discovery',
+  FlowLog: 'dependency_discovery',
 };
 
-const RUN_STATUS_COLORS: Record<string, string> = {
-  queued:   'bg-gray-100 text-gray-700',
-  running:  'bg-blue-100 text-blue-700',
-  complete: 'bg-green-100 text-green-700',
-  failed:   'bg-red-100 text-red-700',
-};
+function jobStatusBadge(status: string) {
+  const map: Record<string, string> = {
+    queued: 'badge badge-neutral',
+    running: 'badge badge-running',
+    complete: 'badge badge-success',
+    failed: 'badge badge-error',
+  };
+  return map[status] || 'badge badge-neutral';
+}
 
 function ResourceSkillRunsPanel({ resourceId }: { resourceId: string }) {
   const { data: runs, isLoading } = useResourceTranslationJobs(resourceId);
 
   if (isLoading) {
-    return <div className="animate-pulse space-y-2">{[...Array(3)].map((_, i) => <div key={i} className="h-10 bg-gray-100 rounded" />)}</div>;
+    return (
+      <div className="space-y-2">
+        {[...Array(3)].map((_, i) => <div key={i} className="skel h-10" />)}
+      </div>
+    );
   }
   if (!runs || runs.length === 0) {
-    return <p className="text-sm text-gray-500 py-4 text-center">No translation jobs for this resource yet.</p>;
+    return <div className="empty-state"><p>No translation jobs for this resource yet.</p></div>;
   }
   return (
     <div className="space-y-2">
       {runs.map((run: TranslationJob) => (
-        <div key={run.id} className="flex items-center justify-between p-3 border border-gray-200 rounded-lg text-sm">
+        <div
+          key={run.id}
+          className="flex items-center justify-between p-3 rounded-lg text-sm"
+          style={{ background: 'var(--color-well)', border: '1px solid var(--color-fence)' }}
+        >
           <div className="flex items-center gap-3 min-w-0">
-            <span className={cn('px-2 py-0.5 rounded text-xs font-medium flex-shrink-0', RUN_STATUS_COLORS[run.status] || 'bg-gray-100 text-gray-700')}>
+            <span className={jobStatusBadge(run.status)}>
+              <span className="badge-dot" />
               {run.status}
             </span>
-            <span className="text-gray-600 font-mono text-xs truncate">{run.skill_type}</span>
+            <span className="text-xs truncate" style={{ color: '#64748b', fontFamily: 'var(--font-mono)' }}>
+              {run.skill_type}
+            </span>
             {run.status === 'complete' && (
-              <span className="text-gray-500 text-xs">{Math.round(run.confidence * 100)}%</span>
+              <span className="text-xs" style={{ color: '#94a3b8' }}>
+                {Math.round(run.confidence * 100)}%
+              </span>
             )}
           </div>
           <div className="flex items-center gap-3 flex-shrink-0 ml-3">
-            <span className="text-xs text-gray-400">{formatDate(run.created_at)}</span>
+            <span className="text-xs" style={{ color: '#475569' }}>{formatDate(run.created_at)}</span>
             <Link
               to={run.status === 'complete' ? `/translation-jobs/${run.id}/results` : `/translation-jobs/${run.id}`}
-              className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+              className="btn btn-ghost btn-sm"
             >
               {run.status === 'complete' ? 'Results' : 'View'} →
             </Link>
@@ -95,7 +111,6 @@ export default function Resources() {
   }, [resources]);
 
   const filtered = resources || [];
-
   const allSelected = filtered.length > 0 && filtered.every((r) => selectedIds.has(r.id));
 
   const handleToggle = useCallback((id: string) => {
@@ -107,11 +122,8 @@ export default function Resources() {
   }, []);
 
   const handleToggleAll = useCallback(() => {
-    if (allSelected) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(filtered.map((r) => r.id)));
-    }
+    if (allSelected) setSelectedIds(new Set());
+    else setSelectedIds(new Set(filtered.map((r) => r.id)));
   }, [allSelected, filtered]);
 
   const handleBatchDelete = async () => {
@@ -126,7 +138,6 @@ export default function Resources() {
 
   const handleBatchRunSkill = async () => {
     const selected = filtered.filter((r) => selectedIds.has(r.id));
-    // Group by skill type
     const groups = new Map<string, Resource[]>();
     for (const r of selected) {
       const skill = SKILL_FOR_TYPE[r.aws_type] ?? 'cfn_terraform';
@@ -134,7 +145,6 @@ export default function Resources() {
       list.push(r);
       groups.set(skill, list);
     }
-    // Launch one skill run per group
     let lastRunId: string | null = null;
     for (const [skillType, groupResources] of groups.entries()) {
       try {
@@ -144,91 +154,66 @@ export default function Resources() {
           config: { resource_ids: groupResources.map((r) => r.id), max_iterations: 3 },
         });
         lastRunId = result.id;
-      } catch {
-        // continue
-      }
+      } catch { /* continue */ }
     }
     setSelectedIds(new Set());
     navigate(lastRunId ? `/translation-jobs/${lastRunId}` : '/dashboard');
   };
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
+    <div className="space-y-6 animate-fade-in">
       <div>
-        <button
-          onClick={() => navigate(-1)}
-          className="flex items-center text-sm text-gray-500 hover:text-gray-700 mb-2"
-        >
-          ← Back
-        </button>
-        <h1 className="text-2xl font-bold">Resources</h1>
-        <p className="text-gray-600 mt-1">Browse discovered AWS resources across your migrations.</p>
+        <h1 className="page-title">Resources</h1>
+        <p className="page-subtitle">Browse discovered AWS resources across your migrations.</p>
       </div>
 
       {/* Filters */}
       <div className="flex gap-4 flex-wrap">
         <div>
-          <label htmlFor="migration-filter" className="block text-sm font-medium text-gray-700 mb-1">
-            Migration
-          </label>
+          <label htmlFor="migration-filter" className="field-label">Migration</label>
           <select
             id="migration-filter"
             value={migrationFilter}
             onChange={(e) => { setMigrationFilter(e.target.value); setSelectedIds(new Set()); }}
-            className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+            className="field-input field-select"
+            style={{ width: 'auto' }}
           >
             <option value="">All Migrations</option>
-            {migrations?.map((m) => (
-              <option key={m.id} value={m.id}>{m.name}</option>
-            ))}
+            {migrations?.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
           </select>
         </div>
         <div>
-          <label htmlFor="type-filter" className="block text-sm font-medium text-gray-700 mb-1">
-            Resource Type
-          </label>
+          <label htmlFor="type-filter" className="field-label">Resource Type</label>
           <select
             id="type-filter"
             value={typeFilter}
             onChange={(e) => { setTypeFilter(e.target.value); setSelectedIds(new Set()); }}
-            className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+            className="field-input field-select"
+            style={{ width: 'auto' }}
           >
             <option value="">All Types</option>
-            {resourceTypes.map((t) => (
-              <option key={t} value={t}>{t}</option>
-            ))}
+            {resourceTypes.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
         </div>
       </div>
 
       {/* Resource Table */}
-      <div className="bg-white rounded-lg shadow">
-        {/* Batch action bar */}
+      <div className="panel">
         {selectedIds.size > 0 && (
-          <div className="px-4 py-3 bg-blue-50 border-b flex items-center justify-between gap-4">
-            <p className="text-sm text-blue-700 font-medium">
-              {selectedIds.size} resource{selectedIds.size !== 1 ? 's' : ''} selected
-            </p>
+          <div className="selection-bar">
+            <p>{selectedIds.size} resource{selectedIds.size !== 1 ? 's' : ''} selected</p>
             <div className="flex items-center gap-2">
               <button
                 onClick={handleBatchRunSkill}
                 disabled={createSkillRun.isPending}
-                className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium"
+                className="btn btn-primary btn-sm"
               >
-                {createSkillRun.isPending ? 'Launching…' : 'Run Skills'}
+                {createSkillRun.isPending ? <><span className="spinner" />Launching…</> : 'Run Skills'}
               </button>
-              <button
-                onClick={handleBatchDelete}
-                disabled={isDeleting}
-                className="px-3 py-1.5 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 font-medium"
-              >
+              <button onClick={handleBatchDelete} disabled={isDeleting} className="btn btn-danger btn-sm">
                 {isDeleting ? 'Deleting…' : 'Delete Selected'}
               </button>
-              <button
-                onClick={() => setSelectedIds(new Set())}
-                className="px-3 py-1.5 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 font-medium"
-              >
+              <button onClick={() => setSelectedIds(new Set())} className="btn btn-ghost btn-sm">
                 Clear
               </button>
             </div>
@@ -236,13 +221,11 @@ export default function Resources() {
         )}
 
         {isLoading ? (
-          <div className="p-6">
-            <div className="animate-pulse space-y-3">
-              {[...Array(5)].map((_, i) => <div key={i} className="h-10 bg-gray-100 rounded" />)}
-            </div>
+          <div className="panel-body space-y-2">
+            {[...Array(5)].map((_, i) => <div key={i} className="skel h-10" />)}
           </div>
         ) : isError ? (
-          <div className="p-6 text-center text-red-500">Failed to load resources. Please try again.</div>
+          <div className="alert alert-error m-4">Failed to load resources. Please try again.</div>
         ) : (
           <ResourceTable
             resources={filtered}
@@ -260,81 +243,81 @@ export default function Resources() {
       {/* Resource Detail Modal */}
       {viewResource && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center"
+          className="modal-overlay"
           role="dialog"
           aria-modal="true"
           aria-label="Resource Details"
+          onClick={(e) => { if (e.target === e.currentTarget) { setViewResource(null); setModalTab('config'); }}}
         >
           <div
-            className="fixed inset-0 bg-black/40"
-            onClick={() => setViewResource(null)}
-            aria-hidden="true"
-          />
-          <div className="relative bg-white rounded-lg shadow-xl w-full max-w-2xl mx-4 max-h-[85vh] flex flex-col">
-            <div className="p-6 border-b flex items-center justify-between">
+            className="modal modal-lg"
+            style={{ maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}
+          >
+            <div className="modal-header">
               <div>
-                <h3 className="text-lg font-semibold">{viewResource.name || 'Unnamed Resource'}</h3>
-                <p className="text-sm text-gray-500 mt-0.5">{viewResource.aws_type}</p>
+                <h3 className="text-sm font-semibold" style={{ color: '#0f172a' }}>
+                  {viewResource.name || 'Unnamed Resource'}
+                </h3>
+                <p className="text-xs mt-0.5" style={{ color: '#64748b', fontFamily: 'var(--font-mono)' }}>
+                  {viewResource.aws_type}
+                </p>
               </div>
               <button
                 onClick={() => { setViewResource(null); setModalTab('config'); }}
-                className="text-gray-400 hover:text-gray-600"
+                className="btn btn-ghost btn-sm"
                 aria-label="Close modal"
               >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                 </svg>
               </button>
             </div>
 
             {/* Tabs */}
-            <div className="flex border-b px-6">
+            <div className="tabs px-4">
               {(['config', 'runs'] as const).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setModalTab(tab)}
-                  className={cn(
-                    'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors',
-                    modalTab === tab
-                      ? 'border-blue-500 text-blue-600'
-                      : 'border-transparent text-gray-500 hover:text-gray-700'
-                  )}
+                  className={`tab-btn ${modalTab === tab ? 'active' : ''}`}
                 >
                   {tab === 'config' ? 'Raw Config' : 'Translation Jobs'}
                 </button>
               ))}
             </div>
 
-            <div className="p-6 overflow-y-auto flex-1 space-y-4">
+            <div className="modal-body overflow-y-auto flex-1 space-y-4">
               {modalTab === 'config' ? (
                 <>
-                  <div className="grid grid-cols-2 gap-4 text-sm">
-                    <div>
-                      <span className="text-gray-500">Name</span>
-                      <p className="font-medium">{viewResource.name || '\u2014'}</p>
-                    </div>
-                    <div>
-                      <span className="text-gray-500">Type</span>
-                      <p className="font-medium">{viewResource.aws_type}</p>
-                    </div>
-                    <div>
-                      <span className="text-gray-500">ARN</span>
-                      <p className="font-mono text-xs break-all">{viewResource.aws_arn || '\u2014'}</p>
-                    </div>
-                    <div>
-                      <span className="text-gray-500">Status</span>
-                      <p className="font-medium">{viewResource.status}</p>
-                    </div>
+                  <div className="grid grid-cols-2 gap-4 text-xs">
+                    {[
+                      { label: 'Name', value: viewResource.name || '—' },
+                      { label: 'Type', value: viewResource.aws_type, mono: true },
+                      { label: 'ARN', value: viewResource.aws_arn || '—', mono: true, breakAll: true },
+                      { label: 'Status', value: viewResource.status },
+                    ].map(({ label, value, mono, breakAll }) => (
+                      <div key={label}>
+                        <p className="field-label">{label}</p>
+                        <p
+                          className="mt-1 text-xs"
+                          style={{
+                            color: '#0f172a',
+                            fontFamily: mono ? 'var(--font-mono)' : undefined,
+                            wordBreak: breakAll ? 'break-all' : undefined,
+                          }}
+                        >
+                          {value}
+                        </p>
+                      </div>
+                    ))}
                   </div>
                   <div>
                     <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm font-medium text-gray-700">Raw Configuration</span>
+                      <p className="field-label">Raw Configuration</p>
                       <div className="flex items-center gap-2">
                         <button
-                          onClick={() => {
-                            navigator.clipboard.writeText(JSON.stringify(viewResource.raw_config, null, 2));
-                          }}
-                          className="px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200 font-medium"
+                          onClick={() => navigator.clipboard.writeText(JSON.stringify(viewResource.raw_config, null, 2))}
+                          className="btn btn-secondary btn-sm"
                         >
                           Copy
                         </button>
@@ -348,13 +331,23 @@ export default function Resources() {
                             a.click();
                             URL.revokeObjectURL(url);
                           }}
-                          className="px-3 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200 font-medium"
+                          className="btn btn-primary btn-sm"
                         >
                           Download
                         </button>
                       </div>
                     </div>
-                    <pre className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-xs font-mono overflow-auto max-h-96 whitespace-pre-wrap">
+                    <pre
+                      className="rounded-lg p-4 text-xs overflow-auto"
+                      style={{
+                        background: 'var(--color-well)',
+                        border: '1px solid var(--color-fence)',
+                        color: '#64748b',
+                        fontFamily: 'var(--font-mono)',
+                        maxHeight: '20rem',
+                        whiteSpace: 'pre-wrap',
+                      }}
+                    >
                       {JSON.stringify(viewResource.raw_config, null, 2)}
                     </pre>
                   </div>

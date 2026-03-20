@@ -283,8 +283,10 @@ async def test_get_translation_job_not_found(client, auth_headers):
 
 
 @pytest.mark.asyncio
-async def test_artifact_download_not_found(client, auth_headers):
-    r = await client.get(f"/api/artifacts/{uuid.uuid4()}/download", headers=auth_headers)
+async def test_artifact_download_not_found(client, tenant):
+    # Download endpoint uses ?token= query param (for browser <a download> links)
+    token = create_access_token({"sub": str(tenant.id)})
+    r = await client.get(f"/api/artifacts/{uuid.uuid4()}/download?token={token}")
     assert r.status_code == 404
 
 

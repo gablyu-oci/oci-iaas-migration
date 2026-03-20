@@ -55,14 +55,29 @@ def _parse_json_response(response: anthropic.types.Message) -> dict:
         else:
             raw = inner[-1]
 
-    # Extract outermost JSON object
+    # Narrow to outermost JSON object when possible
     start = raw.find("{")
     end   = raw.rfind("}") + 1
-    if start == -1 or end <= start:
-        raise json.JSONDecodeError("No JSON object found in response", raw, 0)
-    raw = raw[start:end]
+    candidate = raw[start:end] if (start != -1 and end > start) else raw
 
-    return json.loads(raw)
+    # 1. Standard parse
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        pass
+
+    # 2. Lenient — allows literal newlines/control chars inside strings
+    try:
+        return json.loads(candidate, strict=False)
+    except json.JSONDecodeError:
+        pass
+
+    # 3. json_repair — handles unescaped quotes, truncated values, no braces
+    from json_repair import repair_json
+    repaired = repair_json(candidate, return_objects=True)
+    if isinstance(repaired, dict) and repaired:
+        return repaired
+    raise json.JSONDecodeError("No JSON object found in response", raw, 0)
 
 
 # ── Token extraction ─────────────────────────────────────────────────────────

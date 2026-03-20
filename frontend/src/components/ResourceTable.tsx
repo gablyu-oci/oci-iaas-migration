@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { formatDate, cn } from '../lib/utils';
+import { formatDate } from '../lib/utils';
 
 export interface LatestSkillRunSummary {
   id: string;
@@ -36,28 +36,29 @@ interface Props {
   onView?: (resource: Resource) => void;
 }
 
-const STATUS_COLORS: Record<string, string> = {
-  discovered: 'bg-blue-100 text-blue-800',
-  uploaded: 'bg-green-100 text-green-800',
-  running: 'bg-blue-100 text-blue-700',
-  migrated: 'bg-green-100 text-green-800',
-  failed: 'bg-red-100 text-red-800',
+const STATUS_CLASS: Record<string, string> = {
+  discovered: 'badge badge-info',
+  uploaded:   'badge badge-success',
+  running:    'badge badge-running',
+  migrated:   'badge badge-success',
+  failed:     'badge badge-error',
 };
 
-const RUN_STATUS_COLORS: Record<string, string> = {
-  queued:   'bg-gray-100 text-gray-700',
-  running:  'bg-blue-100 text-blue-700',
-  complete: 'bg-green-100 text-green-700',
-  failed:   'bg-red-100 text-red-700',
+const RUN_STATUS_CLASS: Record<string, string> = {
+  queued:   'badge badge-neutral',
+  running:  'badge badge-running',
+  complete: 'badge badge-success',
+  failed:   'badge badge-error',
 };
 
 function LatestRunLinkCell({ run }: { run: LatestSkillRunSummary | null | undefined }) {
-  if (!run) return <span className="text-gray-400 text-sm">—</span>;
+  if (!run) return <span style={{ color: '#475569' }}>—</span>;
   return (
     <Link
       to={run.status === 'complete' ? `/translation-jobs/${run.id}/results` : `/translation-jobs/${run.id}`}
       onClick={(e) => e.stopPropagation()}
-      className="text-xs text-blue-600 hover:text-blue-800 font-medium font-mono"
+      className="text-xs font-medium hover:underline"
+      style={{ color: 'var(--color-ember)', fontFamily: 'var(--font-mono)' }}
     >
       {run.skill_type}
     </Link>
@@ -65,17 +66,18 @@ function LatestRunLinkCell({ run }: { run: LatestSkillRunSummary | null | undefi
 }
 
 function RunStatusCell({ run }: { run: LatestSkillRunSummary | null | undefined }) {
-  if (!run) return <span className="text-gray-400 text-sm">—</span>;
+  if (!run) return <span style={{ color: '#475569' }}>—</span>;
   return (
-    <span className={cn('px-2 py-0.5 rounded text-xs font-medium', RUN_STATUS_COLORS[run.status] || 'bg-gray-100 text-gray-700')}>
+    <span className={RUN_STATUS_CLASS[run.status] ?? 'badge badge-neutral'}>
+      <span className="badge-dot" />
       {run.status}
     </span>
   );
 }
 
 function ConfidenceCell({ run }: { run: LatestSkillRunSummary | null | undefined }) {
-  if (!run || run.status !== 'complete') return <span className="text-gray-400 text-sm">—</span>;
-  return <span className="text-sm text-gray-700">{Math.round(run.confidence * 100)}%</span>;
+  if (!run || run.status !== 'complete') return <span style={{ color: '#475569' }}>—</span>;
+  return <span className="text-xs" style={{ color: '#475569' }}>{Math.round(run.confidence * 100)}%</span>;
 }
 
 export default function ResourceTable({
@@ -99,35 +101,33 @@ export default function ResourceTable({
 
   return (
     <div className="overflow-x-auto">
-      <table className="min-w-full divide-y divide-gray-200">
-        <thead className="bg-gray-50">
+      <table className="dt">
+        <thead>
           <tr>
             {batchMode && (
-              <th className="px-4 py-3 w-10">
+              <th style={{ width: '2.5rem' }}>
                 <input
                   type="checkbox"
                   checked={allSelected}
                   onChange={onToggleAll}
-                  className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  className="cb"
                   aria-label="Select all"
                 />
               </th>
             )}
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">ARN</th>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Latest Run</th>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Run Status</th>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Confidence</th>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Migration</th>
-            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Created</th>
-            {(onDelete || onView) && (
-              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
-            )}
+            <th>Name</th>
+            <th>Type</th>
+            <th>ARN</th>
+            <th>Status</th>
+            <th>Latest Run</th>
+            <th>Run Status</th>
+            <th>Confidence</th>
+            <th>Migration</th>
+            <th>Created</th>
+            {(onDelete || onView) && <th>Actions</th>}
           </tr>
         </thead>
-        <tbody className="bg-white divide-y divide-gray-200">
+        <tbody>
           {filtered.map((r) => {
             const isChecked = batchMode && selectedIds.has(r.id);
             const isSingleSelected = !batchMode && selectedId === r.id;
@@ -139,71 +139,80 @@ export default function ResourceTable({
                   else onSelect?.(r);
                 }}
                 role="row"
-                className={cn(
-                  'cursor-pointer hover:bg-gray-50 transition-colors',
-                  isChecked && 'bg-blue-50 hover:bg-blue-50',
-                  isSingleSelected && 'bg-blue-50 ring-2 ring-inset ring-blue-500',
-                )}
+                style={
+                  isChecked
+                    ? { background: 'rgba(249,115,22,0.06)' }
+                    : isSingleSelected
+                    ? { background: 'rgba(249,115,22,0.10)', outline: '2px solid rgba(249,115,22,0.3)', outlineOffset: '-2px' }
+                    : undefined
+                }
               >
                 {batchMode && (
-                  <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                  <td onClick={(e) => e.stopPropagation()}>
                     <input
                       type="checkbox"
                       checked={isChecked}
                       onChange={() => onToggle?.(r.id)}
-                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      className="cb"
                       aria-label={`Select ${r.name || r.id}`}
                     />
                   </td>
                 )}
-                <td className="px-4 py-3 text-sm font-medium">{r.name || '—'}</td>
-                <td className="px-4 py-3 text-sm text-gray-600 font-mono">{r.aws_type}</td>
-                <td className="px-4 py-3 text-sm text-gray-500 font-mono truncate max-w-xs">
+                <td style={{ color: '#0f172a', fontWeight: 500 }}>{r.name || '—'}</td>
+                <td style={{ color: '#475569', fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>{r.aws_type}</td>
+                <td
+                  style={{
+                    color: '#64748b',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '0.75rem',
+                    maxWidth: '16rem',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
                   {r.aws_arn || '—'}
                 </td>
-                <td className="px-4 py-3">
-                  <span className={cn(
-                    'px-2 py-0.5 rounded text-xs font-medium',
-                    STATUS_COLORS[r.status] || 'bg-gray-100 text-gray-800'
-                  )}>
+                <td>
+                  <span className={STATUS_CLASS[r.status] ?? 'badge badge-neutral'}>
+                    <span className="badge-dot" />
                     {r.status}
                   </span>
                 </td>
-                <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                <td onClick={(e) => e.stopPropagation()}>
                   <LatestRunLinkCell run={r.latest_skill_run} />
                 </td>
-                <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                <td onClick={(e) => e.stopPropagation()}>
                   <RunStatusCell run={r.latest_skill_run} />
                 </td>
-                <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                <td onClick={(e) => e.stopPropagation()}>
                   <ConfidenceCell run={r.latest_skill_run} />
                 </td>
-                <td className="px-4 py-3 text-sm">
+                <td onClick={(e) => e.stopPropagation()}>
                   {r.migration_id && r.migration_name ? (
-                    <Link to={`/migrations/${r.migration_id}`} className="text-blue-600 hover:text-blue-800" onClick={(e) => e.stopPropagation()}>
+                    <Link
+                      to={`/migrations/${r.migration_id}`}
+                      className="text-xs hover:underline"
+                      style={{ color: 'var(--color-ember)' }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
                       {r.migration_name}
                     </Link>
                   ) : (
-                    <span className="text-gray-400">—</span>
+                    <span style={{ color: '#475569' }}>—</span>
                   )}
                 </td>
-                <td className="px-4 py-3 text-sm text-gray-500">{formatDate(r.created_at)}</td>
+                <td style={{ color: '#475569' }}>{formatDate(r.created_at)}</td>
                 {(onDelete || onView) && (
-                  <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                  <td onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center gap-2">
                       {onView && (
-                        <button
-                          onClick={() => onView(r)}
-                          className="px-2 py-1 text-xs font-medium text-blue-600 border border-blue-300 rounded hover:bg-blue-50"
-                        >
+                        <button onClick={() => onView(r)} className="btn btn-ghost btn-sm">
                           View
                         </button>
                       )}
                       {onDelete && (
-                        <button
-                          onClick={() => onDelete(r.id)}
-                          className="px-2 py-1 text-xs font-medium text-red-600 border border-red-300 rounded hover:bg-red-50"
-                        >
+                        <button onClick={() => onDelete(r.id)} className="btn btn-danger btn-sm">
                           Delete
                         </button>
                       )}
@@ -215,7 +224,7 @@ export default function ResourceTable({
           })}
           {filtered.length === 0 && (
             <tr>
-              <td colSpan={colCount} className="px-4 py-8 text-center text-gray-500">
+              <td colSpan={colCount} style={{ textAlign: 'center', padding: '2rem', color: '#475569' }}>
                 No resources found.
               </td>
             </tr>

@@ -9,41 +9,46 @@ export default function TranslationJobProgress() {
 
   if (!id) {
     return (
-      <div className="text-center py-12 text-gray-500">
-        No translation job ID provided.
+      <div className="empty-state">
+        <p>No translation job ID provided.</p>
       </div>
     );
   }
 
   if (isLoading) {
     return (
-      <div className="flex justify-center py-12">
-        <div
-          className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"
-          role="status"
-          aria-label="Loading"
-        />
+      <div className="flex justify-center py-16">
+        <span className="spinner spinner-lg" role="status" aria-label="Loading" />
       </div>
     );
   }
 
   if (isError) {
     return (
-      <div className="text-center py-12">
-        <p className="text-red-500 mb-4">Failed to load translation job.</p>
-        <Link to="/dashboard" className="text-blue-600 hover:text-blue-800">
+      <div className="space-y-4">
+        <Link to="/dashboard" className="back-link">
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          </svg>
           Back to Dashboard
         </Link>
+        <div className="alert alert-error">Failed to load translation job.</div>
       </div>
     );
   }
 
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
+    <div className="max-w-2xl mx-auto space-y-6 animate-fade-in">
       <div>
-        <h1 className="text-2xl font-bold">Translation Job Progress</h1>
-        <p className="text-gray-600 mt-1">
-          {run?.skill_type ? `Type: ${run.skill_type}` : 'Monitoring translation job...'}
+        <Link to="/translation-jobs" className="back-link">
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          </svg>
+          Translation Jobs
+        </Link>
+        <h1 className="page-title">Translation Job Progress</h1>
+        <p className="page-subtitle">
+          {run?.skill_type ? `Type: ${run.skill_type}` : 'Monitoring translation job…'}
         </p>
       </div>
 
@@ -53,26 +58,32 @@ export default function TranslationJobProgress() {
       />
 
       {run?.status === 'failed' && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-          <h3 className="text-red-800 font-semibold mb-2">Translation Job Failed</h3>
-          <p className="text-red-700 text-sm">
-            {run.errors
-              ? JSON.stringify(run.errors, null, 2)
-              : 'An unexpected error occurred.'}
-          </p>
-          <div className="mt-4 flex gap-3">
-            <Link
-              to="/translation-jobs/new"
-              className="text-sm text-blue-600 hover:text-blue-800 font-medium"
-            >
-              Try Again
-            </Link>
-            <Link
-              to="/dashboard"
-              className="text-sm text-gray-600 hover:text-gray-800 font-medium"
-            >
-              Back to Dashboard
-            </Link>
+        <div className="panel">
+          <div className="panel-header">
+            <h3 className="text-sm font-semibold" style={{ color: '#dc2626' }}>Translation Job Failed</h3>
+          </div>
+          <div className="panel-body space-y-4">
+            {run.errors && (
+              <pre
+                className="text-xs p-3 rounded overflow-x-auto"
+                style={{
+                  background: 'var(--color-well)',
+                  color: '#dc2626',
+                  fontFamily: 'var(--font-mono)',
+                  border: '1px solid rgba(239,68,68,0.2)',
+                }}
+              >
+                {JSON.stringify(run.errors, null, 2)}
+              </pre>
+            )}
+            <div className="flex items-center gap-3">
+              <Link to="/translation-jobs/new" className="btn btn-secondary">
+                Try Again
+              </Link>
+              <Link to="/dashboard" className="btn btn-ghost">
+                Back to Dashboard
+              </Link>
+            </div>
           </div>
         </div>
       )}
