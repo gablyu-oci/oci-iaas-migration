@@ -54,7 +54,10 @@ The OCI IaaS Migration Platform helps enterprise customers migrate AWS workloads
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
 │                                    BROWSER                                          │
 │  React 19 + Vite + TanStack Query + Tailwind                                       │
-│  Pages: Dashboard · Migrations · Plan · Jobs · Progress · Results · Settings        │
+│  Three product phases:                                                              │
+│    Phase 1: Discover & Assess  ·  Phase 2: Migrate  ·  Phase 3: Validate           │
+│  Pages: Dashboard · Discovery · Assessment · Migration Plan · Migration Execution   │
+│         · Validation · Settings                                                     │
 └──────────────────────────────────────┬──────────────────────────────────────────────┘
                                        │ HTTPS (REST + SSE)
                                        │ JWT Bearer token
@@ -84,9 +87,15 @@ The OCI IaaS Migration Platform helps enterprise customers migrate AWS workloads
 │                                            │                                        │
 │  ┌──────────────┐  ┌──────────────────┐    │    ┌──────────────────────────────┐    │
 │  │  PostgreSQL  │  │  Redis / ARQ     │    │    │  SkillRegistry (NEW)         │    │
-│  │  15 tables   │  │  Job queue       │    │    │  skill_type → SkillDefinition│    │
-│  │  (see §10)   │  │  (optional)      │    │    │  Dynamic import via importlib│    │
+│  │  metadata    │  │  Job queue       │    │    │  skill_type → SkillDefinition│    │
+│  │  only (§10)  │  │  (optional)      │    │    │  Dynamic import via importlib│    │
 │  └──────────────┘  └──────────────────┘    │    └──────────────────────────────┘    │
+│                                            │                                        │
+│  ┌──────────────────────────────────────────────────────────────────────────────┐   │
+│  │  ArtifactStore (NEW)                                                         │   │
+│  │  OCI Object Storage (prod) / local filesystem (dev) / S3-compatible          │   │
+│  │  PostgreSQL stores metadata only (artifact_url, file_name, content_type)     │   │
+│  └──────────────────────────────────────────────────────────────────────────────┘   │
 │                                            │                                        │
 └────────────────────────────────────────────┼────────────────────────────────────────┘
                               ═══════════════╪══════════════════
@@ -143,9 +152,9 @@ The OCI IaaS Migration Platform helps enterprise customers migrate AWS workloads
 │  └────────┬──────────────────┬──────────────────┬───────────────────────────┘       │
 │           │                  │                  │                                    │
 │  ┌────────▼──────┐  ┌───────▼────────┐  ┌─────▼──────────┐  ┌──────────────┐      │
-│  │ Anthropic API │  │ OCI GenAI      │  │ Self-hosted    │  │ NemoClaw     │      │
-│  │ claude-opus   │  │ (future)       │  │ vLLM (future)  │  │ Proxy        │      │
-│  │ claude-sonnet │  │                │  │                │  │ (future)     │      │
+│  │ OCI GenAI    │  │ Self-hosted    │  │ NemoClaw       │  │ Anthropic API│      │
+│  │ (enterprise  │  │ vLLM           │  │ Proxy          │  │ (transitional│      │
+│  │  target)     │  │ (enterprise)   │  │ (sandbox mode) │  │  — dev/stg)  │      │
 │  └───────────────┘  └────────────────┘  └────────────────┘  └──────────────┘      │
 │                                                                                     │
 │  ┌──────────────────────────────────────────────────────────────────────────┐       │
@@ -162,7 +171,19 @@ The OCI IaaS Migration Platform helps enterprise customers migrate AWS workloads
 
 ## 3. Plane A: Platform / Control Plane
 
-### 3.1 Responsibilities
+### 3.1 Product Phases (UI Structure)
+
+The UI is organized around three clear product phases that map to the enterprise migration workflow:
+
+| Phase | UI Section | Key Pages | Backend Services |
+|-------|-----------|-----------|-----------------|
+| **Phase 1: Discover & Assess** | Discovery + Assessment | Dashboard, AWS Connections, Resource Discovery, Dependency Map, Assessment Report (readiness scores, 6R classification, TCO comparison) | `aws_extractor.py`, `migration_orchestrator.py`, future: `discovery_scheduler.py`, `cloudwatch_collector.py`, `tco_engine.py` |
+| **Phase 2: Migrate** | Migration Execution | Migration Plan (wave planner), Translation Jobs (per-skill), Migration Progress Dashboard (wave-level status), Artifact Viewer | `JobDispatcher`, `ExecutionBackend`, all 8+ skill orchestrators |
+| **Phase 3: Validate** | Validation | Test Migration, Validation Report (health checks, compliance), Performance Comparison, Rollback Plans | Future: `validation_runner.py`, compliance checks |
+
+Each phase has its own top-level navigation section. Users progress linearly but can revisit earlier phases.
+
+### 3.2 Responsibilities
 
 | Responsibility | Component | Current File |
 |---------------|-----------|-------------|
@@ -172,13 +193,13 @@ The OCI IaaS Migration Platform helps enterprise customers migrate AWS workloads
 | Resource discovery | `services/aws_extractor.py` | Unchanged |
 | Job creation & queuing | `api/jobs.py` → `JobDispatcher` | **Refactored** |
 | Job status / SSE streaming | `api/jobs.py` | Unchanged (reads DB) |
-| Artifact storage & download | `api/jobs.py` | Unchanged |
+| Artifact storage & download | `api/jobs.py` → `ArtifactStore` | **Refactored (object storage)** |
 | Credential minting | `JobDispatcher` → `CredentialMinter` | **New** |
 | Execution backend selection | `JobDispatcher` → `ExecutionBackend` | **New** |
 | Skill registry | `SkillRegistry` | **New** |
-| Audit trail | DB writes (interactions, artifacts) | Unchanged |
+| Audit trail | DB writes (interactions, artifacts metadata) | Unchanged |
 
-### 3.2 JobDispatcher (New — replaces job routing logic in job_runner.py)
+### 3.3 JobDispatcher (New — replaces job routing logic in job_runner.py)
 
 The `JobDispatcher` is the **sole entry point** from Plane A into Plane B. It replaces the 540-line `job_runner.py` monolith with a clean pipeline:
 
@@ -205,7 +226,7 @@ TranslationJob (DB)
 └─────────────────────────────────────────────────┘
 ```
 
-### 3.3 SkillRegistry (New)
+### 3.4 SkillRegistry (New)
 
 Replaces the `if/elif` chain in `job_runner.py` with a declarative registry:
 
@@ -250,7 +271,7 @@ SKILL_REGISTRY = {
 }
 ```
 
-### 3.4 CredentialMinter (New)
+### 3.5 CredentialMinter (New)
 
 Produces time-boxed, least-privilege credentials for Plane B:
 
@@ -268,7 +289,7 @@ CredentialMinter.mint(tenant_id, skill_def) → ScopedCredentials
     └─ expires_at: min(model_token_expiry, aws_session_expiry)
 ```
 
-### 3.5 InputBuilder (New — extracts from job_runner.py)
+### 3.6 InputBuilder (New — extracts from job_runner.py)
 
 Moves the `_build_*_input()` functions out of `job_runner.py` into a dedicated module. The aggregation logic (combining VPCs + subnets + SGs for network_translation, instances + ASGs for ec2_translation, etc.) is preserved exactly but driven by `SkillDefinition.input_mode` and `aggregation_types`.
 
@@ -324,19 +345,19 @@ LocalExecutor.execute_job(context):
 
 ### 4.3 Backend 2: ContainerExecutor (Phase 2)
 
-**Goal:** Process isolation via Docker with restricted capabilities.
+**Goal:** Process isolation via containers with restricted capabilities.
+
+**Important:** This is a stepping-stone backend. It provides meaningful isolation for staging and early production, but the Docker-socket-based approach is a **temporary implementation detail**, not the enterprise-grade end state. Production deployments should progress to the SandboxExecutor (Phase 3) or use a Kubernetes Job-based executor that does not require Docker socket access from application workers.
 
 ```
 ContainerExecutor.execute_job(context):
     1. Serialize JobContext to JSON → mount as /input/context.json
-    2. docker run \
+    2. Create and run container:
          --rm \
          --network=model-only \        # Only MODEL_API_BASE_URL reachable
          --tmpfs /sandbox:size=512m \   # Ephemeral workspace
          --read-only \                  # Root FS immutable
          --memory=2g --cpus=2 \         # Resource limits
-         --env MODEL_API_TOKEN=<scoped> \
-         --env MODEL_API_BASE_URL=<url> \
          oci-migration-worker:latest \
          python -m backend.app.execution.worker_entrypoint
     3. Read /output/result.json from container
@@ -345,7 +366,13 @@ ContainerExecutor.execute_job(context):
 
 **Network policy:** Docker network `model-only` allows egress only to `MODEL_API_BASE_URL` (iptables or Docker network plugin). All other egress blocked.
 
-**Credential handling:** STS session token (15-min TTL) passed as env var. Model API token scoped per-job. Both expire before container can be reused.
+**Credential handling:** Model API credentials are NOT passed as env vars in the container. Instead, the ContainerExecutor runs a lightweight credential-proxy sidecar on the `model-only` network that injects the Authorization header into outbound model API requests. The container only knows the proxy's local endpoint URL. This mirrors the SandboxExecutor's host-side credential injection pattern and avoids credential leakage via `/proc/*/environ` or container inspection.
+
+For AWS STS credentials (when needed by skills that do live AWS reads): STS session token (15-min TTL) is mounted as a read-only file at `/input/aws_session.json`, not as an env var. The file is on a tmpfs mount that is destroyed with the container.
+
+**Production path:** In Kubernetes production deployments, the ContainerExecutor should be replaced by either:
+- **SandboxExecutor** (NemoClaw/OpenShell) for maximum isolation, or
+- **KubernetesJobExecutor** (future) that creates K8s Jobs with NetworkPolicy and ServiceAccount constraints, avoiding Docker socket entirely.
 
 ### 4.4 Backend 3: SandboxExecutor (Phase 3)
 
@@ -376,21 +403,47 @@ A single entry point script used by both ContainerExecutor and SandboxExecutor:
 """
 Reads /input/context.json, runs the skill, writes /output/result.json.
 Used inside Docker containers and NemoClaw sandboxes.
+
+CREDENTIAL MODEL:
+The worker NEVER receives raw model API keys or AWS secrets directly.
+- Model API calls: routed through a credential-proxy sidecar (ContainerExecutor)
+  or the OpenShell gateway (SandboxExecutor). The proxy/gateway injects the
+  Authorization header host-side. The worker only knows the proxy's local URL.
+- AWS STS (when needed): read from /input/aws_session.json (read-only tmpfs mount),
+  NOT from environment variables. This avoids credential leakage via /proc/*/environ.
 """
 def main():
     context = JobContext.from_json(Path("/input/context.json").read_text())
-    client = create_model_client(
-        token=os.environ["MODEL_API_TOKEN"],
-        base_url=os.environ.get("MODEL_API_BASE_URL"),
-    )
+
+    # Model client points to the local credential proxy, NOT directly to Anthropic
+    # The proxy runs host-side (or as a sidecar) and injects auth headers
+    proxy_url = os.environ.get("MODEL_PROXY_URL", "http://localhost:9090")
+    client = create_model_client(base_url=proxy_url)
+
     orchestrator = import_orchestrator(context.skill_definition)
     result = orchestrator.run(
         input_content=context.input_content,
-        progress_callback=context.progress_callback,
+        progress_callback=write_progress_to_stdout,  # JSON-line stdout protocol
         client=client,
     )
     Path("/output/result.json").write_text(JobResult.from_orchestrator(result).to_json())
 ```
+
+**Credential proxy pattern (shared by ContainerExecutor and SandboxExecutor):**
+```
+Worker (inside container/sandbox)         Host-side proxy / OpenShell gateway
+    │                                          │
+    │  POST http://localhost:9090/v1/messages   │
+    │  (no Authorization header)               │
+    │ ──────────────────────────────────────→   │
+    │                                          │  Injects: Authorization: Bearer <api_key>
+    │                                          │  Forwards to: https://api.anthropic.com
+    │                                          │  (or configured MODEL_API_BASE_URL)
+    │  ←──────────────────────────────────────  │
+    │  Response (passthrough)                  │
+```
+
+This ensures the model API key NEVER enters the execution environment. The same pattern works for both ContainerExecutor (sidecar proxy) and SandboxExecutor (OpenShell gateway), providing a consistent credential isolation model across both backends.
 
 ### 4.6 OrchestratorAdapter (New)
 
@@ -425,32 +478,61 @@ class OrchestratorAdapter:
 
 ## 5. Plane C: Model / Knowledge Plane
 
+### 5.0 Enterprise Model Privacy Position
+
+**The enterprise end state is private model endpoints.** The use of Anthropic's public API (api.anthropic.com) is an acceptable transitional implementation for development and early deployments, but it is NOT the target architecture for enterprise customers.
+
+Enterprise customers in regulated industries will require:
+- Model inference within their own cloud tenancy or a customer-acceptable private deployment
+- Contractual guarantees about data handling (no training on customer data, zero retention)
+- Data residency compliance (inference in the same region as the customer's data)
+
+**Target deployment model for enterprise:**
+1. **OCI GenAI Service** — managed by Oracle within the customer's OCI region
+2. **Self-hosted vLLM** — customer-deployed model serving on OCI Compute/GPU instances
+3. **NemoClaw-proxied inference** — model calls routed through the OpenShell gateway to a private endpoint
+
+The architecture ensures this transition is a configuration change (MODEL_BACKEND + MODEL_API_BASE_URL), not a code change, because all model calls go through the ModelRouter and ModelClient protocol.
+
 ### 5.1 ModelRouter (New)
 
 Replaces the model routing logic currently scattered across `model_gateway.py` and `base_orchestrator.py`:
 
 ```python
 class ModelRouter:
-    """Routes model requests to the configured backend."""
+    """Routes model requests to the configured backend.
+
+    Backend priority for enterprise deployments:
+      1. Private endpoint (OCI GenAI, vLLM) — preferred for production
+      2. NemoClaw-proxied endpoint — if sandbox execution is in use
+      3. Anthropic API — transitional; acceptable for dev/staging
+    """
 
     def __init__(self, config: ModelConfig):
         self.backends: dict[str, ModelClient] = {}
-        # Register backends based on config
-        if config.anthropic_api_key:
-            self.backends["anthropic"] = AnthropicModelClient(config)
+        # Register backends based on config — order reflects enterprise preference
         if config.oci_genai_endpoint:
             self.backends["oci_genai"] = OCIGenAIClient(config)
         if config.vllm_endpoint:
             self.backends["vllm"] = VLLMClient(config)
+        if config.anthropic_api_key:
+            self.backends["anthropic"] = AnthropicModelClient(config)
+            if config.enterprise_mode:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "ENTERPRISE_MODE is enabled but model backend is Anthropic public API. "
+                    "For production, configure OCI_GENAI_ENDPOINT or VLLM_ENDPOINT for "
+                    "private model inference."
+                )
 
     def get_client(self, model_name: str) -> ModelClient:
         """Resolve model name to appropriate backend client."""
-        if model_name.startswith("claude-"):
-            return self.backends["anthropic"]
-        elif model_name.startswith("oci-"):
+        if model_name.startswith("oci-"):
             return self.backends["oci_genai"]
+        elif model_name.startswith("claude-") and "anthropic" in self.backends:
+            return self.backends["anthropic"]
         else:
-            return self.backends.get("vllm", self.backends["anthropic"])
+            return self.backends.get("vllm", list(self.backends.values())[0])
 ```
 
 ### 5.2 ModelClient Protocol
@@ -606,17 +688,27 @@ class ScopedCredentials:
             return False
         return datetime.utcnow() >= self.expires_at
 
-    def to_env_dict(self) -> dict[str, str]:
-        """Serialize for container/sandbox env injection."""
-        env = {
-            "MODEL_API_TOKEN": self.model_api_token,
-            "MODEL_API_BASE_URL": self.model_api_base_url,
+    def to_proxy_config(self) -> dict[str, str]:
+        """Config for the host-side credential proxy (NOT injected into container/sandbox).
+
+        The proxy runs host-side and intercepts model API requests from the worker,
+        injecting the Authorization header. The worker only sees MODEL_PROXY_URL.
+        """
+        return {
+            "upstream_url": self.model_api_base_url,
+            "authorization": f"Bearer {self.model_api_token}",  # Stays host-side
         }
-        if self.aws_session_token:
-            env["AWS_ACCESS_KEY_ID"] = self.aws_access_key_id
-            env["AWS_SECRET_ACCESS_KEY"] = self.aws_secret_access_key
-            env["AWS_SESSION_TOKEN"] = self.aws_session_token
-            env["AWS_DEFAULT_REGION"] = self.aws_region
+
+    def to_worker_env(self) -> dict[str, str]:
+        """Env vars safe to inject into the worker container/sandbox.
+
+        Note: model_api_token is NOT included. Model auth is handled by the
+        credential proxy. Only the proxy URL is exposed to the worker.
+        """
+        env = {
+            "MODEL_PROXY_URL": "http://localhost:9090",  # Local credential proxy
+        }
+        # AWS STS creds are mounted as a file, not env vars (see worker_entrypoint.py)
         return env
 ```
 
@@ -1070,7 +1162,7 @@ settings.EXECUTION_BACKEND
 | **Process isolation** | None (same process) | Full (container) | Full (sandbox) |
 | **Filesystem isolation** | None | Read-only root + tmpfs /sandbox | Landlock: r/o /usr,/lib; r/w /sandbox,/tmp only |
 | **Network isolation** | None | Docker network: model endpoint only | Network namespace: model endpoint only |
-| **Credential access** | In-memory | Env vars (cleared on exit) | **Never enters sandbox** (host-side proxy) |
+| **Credential access** | In-memory (acceptable for dev) | **Never enters container** (credential proxy sidecar) | **Never enters sandbox** (OpenShell gateway proxy) |
 | **User context** | Application user | Non-root (UID 1000) | Non-root + seccomp |
 | **Resource limits** | None | --memory=2g --cpus=2 | Sandbox resource quotas |
 | **Audit** | Application logs | Container logs + exit code | Sandbox execution log |
@@ -1219,7 +1311,7 @@ tenant_id in JobContext is for audit trail only.
 | `Resource` | `resources` | id, tenant_id, migration_id, aws_connection_id, aws_type, aws_arn, name, raw_config, status, created_at | |
 | `TranslationJob` | `translation_jobs` | id, tenant_id, migration_id, skill_type, input_resource_id, input_content, config, status, current_phase, current_iteration, confidence, total_cost_usd, output, errors, started_at, completed_at, created_at | |
 | `TranslationJobInteraction` | `translation_job_interactions` | id, translation_job_id, agent_type, model, iteration, tokens_*, cost_usd, decision, confidence, issues, duration_seconds, created_at | |
-| `Artifact` | `artifacts` | id, translation_job_id, tenant_id, file_type, file_name, content_type, data, created_at | |
+| `Artifact` | `artifacts` | id, translation_job_id, tenant_id, file_type, file_name, content_type, ~~data~~, artifact_url, size_bytes, checksum, created_at | **Modified: data column removed; artifact_url points to object storage (see §10.4)** |
 | `ServiceMapping` | `service_mappings` | id, aws_service, aws_resource_type, oci_service, oci_resource_type, terraform_resource, notes | |
 | `IAMMapping` | `iam_mappings` | id, aws_action, aws_service, oci_permission, oci_service, notes | |
 | `MigrationPlan` | `migration_plans` | id, migration_id, tenant_id, status, generated_at, summary | |
@@ -1271,7 +1363,103 @@ class GuardrailEvent(Base):
     created_at: Mapped[datetime] = mapped_column(default=func.now())
 ```
 
-### 10.3 Modified Models
+### 10.3 Artifact Storage Architecture (New)
+
+**Design principle:** PostgreSQL stores metadata only. All generated content (Terraform files, translation guides, runbooks, validation reports, dependency graphs) lives in object storage.
+
+#### ArtifactStore Interface
+
+```python
+class ArtifactStore(ABC):
+    """Pluggable artifact storage backend.
+
+    Selected via ARTIFACT_STORE config:
+      "local"       → LocalArtifactStore (dev — writes to local filesystem)
+      "oci"         → OCIObjectStorageStore (production — OCI Object Storage)
+      "s3"          → S3ArtifactStore (alternative — S3-compatible)
+    """
+
+    @abstractmethod
+    async def upload(self, tenant_id: str, job_id: str, file_name: str,
+                     content: bytes, content_type: str) -> str:
+        """Upload artifact content. Returns the artifact URL/path."""
+        ...
+
+    @abstractmethod
+    async def download(self, artifact_url: str) -> bytes:
+        """Download artifact content by URL."""
+        ...
+
+    @abstractmethod
+    async def generate_presigned_url(self, artifact_url: str,
+                                      expires_seconds: int = 3600) -> str:
+        """Generate a time-limited download URL (for browser downloads)."""
+        ...
+
+    @abstractmethod
+    async def delete(self, artifact_url: str) -> None:
+        """Delete an artifact from storage."""
+        ...
+```
+
+#### Storage Layout
+
+```
+# OCI Object Storage (production)
+oci://migration-artifacts-<tenancy>/
+  └── {tenant_id}/
+      └── {job_id}/
+          ├── main.tf
+          ├── variables.tf
+          ├── outputs.tf
+          ├── terraform.tfvars.example
+          ├── network-translation.md
+          └── ORCHESTRATION-SUMMARY.md
+
+# Local filesystem (dev)
+./artifacts/
+  └── {tenant_id}/{job_id}/{file_name}
+```
+
+#### Artifact Model (Modified)
+
+```python
+class Artifact(Base):
+    """Metadata-only record in PostgreSQL. Content lives in object storage."""
+    __tablename__ = "artifacts"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    translation_job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("translation_jobs.id"))
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    file_type: Mapped[Optional[str]]        # "terraform_tf" | "run_report_md" | etc.
+    file_name: Mapped[Optional[str]]        # "main.tf" | "ORCHESTRATION-SUMMARY.md" | etc.
+    content_type: Mapped[Optional[str]]     # "text/plain" | "text/markdown" | etc.
+    artifact_url: Mapped[str]               # Object storage URL (oci://... or file://...)
+    size_bytes: Mapped[int] = mapped_column(default=0)
+    checksum: Mapped[Optional[str]]         # SHA-256 for integrity verification
+    created_at: Mapped[datetime] = mapped_column(default=func.now())
+    # NOTE: 'data' column (bytea) is REMOVED. Content is in object storage only.
+```
+
+#### Migration Path
+
+Phase 1: Add `artifact_url`, `size_bytes`, `checksum` columns. Implement `LocalArtifactStore` (writes to local disk). New artifacts go to local storage; DB stores metadata + URL. Existing `data` column retained for backward compatibility but not written to.
+
+Phase 2: Implement `OCIObjectStorageStore`. Migrate existing artifacts from DB to OCI Object Storage via batch script. Drop `data` column after migration is verified.
+
+#### Download Endpoint Change
+
+```python
+# BEFORE: Stream bytea from DB
+GET /api/artifacts/{id}/download → StreamingResponse(artifact.data)
+
+# AFTER: Redirect to pre-signed URL (or proxy for local store)
+GET /api/artifacts/{id}/download
+  → If OCI: 302 redirect to pre-signed URL (expires 1 hour)
+  → If local: StreamingResponse from local filesystem
+```
+
+### 10.4 Modified Models
 
 #### TranslationJob — New Columns
 
@@ -1897,9 +2085,21 @@ worker:
   resources:
     requests: { cpu: 1000m, memory: 2Gi }
     limits: { cpu: 4000m, memory: 8Gi }
-  # For container backend: worker needs Docker socket access
-  # For sandbox backend: worker needs OpenShell API access
-  dockerSocket: /var/run/docker.sock  # Only for container backend
+  # IMPORTANT: Docker socket access is NOT used in production.
+  # Production uses SandboxExecutor (OpenShell API) or KubernetesJobExecutor.
+  # dockerSocket is ONLY for dev/staging with ContainerExecutor.
+  # dockerSocket: /var/run/docker.sock  # DEV ONLY — never enable in production
+
+artifactStore:
+  backend: oci                              # "local" | "oci" | "s3"
+  bucket: migration-artifacts               # OCI Object Storage bucket
+  namespace: ""                             # OCI tenancy namespace (from OCI Vault)
+  region: ""                                # OCI region for bucket
+
+modelBackend:
+  type: oci_genai                           # "anthropic" | "oci_genai" | "vllm"
+  endpoint: ""                              # OCI GenAI or vLLM endpoint URL
+  # anthropicApiKey only used for dev/staging, not enterprise production
 
 postgres:
   storageClass: oci-bv
@@ -1954,24 +2154,35 @@ networkPolicy:
                     ┌──────▼──────┐   ┌───────▼──────┐  ┌───────▼──────┐
                     │  PostgreSQL │   │    Redis     │  │   Workers    │
                     │  StatefulSet│   │  Deployment  │  │  × 3 replicas│
-                    │  (OCI Block │   │  (in-memory) │  │              │
-                    │   Volume)   │   │              │  │  EXECUTION_  │
+                    │  (metadata  │   │  (in-memory) │  │              │
+                    │   only)     │   │              │  │  EXECUTION_  │
                     │             │   │              │  │  BACKEND=    │
-                    └─────────────┘   └──────────────┘  │  container   │
-                                                        │              │
-                                                        │  ┌────────┐  │
-                                                        │  │Docker  │  │
-                                                        │  │Socket  │  │
-                                                        │  │(DinD)  │  │
-                                                        │  └────────┘  │
-                                                        └──────────────┘
+                    └─────────────┘   └──────────────┘  │  sandbox     │
+                                                        └──────┬───────┘
                                                                │
-                                                               │ Model API
-                                                               ▼
-                                                    ┌──────────────────┐
-                                                    │  Anthropic API   │
-                                                    │  (or OCI GenAI / │
-                                                    │   private vLLM)  │
+                           ┌───────────────────────────────────┼─────────────┐
+                           │                                   │             │
+                    ┌──────▼──────────┐                 ┌──────▼──────┐      │
+                    │ OCI Object      │                 │ Credential  │      │
+                    │ Storage         │                 │ Proxy       │      │
+                    │ (artifacts,     │                 │ (host-side  │      │
+                    │  logs, reports) │                 │  auth inject│      │
+                    └─────────────────┘                 └──────┬──────┘      │
+                                                               │ Model API  │
+                                                               ▼            │
+                                                    ┌──────────────────┐    │
+                                                    │  OCI GenAI /     │    │
+                                                    │  Private vLLM    │    │
+                                                    │  (enterprise)    │    │
+                                                    │  ─ ─ ─ ─ ─ ─    │    │
+                                                    │  Anthropic API   │    │
+                                                    │  (dev/staging)   │    │
+                                                    └──────────────────┘    │
+                                                                            │
+                                                    ┌──────────────────┐    │
+                                                    │  NemoClaw /      │◄───┘
+                                                    │  OpenShell       │
+                                                    │  (sandbox exec)  │
                                                     └──────────────────┘
 ```
 
@@ -1982,7 +2193,7 @@ networkPolicy:
 | # | Risk | Likelihood | Impact | Mitigation |
 |---|------|-----------|--------|------------|
 | R1 | Phase 1 refactor breaks existing skills | Medium | High | LocalExecutor must produce byte-identical output. Run all 9 skills through both old and new code paths; compare artifacts. |
-| R2 | ContainerExecutor Docker socket access is a security risk on shared K8s | High | High | Use Docker-in-Docker (DinD) sidecar or Kaniko. Never mount host Docker socket in production. Alternatively, use Podman rootless. |
+| R2 | ContainerExecutor Docker socket access is a security risk on shared K8s | High | High | ContainerExecutor is explicitly designated as dev/staging only. Production uses SandboxExecutor (NemoClaw) or future KubernetesJobExecutor. Docker socket is NEVER mounted in production Helm chart (commented out by default). |
 | R3 | STS 15-min TTL too short for complex translations | Medium | Medium | Monitor job durations. If >12 min, extend TTL to 30 min or implement STS refresh (with audit log). Current max job timeout is 300s (5 min). |
 | R4 | NemoClaw/OpenShell not available in all environments | High | Low | SandboxExecutor is Phase 3+ and optional. ContainerExecutor provides sufficient isolation for most enterprise requirements. |
 | R5 | Model API rate limits with concurrent container jobs | Medium | Medium | Implement rate limiting in ModelRouter. Queue model API calls with exponential backoff. Monitor 429 responses. |
@@ -1991,6 +2202,9 @@ networkPolicy:
 | R8 | Config drift between LocalExecutor and ContainerExecutor | Medium | Medium | Worker Docker image built from same codebase. CI pipeline runs tests in both backends. |
 | R9 | OCI GenAI model quality insufficient for translation tasks | Medium | High | ModelRouter supports per-skill model override. Fall back to Anthropic for critical skills while tuning OCI GenAI prompts. |
 | R10 | Database migration fails on large production databases | Low | High | Test Alembic migration on production-size dataset snapshot. Add `execution_backend` column as nullable. Encrypt credentials in batch with progress tracking. |
+| R11 | Artifact migration from DB bytea to object storage loses data | Low | High | Batch migration script with checksum verification. Keep `data` column during transition (read from object storage, fallback to DB). Drop `data` column only after 100% verification. |
+| R12 | Enterprise customer rejects Anthropic public API for model inference | High | High | ModelRouter supports OCI GenAI and vLLM as first-class backends. ENTERPRISE_MODE warns if Anthropic is the only configured backend. Sales/deployment playbook documents private model endpoint setup. |
+| R13 | Credential proxy adds latency to model API calls | Medium | Low | Proxy is a lightweight HTTP reverse proxy (nginx or mitmproxy) running as a sidecar. Expected overhead: <5ms per request. Monitor p99 latency through proxy vs direct. |
 
 ---
 
