@@ -1453,7 +1453,7 @@ function PlanStep({
 
 function MigrateStep({ migrationId, migration }: {
   migrationId: string;
-  migration?: { migrate_status?: string | null; migrate_workload_name?: string | null; migrate_started_at?: string | null; migrate_current_step?: string | null; migrate_terraform_plan?: string | null; migrate_logs?: string[] | null; plan_status?: string | null; plan_workload_name?: string | null } | null;
+  migration?: { migrate_status?: string | null; migrate_workload_name?: string | null; migrate_started_at?: string | null; migrate_current_step?: string | null; migrate_terraform_plan?: string | null; migrate_logs?: string[] | null; plan_status?: string | null; plan_workload_id?: string | null; plan_workload_name?: string | null } | null;
 }) {
   const [ociConnections, setOciConnections] = useState<Array<{id: string; name: string; region: string; compartment_id?: string}>>([]);
   const [selectedOciConn, setSelectedOciConn] = useState('');
