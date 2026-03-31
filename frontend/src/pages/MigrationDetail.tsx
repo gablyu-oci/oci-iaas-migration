@@ -2173,7 +2173,6 @@ export default function MigrationDetail() {
     { id: 'discover', label: 'Discover', sublabel: allResources.length > 0 ? `${allResources.length} resources` : 'Scan AWS resources' },
     { id: 'assess', label: 'Assess', sublabel: latestAssessment?.status === 'complete' ? `Score ${Math.round(latestAssessment.avg_readiness_score)}%` : 'Workload analysis' },
     { id: 'plan', label: 'Plan', sublabel: migration?.plan_status === 'completed' ? 'Ready' : 'Generate Terraform' },
-    { id: 'migrate', label: 'Migrate', sublabel: migration?.migrate_status === 'completed' ? 'Done' : migration?.migrate_status ? migration.migrate_status : 'Execute on OCI' },
   ];
 
   // ── Render ──
@@ -2205,13 +2204,12 @@ export default function MigrationDetail() {
 
       {/* Phase pipeline */}
       {(() => {
-        const discoverActive = !stepStatus.plan;
-        const migrateActive = false;
-        const validateActive = false;
+        const isMigrateStep = activeStep === 'migrate';
+        const isPhase1 = ['discover', 'assess', 'plan'].includes(activeStep);
         const phases = [
-          { num: 1, title: 'Discover & Assess', desc: 'Scan resources, analyze dependencies, assess readiness', accent: '#1d4ed8', active: discoverActive, done: stepStatus.plan, live: true,  onClick: () => setActiveStep('discover') },
-          { num: 2, title: 'Migrate',            desc: 'Execute Terraform and apply migration to OCI',           accent: '#7c3aed', active: migrateActive,  done: migration?.migrate_status === 'completed',  live: !!migration?.plan_status, onClick: () => setActiveStep('migrate') },
-          { num: 3, title: 'Validate',           desc: 'Post-migration testing and verification',                accent: '#059669', active: validateActive,  done: false,            live: false, onClick: () => {} },
+          { num: 1, title: 'Discover & Assess', desc: 'Scan resources, analyze dependencies, assess readiness', accent: '#1d4ed8', active: isPhase1,      done: !!migration?.plan_status,                    live: true,  onClick: () => setActiveStep('discover') },
+          { num: 2, title: 'Migrate',            desc: 'Execute Terraform and apply migration to OCI',           accent: '#7c3aed', active: isMigrateStep, done: migration?.migrate_status === 'completed',    live: !!migration?.plan_status, onClick: () => setActiveStep('migrate') },
+          { num: 3, title: 'Validate',           desc: 'Post-migration testing and verification',                accent: '#059669', active: false,         done: false,                                        live: false, onClick: () => {} },
         ];
         return (
           <div
@@ -2285,7 +2283,13 @@ export default function MigrationDetail() {
         );
       })()}
 
-      {/* Two-column layout: sidebar + main */}
+      {/* Phase 2 Migrate — full width, no sidebar */}
+      {activeStep === 'migrate' && (
+        <MigrateStep migrationId={id || ''} migration={migration} />
+      )}
+
+      {/* Phase 1 — Two-column layout: sidebar + main */}
+      {activeStep !== 'migrate' && (
       <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'flex-start' }}>
 
         {/* ── Left sidebar ── */}
@@ -2506,11 +2510,9 @@ export default function MigrationDetail() {
             />
           )}
 
-          {activeStep === 'migrate' && (
-            <MigrateStep migrationId={id || ''} migration={migration} />
-          )}
         </main>
       </div>
+      )}
 
       {/* ── Modals (unchanged functionality) ── */}
 
