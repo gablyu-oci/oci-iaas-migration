@@ -1460,6 +1460,8 @@ function MigrateStep({ migrationId, migration }: {
   const [variableOverrides, setVariableOverrides] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  const [showPreview, setShowPreview] = useState(false);
+  const [previewFiles, setPreviewFiles] = useState<Record<string, string>>({});
 
   const status = migration?.migrate_status;
   const logs = migration?.migrate_logs || [];
@@ -1483,8 +1485,35 @@ function MigrateStep({ migrationId, migration }: {
 
   const fmtElapsed = (s: number) => { const m = Math.floor(s / 60); const sec = s % 60; return m > 0 ? `${m}m ${sec}s` : `${sec}s`; };
 
-  const handleStart = async () => {
+  const handlePreview = async () => {
     if (!selectedOciConn) { setError('Select an OCI connection'); return; }
+    setError(null);
+    // Load the plan artifacts to show .tf files
+    try {
+      const wName = migration?.plan_workload_name || '';
+      const res = await client.get(`/api/app-groups/${migration?.plan_workload_id || ''}/plan-results`);
+      const artifacts = res.data?.artifacts || {};
+      // Extract only synthesis .tf files, or fall back to individual skill .tf files
+      const tfFiles: Record<string, string> = {};
+      const hasSynthesis = Object.keys(artifacts).some(k => k.startsWith('synthesis/') && k.endsWith('.tf'));
+      for (const [key, content] of Object.entries(artifacts)) {
+        if (typeof content !== 'string') continue;
+        if (hasSynthesis) {
+          if (key.startsWith('synthesis/') && key.endsWith('.tf')) {
+            tfFiles[key.replace('synthesis/', '')] = content;
+          }
+        } else if (key.endsWith('.tf')) {
+          tfFiles[key] = content;
+        }
+      }
+      setPreviewFiles(tfFiles);
+      setShowPreview(true);
+    } catch {
+      setError('Failed to load plan artifacts for preview');
+    }
+  };
+
+  const handleConfirmStart = async () => {
     setError(null);
     try {
       await client.post(`/api/migrations/${migrationId}/execute`, {
@@ -1567,9 +1596,57 @@ function MigrateStep({ migrationId, migration }: {
 
           {error && <div className="alert alert-error mt-3">{error}</div>}
 
-          <button onClick={handleStart} disabled={!selectedOciConn} className="btn btn-primary mt-4">
-            Start Migration
+          <button onClick={handlePreview} disabled={!selectedOciConn} className="btn btn-primary mt-4">
+            Preview & Start Migration
           </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── PREVIEW (.tf files before execution) ────────────────────────────
+  if (showPreview && (!status || status === 'rejected')) {
+    const fileEntries = Object.entries(previewFiles).sort(([a], [b]) => a.localeCompare(b));
+    return (
+      <div className="space-y-5">
+        <div className="rounded-xl p-5" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}>
+          <div className="flex items-start justify-between gap-4 mb-4">
+            <div>
+              <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>Review Terraform Files</h3>
+              <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)' }}>
+                These {fileEntries.length} files will be applied to your OCI tenancy. Review before proceeding.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => setShowPreview(false)} className="btn btn-secondary">
+                Back
+              </button>
+              <button onClick={handleConfirmStart} className="btn btn-primary">
+                Confirm & Run Terraform
+              </button>
+            </div>
+          </div>
+
+          {error && <div className="alert alert-error mb-4">{error}</div>}
+
+          <div className="space-y-3">
+            {fileEntries.map(([name, content]) => (
+              <details key={name} className="rounded-lg overflow-hidden" style={{ border: '1px solid var(--color-rule)' }}>
+                <summary className="flex items-center justify-between px-3 py-2.5 cursor-pointer" style={{ background: 'var(--color-raised)' }}>
+                  <span className="flex items-center gap-2">
+                    <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ember)', fontSize: '0.75rem', fontWeight: 600 }}>{name}</span>
+                    <span className="text-xs" style={{ color: 'var(--color-text-dim)' }}>{(content.length / 1024).toFixed(1)} KB</span>
+                  </span>
+                </summary>
+                <pre className="px-3 py-3 overflow-auto text-xs" style={{
+                  maxHeight: '400px', background: '#0d1221', color: '#e2e8f0',
+                  fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', margin: 0, lineHeight: 1.5,
+                }}>
+                  {content}
+                </pre>
+              </details>
+            ))}
+          </div>
         </div>
       </div>
     );
@@ -1740,7 +1817,7 @@ function MigrateStep({ migrationId, migration }: {
           <div className="flex gap-2">
             {status === 'failed' && (
               <>
-                <button onClick={handleStart} className="btn btn-primary btn-sm">Retry</button>
+                <button onClick={handlePreview} className="btn btn-primary btn-sm">Retry</button>
                 <button onClick={handleRollback} className="btn btn-secondary btn-sm" style={{ color: 'var(--color-error)' }}>Rollback</button>
               </>
             )}

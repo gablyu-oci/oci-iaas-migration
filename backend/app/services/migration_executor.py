@@ -150,15 +150,27 @@ def _run_execution(
     workspace = WORKSPACE_ROOT / migration_id / workload_name.replace(" ", "_")
     workspace.mkdir(parents=True, exist_ok=True)
 
-    # Write .tf files from synthesis (or individual skills if no synthesis)
+    # Write .tf files — use synthesis if available, otherwise individual skill files
+    # Never mix both (causes duplicate provider/resource declarations)
+    has_synthesis = any(k.startswith("synthesis/") and k.endswith(".tf") for k in plan_artifacts)
     tf_count = 0
+
+    # Clean workspace of any previous .tf files
+    for f in workspace.glob("*.tf"):
+        f.unlink()
+
     for key, content in plan_artifacts.items():
+        if not isinstance(content, str) or not key.endswith(".tf"):
+            continue
+        if has_synthesis and not key.startswith("synthesis/"):
+            continue  # Skip individual skill files when synthesis exists
         fname = key.split("/")[-1]
-        if fname.endswith(".tf"):
-            # Prefer synthesis/ files, then individual skill files
-            if key.startswith("synthesis/") or not (workspace / fname).exists():
-                (workspace / fname).write_text(content)
-                tf_count += 1
+        # Fix common LLM output issues in HCL
+        # 1. Invalid escape sequences: \. should be \\. in HCL regex strings
+        import re
+        content = re.sub(r'(?<!\\)\\\.', r'\\\\.', content)
+        (workspace / fname).write_text(content)
+        tf_count += 1
 
     _update_migrate_status(session, migration_id,
                            log_line=f"Wrote {tf_count} Terraform files to workspace")
