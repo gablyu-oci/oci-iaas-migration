@@ -16,6 +16,12 @@ export interface Migration {
   plan_workload_name?: string | null;
   plan_started_at?: string | null;
   plan_max_iterations?: number | null;
+  migrate_status?: string | null;
+  migrate_workload_name?: string | null;
+  migrate_started_at?: string | null;
+  migrate_current_step?: string | null;
+  migrate_terraform_plan?: string | null;
+  migrate_logs?: string[] | null;
 }
 
 export function useMigrations() {
@@ -43,6 +49,7 @@ export function useMigration(id: string) {
       const d = query.state.data;
       if (d?.discovery_status === 'discovering') return 3000;
       if (d?.plan_status === 'running') return 3000;
+      if (d?.migrate_status && !['completed', 'failed', 'rolled_back', 'rejected'].includes(d.migrate_status)) return 3000;
       return false;
     },
   });

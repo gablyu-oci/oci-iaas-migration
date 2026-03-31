@@ -77,6 +77,12 @@ class MigrationOut(BaseModel):
     plan_workload_name: Optional[str] = None
     plan_started_at: Optional[str] = None
     plan_max_iterations: Optional[int] = None
+    migrate_status: Optional[str] = None
+    migrate_workload_name: Optional[str] = None
+    migrate_started_at: Optional[str] = None
+    migrate_current_step: Optional[str] = None
+    migrate_terraform_plan: Optional[str] = None
+    migrate_logs: Optional[list] = None
 
     model_config = {"from_attributes": True}
 
@@ -132,6 +138,12 @@ def _mig_to_out(mig) -> MigrationOut:
         plan_workload_name=mig.plan_workload_name,
         plan_started_at=(_to_str(mig.plan_started_at) + 'Z') if mig.plan_started_at else None,
         plan_max_iterations=mig.plan_max_iterations,
+        migrate_status=mig.migrate_status,
+        migrate_workload_name=mig.migrate_workload_name,
+        migrate_started_at=(_to_str(mig.migrate_started_at) + 'Z') if mig.migrate_started_at else None,
+        migrate_current_step=mig.migrate_current_step,
+        migrate_terraform_plan=mig.migrate_terraform_plan,
+        migrate_logs=mig.migrate_logs,
     )
 
 

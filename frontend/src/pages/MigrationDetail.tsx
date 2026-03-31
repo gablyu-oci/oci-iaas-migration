@@ -1449,6 +1449,320 @@ function PlanStep({
   );
 }
 
+// ── Step: Migrate ────────────────────────────────────────────────────────────
+
+function MigrateStep({ migrationId, migration }: {
+  migrationId: string;
+  migration?: { migrate_status?: string | null; migrate_workload_name?: string | null; migrate_started_at?: string | null; migrate_current_step?: string | null; migrate_terraform_plan?: string | null; migrate_logs?: string[] | null; plan_status?: string | null; plan_workload_name?: string | null } | null;
+}) {
+  const [ociConnections, setOciConnections] = useState<Array<{id: string; name: string; region: string; compartment_id?: string}>>([]);
+  const [selectedOciConn, setSelectedOciConn] = useState('');
+  const [variableOverrides, setVariableOverrides] = useState<Record<string, string>>({});
+  const [error, setError] = useState<string | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+
+  const status = migration?.migrate_status;
+  const logs = migration?.migrate_logs || [];
+  const tfPlan = migration?.migrate_terraform_plan;
+  const currentStep = migration?.migrate_current_step;
+
+  // Load OCI connections
+  useEffect(() => {
+    client.get('/api/oci-connections').then(res => setOciConnections(res.data)).catch(() => {});
+  }, []);
+
+  // Elapsed timer
+  useEffect(() => {
+    if (!migration?.migrate_started_at || !status || ['completed', 'failed', 'rolled_back', 'rejected'].includes(status)) return;
+    const startMs = new Date(migration.migrate_started_at).getTime();
+    const tick = () => setElapsed(Math.round((Date.now() - startMs) / 1000));
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [status, migration?.migrate_started_at]);
+
+  const fmtElapsed = (s: number) => { const m = Math.floor(s / 60); const sec = s % 60; return m > 0 ? `${m}m ${sec}s` : `${sec}s`; };
+
+  const handleStart = async () => {
+    if (!selectedOciConn) { setError('Select an OCI connection'); return; }
+    setError(null);
+    try {
+      await client.post(`/api/migrations/${migrationId}/execute`, {
+        workload_name: migration?.plan_workload_name || '',
+        oci_connection_id: selectedOciConn,
+        variable_overrides: variableOverrides,
+      });
+    } catch (err: unknown) {
+      setError((err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || 'Failed to start');
+    }
+  };
+
+  const handleApprove = async () => {
+    try { await client.post(`/api/migrations/${migrationId}/approve-plan`); } catch { setError('Failed to approve'); }
+  };
+
+  const handleReject = async () => {
+    try { await client.post(`/api/migrations/${migrationId}/reject-plan`); } catch { setError('Failed to reject'); }
+  };
+
+  const handleRollback = async () => {
+    if (!confirm('This will run terraform destroy and delete all created OCI resources. Continue?')) return;
+    try { await client.post(`/api/migrations/${migrationId}/rollback`); } catch { setError('Failed to rollback'); }
+  };
+
+  // No plan completed
+  if (!migration?.plan_status || migration.plan_status !== 'completed') {
+    return (
+      <div className="rounded-xl p-8 text-center" style={{ background: 'var(--color-well)', border: '1px dashed var(--color-fence)' }}>
+        <p className="text-sm font-medium" style={{ color: 'var(--color-text-bright)' }}>Plan not ready</p>
+        <p className="text-xs mt-1" style={{ color: 'var(--color-text-dim)' }}>Complete the Plan step first before migrating.</p>
+      </div>
+    );
+  }
+
+  // ── CONFIGURE ───────────────────────────────────────────────────────
+  if (!status || status === 'rejected') {
+    return (
+      <div className="space-y-5">
+        <div className="rounded-xl p-5" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}>
+          <h3 className="text-sm font-semibold mb-1" style={{ color: 'var(--color-text-bright)' }}>Execute Migration</h3>
+          <p className="text-xs mb-4" style={{ color: 'var(--color-text-dim)' }}>
+            Apply the generated Terraform to create resources in OCI for workload: <strong>{migration.plan_workload_name}</strong>
+          </p>
+
+          <div className="space-y-4">
+            <div>
+              <label className="text-xs font-medium mb-1.5 block" style={{ color: 'var(--color-text-dim)' }}>OCI Connection</label>
+              {ociConnections.length === 0 ? (
+                <p className="text-xs" style={{ color: 'var(--color-warning)' }}>
+                  No OCI connections found. <a href="/connections" style={{ color: 'var(--color-ember)', textDecoration: 'underline' }}>Add one</a> first.
+                </p>
+              ) : (
+                <select value={selectedOciConn} onChange={e => setSelectedOciConn(e.target.value)} className="field-input field-select">
+                  <option value="">Select connection…</option>
+                  {ociConnections.map(c => <option key={c.id} value={c.id}>{c.name} ({c.region})</option>)}
+                </select>
+              )}
+            </div>
+
+            <div>
+              <label className="text-xs font-medium mb-1.5 block" style={{ color: 'var(--color-text-dim)' }}>Variable Overrides <span style={{ color: 'var(--color-rail)' }}>(optional)</span></label>
+              <div className="grid grid-cols-2 gap-2">
+                {['compartment_id', 'ssh_public_key', 'availability_domain'].map(key => (
+                  <div key={key}>
+                    <label className="text-xs" style={{ color: 'var(--color-rail)', fontFamily: 'var(--font-mono)' }}>{key}</label>
+                    <input
+                      type="text"
+                      value={variableOverrides[key] || ''}
+                      onChange={e => setVariableOverrides(prev => ({ ...prev, [key]: e.target.value }))}
+                      placeholder={key === 'compartment_id' ? 'ocid1.compartment...' : key === 'ssh_public_key' ? 'ssh-rsa AAAA...' : 'AD-1'}
+                      className="field-input"
+                      style={{ fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {error && <div className="alert alert-error mt-3">{error}</div>}
+
+          <button onClick={handleStart} disabled={!selectedOciConn} className="btn btn-primary mt-4">
+            Start Migration
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── REVIEW (terraform plan) ─────────────────────────────────────────
+  if (status === 'review') {
+    return (
+      <div className="space-y-5">
+        <div className="rounded-xl p-5" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}>
+          <div className="flex items-center gap-2 mb-3">
+            <svg className="w-5 h-5" style={{ color: '#d97706' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+            </svg>
+            <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>Review Terraform Plan</h3>
+          </div>
+          <p className="text-xs mb-4" style={{ color: 'var(--color-text-dim)' }}>
+            Review the resources that will be created in OCI. Approve to proceed with apply, or reject to go back.
+          </p>
+
+          {/* Terraform plan output */}
+          <div className="rounded-lg overflow-hidden mb-4" style={{ border: '1px solid var(--color-rule)' }}>
+            <div className="px-3 py-2" style={{ background: 'var(--color-raised)', borderBottom: '1px solid var(--color-rule)' }}>
+              <span className="text-xs font-semibold" style={{ color: 'var(--color-text-dim)' }}>terraform plan</span>
+            </div>
+            <pre className="p-3 overflow-auto text-xs" style={{
+              maxHeight: '500px', background: '#0d1221', color: '#e2e8f0',
+              fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', margin: 0, lineHeight: 1.5,
+            }}>
+              {(tfPlan || '').split('\n').map((line, i) => (
+                <div key={i} style={{
+                  color: line.startsWith('+') ? '#16a34a' : line.startsWith('-') ? '#dc2626' : line.startsWith('~') ? '#d97706' : '#94a3b8',
+                }}>{line}</div>
+              ))}
+            </pre>
+          </div>
+
+          <div className="flex gap-3">
+            <button onClick={handleApprove} className="btn btn-primary">
+              Approve & Apply
+            </button>
+            <button onClick={handleReject} className="btn btn-secondary">
+              Reject
+            </button>
+          </div>
+          {error && <div className="alert alert-error mt-3">{error}</div>}
+        </div>
+      </div>
+    );
+  }
+
+  // ── RUNNING / APPLYING ──────────────────────────────────────────────
+  if (['running', 'approved', 'applying'].includes(status || '')) {
+    const STEPS = ['preflight', 'workspace', 'init', 'plan', 'review', 'apply', 'complete'];
+    const stepIdx = STEPS.indexOf(currentStep || 'preflight');
+
+    return (
+      <div className="space-y-5">
+        <div className="rounded-xl p-5" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}>
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-3">
+              <span className="spinner flex-shrink-0" />
+              <div>
+                <p className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>
+                  {status === 'applying' ? 'Applying Terraform' : 'Running Migration'}
+                </p>
+                <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)' }}>
+                  {(currentStep || 'starting').replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase())}
+                </p>
+              </div>
+            </div>
+            <div className="text-right">
+              <p className="text-lg font-bold" style={{ color: '#7c3aed', fontFamily: 'var(--font-mono)' }}>{fmtElapsed(elapsed)}</p>
+              <p className="text-xs" style={{ color: 'var(--color-text-dim)' }}>elapsed</p>
+            </div>
+          </div>
+
+          <div className="flex gap-1">
+            {STEPS.map((step, i) => (
+              <div key={step} className="flex-1 group relative">
+                <div className="h-2 rounded-full transition-all" style={{
+                  background: i <= stepIdx ? '#7c3aed' : 'var(--color-rule)',
+                  opacity: i < stepIdx ? 0.7 : i === stepIdx ? 1 : 0.3,
+                  animation: i === stepIdx ? 'shimmer 1.5s ease-in-out infinite' : undefined,
+                }} />
+                <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 hidden group-hover:block z-10">
+                  <span className="text-xs px-2 py-1 rounded whitespace-nowrap" style={{ background: 'var(--color-raised)', color: 'var(--color-text-dim)', border: '1px solid var(--color-rule)' }}>
+                    {step}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Live logs */}
+        <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--color-rule)' }}>
+          <div className="px-4 py-2.5 flex items-center justify-between" style={{ background: 'var(--color-raised)', borderBottom: '1px solid var(--color-rule)' }}>
+            <span className="text-xs font-semibold" style={{ color: 'var(--color-text-dim)' }}>Terminal Output</span>
+            <span className="text-xs" style={{ color: 'var(--color-rail)', fontFamily: 'var(--font-mono)' }}>{logs.length} lines</span>
+          </div>
+          <div className="p-3 overflow-auto" style={{ maxHeight: '400px', background: '#0d1221', fontFamily: 'var(--font-mono)', fontSize: '0.6875rem', lineHeight: 1.6 }}>
+            {logs.length === 0 ? <p style={{ color: 'var(--color-rail)' }}>Waiting…</p> : logs.map((line, i) => (
+              <div key={i} style={{ color: line.includes('✓') || line.includes('complete') ? '#16a34a' : line.includes('failed') || line.includes('FATAL') ? '#dc2626' : '#94a3b8' }}>{line}</div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── COMPLETED ───────────────────────────────────────────────────────
+  if (status === 'completed') {
+    return (
+      <div className="space-y-5">
+        <div className="rounded-xl p-5" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}>
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex items-center gap-2">
+              <svg className="w-6 h-6" style={{ color: '#16a34a' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <div>
+                <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>Migration Complete</h3>
+                <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)' }}>
+                  Resources created in OCI for {migration.migrate_workload_name}
+                </p>
+              </div>
+            </div>
+            <button onClick={handleRollback} className="btn btn-secondary btn-sm" style={{ color: 'var(--color-error)' }}>
+              Rollback (Destroy)
+            </button>
+          </div>
+        </div>
+
+        {/* Logs */}
+        <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--color-rule)' }}>
+          <div className="px-4 py-2.5" style={{ background: 'var(--color-raised)', borderBottom: '1px solid var(--color-rule)' }}>
+            <span className="text-xs font-semibold" style={{ color: 'var(--color-text-dim)' }}>Execution Log</span>
+          </div>
+          <div className="p-3 overflow-auto" style={{ maxHeight: '300px', background: '#0d1221', fontFamily: 'var(--font-mono)', fontSize: '0.6875rem', lineHeight: 1.6 }}>
+            {logs.map((line, i) => (
+              <div key={i} style={{ color: line.includes('complete') || line.includes('✓') ? '#16a34a' : line.includes('failed') ? '#dc2626' : '#94a3b8' }}>{line}</div>
+            ))}
+          </div>
+        </div>
+
+        {error && <div className="alert alert-error">{error}</div>}
+      </div>
+    );
+  }
+
+  // ── FAILED / ROLLING BACK ──────────────────────────────────────────
+  return (
+    <div className="space-y-5">
+      <div className="rounded-xl p-5" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}>
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex items-center gap-2">
+            <svg className="w-6 h-6" style={{ color: status === 'rolling_back' ? '#d97706' : '#dc2626' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <div>
+              <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>
+                {status === 'rolling_back' ? 'Rolling Back…' : status === 'rolled_back' ? 'Rolled Back' : 'Migration Failed'}
+              </h3>
+              <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)' }}>{migration.migrate_workload_name}</p>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            {status === 'failed' && (
+              <>
+                <button onClick={handleStart} className="btn btn-primary btn-sm">Retry</button>
+                <button onClick={handleRollback} className="btn btn-secondary btn-sm" style={{ color: 'var(--color-error)' }}>Rollback</button>
+              </>
+            )}
+            {status === 'rolling_back' && <span className="spinner" />}
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--color-rule)' }}>
+        <div className="px-4 py-2.5" style={{ background: 'var(--color-raised)', borderBottom: '1px solid var(--color-rule)' }}>
+          <span className="text-xs font-semibold" style={{ color: 'var(--color-text-dim)' }}>Execution Log</span>
+        </div>
+        <div className="p-3 overflow-auto" style={{ maxHeight: '300px', background: '#0d1221', fontFamily: 'var(--font-mono)', fontSize: '0.6875rem', lineHeight: 1.6 }}>
+          {logs.map((line, i) => (
+            <div key={i} style={{ color: line.includes('complete') ? '#16a34a' : line.includes('failed') || line.includes('FATAL') ? '#dc2626' : '#94a3b8' }}>{line}</div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main Component ─────────────────────────────────────────────────────────────
 
 export default function MigrationDetail() {
@@ -2190,6 +2504,10 @@ export default function MigrationDetail() {
               planStartedAt={migration?.plan_started_at}
               planMaxIterations={migration?.plan_max_iterations}
             />
+          )}
+
+          {activeStep === 'migrate' && (
+            <MigrateStep migrationId={id || ''} migration={migration} />
           )}
         </main>
       </div>
