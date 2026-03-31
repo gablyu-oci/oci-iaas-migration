@@ -475,7 +475,32 @@ function AddOCIConnectionForm({ onClose }: { onClose: () => void }) {
         </div>
         <div>
           <label className="field-label">Private Key (PEM)</label>
-          <textarea value={privateKey} onChange={e => setPrivateKey(e.target.value)} required placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;..." rows={4} className="field-input" style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }} />
+          <div className="flex items-center gap-2 mb-1">
+            <label
+              className="btn btn-secondary btn-sm"
+              style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '0.375rem' }}
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+              </svg>
+              Upload .pem file
+              <input
+                type="file"
+                accept=".pem,.key"
+                style={{ display: 'none' }}
+                onChange={e => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    const reader = new FileReader();
+                    reader.onload = () => setPrivateKey(reader.result as string);
+                    reader.readAsText(file);
+                  }
+                }}
+              />
+            </label>
+            {privateKey && <span className="text-xs" style={{ color: 'var(--color-success)' }}>Key loaded ({privateKey.length} chars)</span>}
+          </div>
+          <textarea value={privateKey} onChange={e => setPrivateKey(e.target.value)} required placeholder="Or paste key here: -----BEGIN RSA PRIVATE KEY-----&#10;..." rows={3} className="field-input" style={{ fontFamily: 'var(--font-mono)', fontSize: '0.7rem' }} />
         </div>
         <div>
           <label className="field-label">Default Compartment OCID <span style={{ color: 'var(--color-rail)' }}>(optional)</span></label>
