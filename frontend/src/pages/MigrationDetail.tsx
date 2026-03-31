@@ -59,7 +59,7 @@ const SKILL_LABELS: Record<string, string> = {
   dependency_discovery: 'Dependency Discovery (CloudTrail → Graph)',
 };
 
-type ActiveStep = 'discover' | 'assess' | 'plan';
+type ActiveStep = 'discover' | 'assess' | 'plan' | 'migrate';
 
 function migrationStatusBadge(status: string) {
   const map: Record<string, string> = {
@@ -579,23 +579,29 @@ function PlanResults({ results }: { results: { resource_mapping?: Array<Record<s
     { id: 'mapping', label: 'Resource Mapping' },
   ];
 
-  // Group artifacts by category — synthesis is the primary Terraform output
-  const terraformArtifacts: Record<string, string> = {};
+  // Group artifacts by category
+  const synthesisArtifacts: Record<string, string> = {};
+  const skillTfArtifacts: Record<string, string> = {};
   const dataMigArtifacts: Record<string, string> = {};
   const runbookArtifacts: Record<string, string> = {};
 
   for (const [key, content] of Object.entries(artifacts)) {
     if (key.startsWith('synthesis/')) {
-      // Synthesis output = the unified Terraform stack
-      const name = key.replace('synthesis/', '');
-      terraformArtifacts[name] = content;
+      synthesisArtifacts[key.replace('synthesis/', '')] = content;
     } else if (key.startsWith('data_migration/')) {
       dataMigArtifacts[key.replace('data_migration/', '')] = content;
     } else if (key.startsWith('workload_planning/')) {
       runbookArtifacts[key.replace('workload_planning/', '')] = content;
+    } else if (key !== 'resource-mapping.json') {
+      // Individual skill outputs (ec2_translation/main.tf, etc.)
+      skillTfArtifacts[key] = content;
     }
-    // Individual translation outputs are subsumed by synthesis — skip
   }
+
+  // Use synthesis if available, otherwise fall back to individual skill TF files
+  const terraformArtifacts = Object.keys(synthesisArtifacts).length > 0
+    ? synthesisArtifacts
+    : skillTfArtifacts;
 
   if (Object.keys(terraformArtifacts).length > 0) tabs.push({ id: 'terraform', label: 'Terraform' });
   if (Object.keys(dataMigArtifacts).length > 0) tabs.push({ id: 'data', label: 'Data Migration' });
@@ -645,7 +651,7 @@ function PlanResults({ results }: { results: { resource_mapping?: Array<Record<s
             <PlanMappingTable mapping={mapping} />
           )}
           {currentTab === 'terraform' && (
-            <ArtifactList artifacts={terraformArtifacts} />
+            <ArtifactList artifacts={terraformArtifacts} showDownloadAll downloadPrefix="terraform" />
           )}
           {currentTab === 'data' && (
             <ArtifactList artifacts={dataMigArtifacts} />
@@ -660,101 +666,249 @@ function PlanResults({ results }: { results: { resource_mapping?: Array<Record<s
 }
 
 function PlanMappingTable({ mapping }: { mapping: Array<Record<string, unknown>> }) {
+  const [detailIdx, setDetailIdx] = useState<number | null>(null);
   if (mapping.length === 0) return <p className="text-xs" style={{ color: 'var(--color-text-dim)' }}>No mapping data</p>;
+
+  const detail = detailIdx !== null ? mapping[detailIdx] : null;
+
   return (
-    <div style={{ overflowX: 'auto' }}>
-      <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
-        <thead>
-          <tr style={{ borderBottom: '1px solid var(--color-rule)' }}>
-            <th className="text-left px-3 py-2" style={{ color: 'var(--color-text-dim)' }}>AWS Resource</th>
-            <th className="text-left px-1 py-2" />
-            <th className="text-left px-3 py-2" style={{ color: 'var(--color-text-dim)' }}>OCI Target</th>
-            <th className="text-center px-3 py-2" style={{ color: 'var(--color-text-dim)' }}>Confidence</th>
-            <th className="text-left px-3 py-2" style={{ color: 'var(--color-text-dim)' }}>Notes</th>
-          </tr>
-        </thead>
-        <tbody>
-          {mapping.map((m, i) => (
-            <tr key={i} style={{ borderBottom: '1px solid var(--color-rule)' }}>
-              <td className="px-3 py-2">
-                <span className="font-medium" style={{ color: 'var(--color-text-bright)' }}>{String(m.aws_name || '')}</span>
-                <br />
-                <span style={{ color: 'var(--color-text-dim)', fontSize: '0.625rem' }}>{String(m.aws_config_summary || '')}</span>
-              </td>
-              <td className="px-1" style={{ color: 'var(--color-ember)' }}>→</td>
-              <td className="px-3 py-2">
-                <span className="font-medium" style={{ color: '#F80000' }}>{String(m.oci_resource_type || '')}</span>
-                <br />
-                <span style={{ color: 'var(--color-text-dim)', fontSize: '0.625rem' }}>{String(m.oci_config_summary || '')}</span>
-              </td>
-              <td className="px-3 py-2 text-center">
-                <span className="badge" style={{
-                  fontSize: '0.5625rem',
-                  background: m.mapping_confidence === 'high' ? 'rgba(22,163,74,0.1)' : m.mapping_confidence === 'medium' ? 'rgba(217,119,6,0.1)' : 'rgba(220,38,38,0.1)',
-                  color: m.mapping_confidence === 'high' ? '#16a34a' : m.mapping_confidence === 'medium' ? '#d97706' : '#dc2626',
-                }}>
-                  {String(m.mapping_confidence || 'low')}
-                </span>
-              </td>
-              <td className="px-3 py-2" style={{ maxWidth: '180px', fontSize: '0.625rem', color: 'var(--color-text-dim)' }}>
-                {(m.notes as string[] || []).map((n, j) => <div key={j}>+ {n}</div>)}
-                {(m.gaps as string[] || []).map((g, j) => <div key={`g${j}`} style={{ color: 'var(--color-warning)' }}>! {g}</div>)}
-              </td>
+    <>
+      <div style={{ overflowX: 'auto' }}>
+        <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid var(--color-rule)' }}>
+              <th className="text-left px-3 py-2" style={{ color: 'var(--color-text-dim)' }}>AWS Resource</th>
+              <th className="text-left px-1 py-2" />
+              <th className="text-left px-3 py-2" style={{ color: 'var(--color-text-dim)' }}>OCI Target</th>
+              <th className="text-center px-3 py-2" style={{ color: 'var(--color-text-dim)' }}>Confidence</th>
+              <th className="text-center px-3 py-2" style={{ color: 'var(--color-text-dim)' }}>Details</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+          </thead>
+          <tbody>
+            {mapping.map((m, i) => (
+              <tr key={i} style={{ borderBottom: '1px solid var(--color-rule)' }}>
+                <td className="px-3 py-2">
+                  <span className="font-medium" style={{ color: 'var(--color-text-bright)' }}>{String(m.aws_name || '')}</span>
+                  <br />
+                  <span style={{ color: 'var(--color-text-dim)', fontSize: '0.625rem' }}>{String(m.aws_config_summary || '')}</span>
+                </td>
+                <td className="px-1" style={{ color: 'var(--color-ember)' }}>→</td>
+                <td className="px-3 py-2">
+                  <span className="font-medium" style={{ color: '#F80000' }}>{String(m.oci_resource_type || '')}</span>
+                  <br />
+                  <span style={{ color: 'var(--color-text-dim)', fontSize: '0.625rem' }}>{String(m.oci_config_summary || '').slice(0, 60)}{String(m.oci_config_summary || '').length > 60 ? '…' : ''}</span>
+                </td>
+                <td className="px-3 py-2 text-center">
+                  <span className="badge" style={{
+                    fontSize: '0.5625rem',
+                    background: m.mapping_confidence === 'high' ? 'rgba(22,163,74,0.1)' : m.mapping_confidence === 'medium' ? 'rgba(217,119,6,0.1)' : 'rgba(220,38,38,0.1)',
+                    color: m.mapping_confidence === 'high' ? '#16a34a' : m.mapping_confidence === 'medium' ? '#d97706' : '#dc2626',
+                  }}>
+                    {String(m.mapping_confidence || 'low')}
+                  </span>
+                </td>
+                <td className="px-3 py-2 text-center">
+                  <button
+                    onClick={() => setDetailIdx(i)}
+                    className="text-xs font-medium"
+                    style={{ color: 'var(--color-ember)', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', fontFamily: 'inherit' }}
+                  >
+                    View
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Detail popup */}
+      {detail && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)' }} onClick={() => setDetailIdx(null)}>
+          <div className="rounded-xl overflow-hidden" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', maxWidth: '640px', width: '90vw', maxHeight: '85vh', boxShadow: '0 25px 50px rgba(0,0,0,0.5)' }} onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-3" style={{ borderBottom: '1px solid var(--color-rule)' }}>
+              <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>Resource Mapping Detail</h3>
+              <button onClick={() => setDetailIdx(null)} style={{ background: 'var(--color-well)', border: 'none', cursor: 'pointer', borderRadius: '8px', width: '2rem', height: '2rem', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--color-text-dim)' }}>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
+            </div>
+            <div className="px-5 py-4 overflow-auto" style={{ maxHeight: 'calc(85vh - 56px)' }}>
+              {/* AWS side */}
+              <div className="mb-4">
+                <p className="text-xs font-semibold mb-1" style={{ color: 'var(--color-text-dim)' }}>AWS Source</p>
+                <p className="text-sm font-medium" style={{ color: 'var(--color-text-bright)' }}>{String(detail.aws_name || '')}</p>
+                <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)' }}>{String(detail.aws_type || '')}</p>
+                {detail.aws_config_summary && (
+                  <div className="mt-2 rounded-lg p-3" style={{ background: 'var(--color-well)', border: '1px solid var(--color-rule)' }}>
+                    <p className="text-xs" style={{ color: 'var(--color-text)', fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap' }}>{String(detail.aws_config_summary)}</p>
+                  </div>
+                )}
+              </div>
+              {/* Arrow */}
+              <div className="flex items-center gap-2 mb-4">
+                <div style={{ flex: 1, height: '1px', background: 'var(--color-rule)' }} />
+                <span style={{ color: 'var(--color-ember)', fontWeight: 700, fontSize: '0.875rem' }}>→ OCI</span>
+                <div style={{ flex: 1, height: '1px', background: 'var(--color-rule)' }} />
+              </div>
+              {/* OCI side */}
+              <div className="mb-4">
+                <p className="text-xs font-semibold mb-1" style={{ color: 'var(--color-text-dim)' }}>OCI Target</p>
+                <p className="text-sm font-medium" style={{ color: '#F80000' }}>{String(detail.oci_resource_type || '')}</p>
+                {detail.oci_shape && <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)', fontFamily: 'var(--font-mono)' }}>{String(detail.oci_shape)}</p>}
+                {detail.oci_config_summary && (
+                  <div className="mt-2 rounded-lg p-3" style={{ background: 'var(--color-well)', border: '1px solid var(--color-rule)' }}>
+                    <p className="text-xs" style={{ color: 'var(--color-text)', lineHeight: 1.6 }}>{String(detail.oci_config_summary)}</p>
+                  </div>
+                )}
+              </div>
+              {/* Cost */}
+              {(detail.aws_monthly_cost || detail.oci_monthly_cost) && (
+                <div className="flex gap-4 mb-4 text-xs">
+                  {detail.aws_monthly_cost && <span><span style={{ color: 'var(--color-text-dim)' }}>AWS: </span><span style={{ color: '#FF9900', fontWeight: 600, fontFamily: 'var(--font-mono)' }}>${Number(detail.aws_monthly_cost).toFixed(2)}/mo</span></span>}
+                  {detail.oci_monthly_cost && <span><span style={{ color: 'var(--color-text-dim)' }}>OCI: </span><span style={{ color: '#F80000', fontWeight: 600, fontFamily: 'var(--font-mono)' }}>${Number(detail.oci_monthly_cost).toFixed(2)}/mo</span></span>}
+                </div>
+              )}
+              {/* Notes */}
+              {(detail.notes as string[] || []).length > 0 && (
+                <div className="mb-3">
+                  <p className="text-xs font-semibold mb-1.5" style={{ color: 'var(--color-success)' }}>Notes</p>
+                  {(detail.notes as string[]).map((n, j) => (
+                    <div key={j} className="text-xs mb-1 pl-3" style={{ color: 'var(--color-text)', borderLeft: '2px solid var(--color-success)', lineHeight: 1.5 }}>{n}</div>
+                  ))}
+                </div>
+              )}
+              {/* Gaps */}
+              {(detail.gaps as string[] || []).length > 0 && (
+                <div>
+                  <p className="text-xs font-semibold mb-1.5" style={{ color: 'var(--color-warning)' }}>Gaps & Risks</p>
+                  {(detail.gaps as string[]).map((g, j) => (
+                    <div key={j} className="text-xs mb-1 pl-3" style={{ color: 'var(--color-text)', borderLeft: '2px solid var(--color-warning)', lineHeight: 1.5 }}>{g}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
-function ArtifactList({ artifacts }: { artifacts: Record<string, string> }) {
-  const [expanded, setExpanded] = useState<string | null>(null);
+function _downloadFile(filename: string, content: string) {
+  const blob = new Blob([content], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function _downloadAll(artifacts: Record<string, string>, prefix: string) {
+  // Download as individual files (simple approach)
+  for (const [key, content] of Object.entries(artifacts)) {
+    const name = key.split('/').pop() || key;
+    _downloadFile(`${prefix}-${name}`, content);
+  }
+}
+
+function _simpleMarkdown(md: string): string {
+  // Minimal markdown → HTML for readable rendering
+  return md
+    .replace(/^### (.+)$/gm, '<h3 style="font-size:1rem;font-weight:700;margin:1.2em 0 0.5em;color:var(--color-text-bright)">$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2 style="font-size:1.15rem;font-weight:700;margin:1.5em 0 0.5em;color:var(--color-text-bright)">$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1 style="font-size:1.35rem;font-weight:700;margin:1.5em 0 0.5em;color:var(--color-text-bright)">$1</h1>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong style="color:var(--color-text-bright)">$1</strong>')
+    .replace(/`([^`]+)`/g, '<code style="background:var(--color-well);padding:1px 5px;border-radius:3px;font-size:0.8em;font-family:var(--font-mono)">$1</code>')
+    .replace(/^```(\w*)\n([\s\S]*?)^```/gm, '<pre style="background:#0d1221;border:1px solid var(--color-fence);border-radius:8px;padding:12px;margin:8px 0;overflow-x:auto;font-size:0.75rem;font-family:var(--font-mono);color:#e2e8f0;line-height:1.5">$2</pre>')
+    .replace(/^- \[x\] (.+)$/gm, '<div style="margin:2px 0">✅ $1</div>')
+    .replace(/^- \[ \] (.+)$/gm, '<div style="margin:2px 0">☐ $1</div>')
+    .replace(/^- (.+)$/gm, '<div style="margin:2px 0;padding-left:1em">• $1</div>')
+    .replace(/^\d+\. (.+)$/gm, '<div style="margin:2px 0;padding-left:1em">$&</div>')
+    .replace(/\n{2,}/g, '<br/><br/>')
+    .replace(/\n/g, '<br/>');
+}
+
+function ArtifactList({ artifacts, showDownloadAll, downloadPrefix }: { artifacts: Record<string, string>; showDownloadAll?: boolean; downloadPrefix?: string }) {
+  const [viewingFile, setViewingFile] = useState<{ name: string; content: string } | null>(null);
   const entries = Object.entries(artifacts);
   if (entries.length === 0) return <p className="text-xs" style={{ color: 'var(--color-text-dim)' }}>No artifacts</p>;
 
   return (
-    <div className="space-y-2">
-      {entries.map(([key, content]) => {
-        const name = key.split('/').pop() || key;
-        const isOpen = expanded === key;
-        return (
-          <div key={key} className="rounded-lg" style={{ border: '1px solid var(--color-rule)' }}>
-            <button
-              onClick={() => setExpanded(isOpen ? null : key)}
-              className="w-full flex items-center justify-between px-3 py-2.5 text-left text-xs font-medium"
-              style={{ background: isOpen ? 'var(--color-raised)' : 'transparent', color: 'var(--color-text-bright)', border: 'none', cursor: 'pointer' }}
-            >
+    <>
+      {showDownloadAll && entries.length > 1 && (
+        <div className="flex justify-end mb-2">
+          <button onClick={() => _downloadAll(artifacts, downloadPrefix || 'plan')} className="btn btn-secondary btn-sm">
+            <svg className="w-3.5 h-3.5 mr-1.5 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+            Download All
+          </button>
+        </div>
+      )}
+      <div className="space-y-1.5">
+        {entries.map(([key, content]) => {
+          const name = key.split('/').pop() || key;
+          const isMd = name.endsWith('.md');
+          return (
+            <div key={key} className="flex items-center justify-between px-3 py-2.5 rounded-lg" style={{ border: '1px solid var(--color-rule)', background: 'var(--color-surface)' }}>
               <span className="flex items-center gap-2">
-                <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ember)' }}>{name}</span>
-                <span style={{ color: 'var(--color-text-dim)', fontWeight: 400 }}>
+                <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ember)', fontSize: '0.75rem' }}>{name}</span>
+                <span style={{ color: 'var(--color-text-dim)', fontSize: '0.625rem' }}>
                   {content.length > 1000 ? `${(content.length / 1024).toFixed(1)} KB` : `${content.length} chars`}
                 </span>
               </span>
-              <svg className="w-3 h-3 transition-transform" style={{ transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)', color: 'var(--color-rail)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-              </svg>
-            </button>
-            {isOpen && (
-              <pre
-                className="px-3 py-3 overflow-auto text-xs"
-                style={{
-                  borderTop: '1px solid var(--color-rule)',
-                  maxHeight: '500px',
-                  background: 'var(--color-well)',
-                  color: 'var(--color-text)',
-                  fontFamily: 'var(--font-mono)',
-                  whiteSpace: 'pre-wrap',
-                  margin: 0,
-                }}
-              >
-                {content}
-              </pre>
-            )}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setViewingFile({ name, content })}
+                  className="text-xs font-medium"
+                  style={{ color: 'var(--color-ember)', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
+                >
+                  View
+                </button>
+                <button
+                  onClick={() => _downloadFile(name, content)}
+                  className="text-xs font-medium"
+                  style={{ color: 'var(--color-text-dim)', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
+                >
+                  Download
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* File viewer modal */}
+      {viewingFile && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)' }} onClick={() => setViewingFile(null)}>
+          <div className="rounded-xl overflow-hidden" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', maxWidth: '900px', width: '95vw', maxHeight: '90vh', boxShadow: '0 25px 50px rgba(0,0,0,0.5)' }} onClick={e => e.stopPropagation()}>
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-3" style={{ borderBottom: '1px solid var(--color-rule)' }}>
+              <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ember)', fontSize: '0.875rem', fontWeight: 600 }}>{viewingFile.name}</span>
+              <div className="flex items-center gap-2">
+                <button onClick={() => _downloadFile(viewingFile.name, viewingFile.content)} className="btn btn-secondary btn-sm">Download</button>
+                <button onClick={() => setViewingFile(null)} style={{ background: 'var(--color-well)', border: 'none', cursor: 'pointer', borderRadius: '8px', width: '2rem', height: '2rem', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--color-text-dim)' }}>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                </button>
+              </div>
+            </div>
+            {/* Content */}
+            <div className="overflow-auto" style={{ maxHeight: 'calc(90vh - 56px)' }}>
+              {viewingFile.name.endsWith('.md') ? (
+                <div
+                  className="px-6 py-5"
+                  style={{ color: 'var(--color-text)', fontSize: '0.8125rem', lineHeight: 1.7, fontFamily: 'var(--font-sans)' }}
+                  dangerouslySetInnerHTML={{ __html: _simpleMarkdown(viewingFile.content) }}
+                />
+              ) : (
+                <pre className="px-5 py-4 text-xs" style={{ background: '#0d1221', color: '#e2e8f0', fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', margin: 0, lineHeight: 1.5 }}>
+                  {viewingFile.content}
+                </pre>
+              )}
+            </div>
           </div>
-        );
-      })}
-    </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -1190,7 +1344,16 @@ function PlanStep({
   if (viewState === 'running') {
     const currentStep = planResults?.current_step || 'init';
     const logs = planResults?.logs || [];
-    const PIPELINE = ['resource_mapping', 'ec2_translation', 'storage_translation', 'cfn_terraform', 'data_migration', 'workload_planning', 'synthesis'];
+    const PIPELINE_STEPS = [
+      { key: 'resource_mapping', label: 'Resource Mapping' },
+      { key: 'ec2_translation', label: 'EC2 Translation' },
+      { key: 'storage_translation', label: 'Storage Translation' },
+      { key: 'cfn_terraform', label: 'CloudFormation → Terraform' },
+      { key: 'data_migration', label: 'Data Migration' },
+      { key: 'workload_planning', label: 'Runbook & Risk Analysis' },
+      { key: 'synthesis', label: 'Merge Terraform' },
+    ];
+    const PIPELINE = PIPELINE_STEPS.map(s => s.key);
     const stepIdx = PIPELINE.indexOf(currentStep);
 
     return (
@@ -1228,8 +1391,8 @@ function PlanStep({
             </div>
           </div>
           <div className="flex gap-1">
-            {PIPELINE.map((step, i) => (
-              <div key={step} className="flex-1 group relative">
+            {PIPELINE_STEPS.map((step, i) => (
+              <div key={step.key} className="flex-1 group relative">
                 <div className="h-2 rounded-full transition-all" style={{
                   background: i <= stepIdx ? 'var(--color-ember)' : 'var(--color-rule)',
                   opacity: i < stepIdx ? 0.7 : i === stepIdx ? 1 : 0.3,
@@ -1237,7 +1400,7 @@ function PlanStep({
                 }} />
                 <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 hidden group-hover:block z-10">
                   <span className="text-xs px-2 py-1 rounded whitespace-nowrap" style={{ background: 'var(--color-raised)', color: 'var(--color-text-dim)', border: '1px solid var(--color-rule)' }}>
-                    {step.replace(/_/g, ' ')}
+                    {step.label}
                   </span>
                 </div>
               </div>
@@ -1695,7 +1858,8 @@ export default function MigrationDetail() {
   const STEPS: { id: ActiveStep; label: string; sublabel: string }[] = [
     { id: 'discover', label: 'Discover', sublabel: allResources.length > 0 ? `${allResources.length} resources` : 'Scan AWS resources' },
     { id: 'assess', label: 'Assess', sublabel: latestAssessment?.status === 'complete' ? `Score ${Math.round(latestAssessment.avg_readiness_score)}%` : 'Workload analysis' },
-    { id: 'plan', label: 'Plan', sublabel: synthesisJob?.status === 'complete' ? `${Math.round(synthesisJob.confidence * 100)}% confidence` : 'Generate Terraform' },
+    { id: 'plan', label: 'Plan', sublabel: migration?.plan_status === 'completed' ? 'Ready' : 'Generate Terraform' },
+    { id: 'migrate', label: 'Migrate', sublabel: migration?.migrate_status === 'completed' ? 'Done' : migration?.migrate_status ? migration.migrate_status : 'Execute on OCI' },
   ];
 
   // ── Render ──
@@ -1732,7 +1896,7 @@ export default function MigrationDetail() {
         const validateActive = false;
         const phases = [
           { num: 1, title: 'Discover & Assess', desc: 'Scan resources, analyze dependencies, assess readiness', accent: '#1d4ed8', active: discoverActive, done: stepStatus.plan, live: true,  onClick: () => setActiveStep('discover') },
-          { num: 2, title: 'Migrate',            desc: 'Execute migration waves, translate configurations',      accent: '#7c3aed', active: migrateActive,  done: false,            live: false, onClick: () => {} },
+          { num: 2, title: 'Migrate',            desc: 'Execute Terraform and apply migration to OCI',           accent: '#7c3aed', active: migrateActive,  done: migration?.migrate_status === 'completed',  live: !!migration?.plan_status, onClick: () => setActiveStep('migrate') },
           { num: 3, title: 'Validate',           desc: 'Post-migration testing and verification',                accent: '#059669', active: validateActive,  done: false,            live: false, onClick: () => {} },
         ];
         return (

@@ -358,16 +358,19 @@ _REVIEW_SYSTEM = """\
 You are an expert AWS-to-OCI migration architect. Review and improve this \
 resource mapping table produced by an automated mapper.
 
-For each resource, verify the OCI target is correct and add:
+For each resource, verify the OCI target is correct and improve:
 - Better OCI configuration recommendations (shape sizing, performance tier)
 - Migration-specific notes (data migration needs, application changes required)
 - Gaps the automated mapper missed (dependencies, licensing, feature parity)
 - Cost optimization suggestions
-- Any local databases or services detected that need separate migration
 
-Also identify resources that should be ADDED to the mapping (e.g., if an EC2 \
-instance runs a local database, add a separate entry for the database migration \
-to a managed OCI service).
+IMPORTANT RULES:
+- Do NOT add new resources that are not in the original mapping.
+- Do NOT invent recommended services, networking, load balancers, or storage \
+  that don't exist in the source AWS environment.
+- Only improve the existing entries — fix incorrect mappings, add better notes, \
+  refine OCI configuration details.
+- Return EXACTLY the same number of entries as the input.
 
 Return ONLY a JSON array of objects with this schema:
 {
@@ -458,11 +461,15 @@ def review_mapping_with_llm(
                 oci_monthly_cost=item.get("oci_monthly_cost"),
             ))
 
+        # Filter out any hallucinated entries not in the original set
+        original_ids = {e.aws_resource_id for e in entries}
+        filtered = [r for r in result if r.aws_resource_id in original_ids]
+
         logger.info(
-            "LLM review: %d entries in, %d entries out",
-            len(entries), len(result),
+            "LLM review: %d entries in, %d returned, %d after filtering",
+            len(entries), len(result), len(filtered),
         )
-        return result
+        return filtered if filtered else entries  # Fall back to original if all filtered out
 
     except Exception as exc:
         logger.warning("LLM resource mapping review failed: %s — using draft", exc)

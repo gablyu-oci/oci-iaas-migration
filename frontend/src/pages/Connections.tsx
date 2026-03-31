@@ -268,7 +268,7 @@ export default function Connections() {
         <h1 className="page-title" style={{ fontFamily: 'var(--font-display)', fontSize: '1.75rem' }}>
           Connections
         </h1>
-        <p className="page-subtitle">Manage AWS accounts used for resource discovery and extraction</p>
+        <p className="page-subtitle">Manage cloud accounts for resource discovery and migration</p>
       </div>
 
       <AddConnectionCard />
@@ -297,6 +297,197 @@ export default function Connections() {
           </div>
         </div>
       )}
+
+      {/* OCI Connections */}
+      <div style={{ borderTop: '1px solid var(--color-rule)', paddingTop: '1.5rem', marginTop: '0.5rem' }}>
+        <h2 className="text-lg font-semibold mb-1" style={{ color: 'var(--color-text-bright)', fontFamily: 'var(--font-display)' }}>
+          OCI Connections
+        </h2>
+        <p className="text-xs mb-4" style={{ color: 'var(--color-text-dim)' }}>
+          Oracle Cloud Infrastructure accounts used for migration execution
+        </p>
+        <OCIConnectionSection />
+      </div>
+    </div>
+  );
+}
+
+// ── OCI Connections ──────────────────────────────────────────────────────────
+
+function OCIConnectionSection() {
+  const [connections, setConnections] = useState<Array<{id: string; name: string; tenancy_ocid: string; region: string; status: string; created_at: string}>>([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+
+  const loadConnections = () => {
+    import('../api/client').then(({ default: client }) => {
+      client.get('/api/oci-connections')
+        .then(res => setConnections(res.data))
+        .catch(() => {})
+        .finally(() => setLoading(false));
+    });
+  };
+
+  useState(() => { loadConnections(); });
+
+  const handleDelete = async (id: string) => {
+    if (!window.confirm('Delete this OCI connection?')) return;
+    const { default: client } = await import('../api/client');
+    await client.delete(`/api/oci-connections/${id}`);
+    loadConnections();
+  };
+
+  const handleTest = async (id: string) => {
+    const { default: client } = await import('../api/client');
+    try {
+      const res = await client.post(`/api/oci-connections/${id}/test`);
+      alert(res.data.valid ? 'Connection valid!' : `Invalid: ${res.data.error}`);
+    } catch {
+      alert('Test failed');
+    }
+    loadConnections();
+  };
+
+  return (
+    <>
+      {!showForm && (
+        <button
+          onClick={() => setShowForm(true)}
+          className="w-full rounded-xl p-4 flex items-center gap-3 transition-colors text-left mb-4"
+          style={{ background: 'var(--color-surface)', border: '2px dashed var(--color-fence)' }}
+          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.borderColor = '#F80000'; }}
+          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.borderColor = 'var(--color-fence)'; }}
+        >
+          <div className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0"
+            style={{ background: 'rgba(248,0,0,0.08)', color: '#F80000' }}>
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+          </div>
+          <div>
+            <p className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>Add OCI Connection</p>
+            <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)' }}>Connect an OCI tenancy for migration execution</p>
+          </div>
+        </button>
+      )}
+
+      {showForm && <AddOCIConnectionForm onClose={() => { setShowForm(false); loadConnections(); }} />}
+
+      {loading ? (
+        <div className="skel h-24 rounded-xl" />
+      ) : connections.length === 0 ? null : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {connections.map(conn => (
+            <div key={conn.id} className="rounded-xl p-4" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}>
+              <div className="flex items-start justify-between mb-2">
+                <div>
+                  <p className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>{conn.name}</p>
+                  <p className="text-xs" style={{ color: 'var(--color-text-dim)' }}>{conn.region}</p>
+                </div>
+                <span className={statusBadge(conn.status)}><span className="badge-dot" />{conn.status}</span>
+              </div>
+              <p className="text-xs mb-3" style={{ color: 'var(--color-rail)', fontFamily: 'var(--font-mono)' }}>
+                {conn.tenancy_ocid.slice(0, 40)}…
+              </p>
+              <div className="flex gap-2">
+                <button onClick={() => handleTest(conn.id)} className="btn btn-secondary btn-sm">Test Connection</button>
+                <button onClick={() => handleDelete(conn.id)} className="btn btn-ghost btn-sm" style={{ color: 'var(--color-error)' }}>Delete</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+const OCI_REGIONS = [
+  'us-ashburn-1', 'us-phoenix-1', 'us-sanjose-1', 'us-chicago-1',
+  'eu-frankfurt-1', 'eu-amsterdam-1', 'eu-london-1', 'eu-zurich-1',
+  'ap-tokyo-1', 'ap-osaka-1', 'ap-seoul-1', 'ap-sydney-1', 'ap-mumbai-1',
+  'ca-toronto-1', 'ca-montreal-1', 'sa-saopaulo-1',
+];
+
+function AddOCIConnectionForm({ onClose }: { onClose: () => void }) {
+  const [name, setName] = useState('');
+  const [tenancyOcid, setTenancyOcid] = useState('');
+  const [userOcid, setUserOcid] = useState('');
+  const [region, setRegion] = useState('us-ashburn-1');
+  const [fingerprint, setFingerprint] = useState('');
+  const [privateKey, setPrivateKey] = useState('');
+  const [compartmentId, setCompartmentId] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setSubmitting(true);
+    setError('');
+    try {
+      const { default: client } = await import('../api/client');
+      await client.post('/api/oci-connections', {
+        name, tenancy_ocid: tenancyOcid, user_ocid: userOcid, region,
+        fingerprint, private_key: privateKey, compartment_id: compartmentId || undefined,
+      });
+      onClose();
+    } catch (err: unknown) {
+      setError((err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || 'Failed to create connection');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="rounded-xl overflow-hidden mb-4" style={{ background: 'var(--color-surface)', border: '2px solid #F80000' }}>
+      <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--color-rule)', background: 'rgba(248,0,0,0.04)' }}>
+        <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>New OCI Connection</h3>
+        <button onClick={onClose} className="btn btn-ghost btn-sm">
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+        </button>
+      </div>
+      <form onSubmit={handleSubmit} className="p-5 space-y-4">
+        {error && <div className="alert alert-error">{error}</div>}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="field-label">Connection Name</label>
+            <input type="text" value={name} onChange={e => setName(e.target.value)} required placeholder="My OCI Tenancy" className="field-input" />
+          </div>
+          <div>
+            <label className="field-label">Region</label>
+            <select value={region} onChange={e => setRegion(e.target.value)} className="field-input field-select">
+              {OCI_REGIONS.map(r => <option key={r} value={r}>{r}</option>)}
+            </select>
+          </div>
+        </div>
+        <div>
+          <label className="field-label">Tenancy OCID</label>
+          <input type="text" value={tenancyOcid} onChange={e => setTenancyOcid(e.target.value)} required placeholder="ocid1.tenancy.oc1.." className="field-input" />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="field-label">User OCID</label>
+            <input type="text" value={userOcid} onChange={e => setUserOcid(e.target.value)} required placeholder="ocid1.user.oc1.." className="field-input" />
+          </div>
+          <div>
+            <label className="field-label">API Key Fingerprint</label>
+            <input type="text" value={fingerprint} onChange={e => setFingerprint(e.target.value)} required placeholder="aa:bb:cc:dd:..." className="field-input" />
+          </div>
+        </div>
+        <div>
+          <label className="field-label">Private Key (PEM)</label>
+          <textarea value={privateKey} onChange={e => setPrivateKey(e.target.value)} required placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;..." rows={4} className="field-input" style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }} />
+        </div>
+        <div>
+          <label className="field-label">Default Compartment OCID <span style={{ color: 'var(--color-rail)' }}>(optional)</span></label>
+          <input type="text" value={compartmentId} onChange={e => setCompartmentId(e.target.value)} placeholder="ocid1.compartment.oc1.." className="field-input" />
+        </div>
+        <div className="flex gap-2">
+          <button type="submit" disabled={submitting} className="btn btn-primary">
+            {submitting ? <><span className="spinner" />Creating…</> : 'Create OCI Connection'}
+          </button>
+          <button type="button" onClick={onClose} className="btn btn-secondary">Cancel</button>
+        </div>
+      </form>
     </div>
   );
 }

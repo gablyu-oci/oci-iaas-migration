@@ -492,28 +492,46 @@ def _run_pipeline(
         logger.warning("Workload planning failed: %s", exc)
 
     # ── Step 6: Synthesis ──────────────────────────────────────────────
-    _progress("synthesis", f"Running Synthesis (combining all artifacts, max {max_iterations} rounds)")
-    try:
-        # Build synthesis input from all completed artifacts
-        synthesis_input = json.dumps({
-            "migration_name": ag.name,
-            "jobs": [
-                {
-                    "skill_type": key.split("/")[0],
-                    "artifacts": {key.split("/", 1)[-1]: content},
-                }
-                for key, content in completed_artifacts.items()
-                if "/" in key and key.split("/")[0] not in ("workload_planning", "data_migration")
-            ],
-        }, indent=2)
+    # Aggregate artifacts by skill type (not one job per file)
+    skill_artifacts: dict[str, dict[str, str]] = {}
+    for key, content in completed_artifacts.items():
+        if "/" not in key:
+            continue
+        skill = key.split("/")[0]
+        if skill in ("workload_planning", "data_migration", "resource-mapping"):
+            continue
+        fname = key.split("/", 1)[-1]
+        # .tf files in full, .md reports truncated to first 1000 chars for context
+        if fname.endswith(".tf"):
+            skill_artifacts.setdefault(skill, {})[fname] = content
+        elif fname.endswith(".md"):
+            skill_artifacts.setdefault(skill, {})[fname] = content[:1000] + "\n\n[... truncated for synthesis ...]" if len(content) > 1000 else content
+            skill_artifacts.setdefault(skill, {})[fname] = content
 
-        from app.skills.synthesis.orchestrator import run as run_synthesis
-        result = run_synthesis(synthesis_input, _progress_cb, anthropic_client, max_iterations)
-        if result:
-            for name, content in result.get("artifacts", {}).items():
-                completed_artifacts[f"synthesis/{name}"] = content
-    except Exception as exc:
-        logger.warning("Synthesis failed: %s", exc)
+    translation_jobs = [
+        {"skill_type": skill, "artifacts": arts}
+        for skill, arts in skill_artifacts.items()
+    ]
+
+    if translation_jobs:
+        _progress("synthesis", f"Merging Terraform (combining {len(translation_jobs)} skill outputs into one stack)")
+        try:
+            synthesis_input = json.dumps({
+                "migration_name": ag.name,
+                "jobs": translation_jobs,
+            }, indent=2)
+
+            from app.skills.synthesis.orchestrator import run as run_synthesis
+            result = run_synthesis(synthesis_input, _progress_cb, anthropic_client, max_iterations)
+            if result:
+                for name, content in result.get("artifacts", {}).items():
+                    completed_artifacts[f"synthesis/{name}"] = content
+                _progress("synthesis", "Synthesis complete")
+        except Exception as exc:
+            _progress("synthesis", f"Synthesis failed: {exc!r}")
+            logger.warning("Synthesis failed: %s\n%s", exc, traceback.format_exc())
+    else:
+        _progress("synthesis", "No translation artifacts to synthesize — skipping")
 
     # ── Step 7: Store results ──────────────────────────────────────────
     import time

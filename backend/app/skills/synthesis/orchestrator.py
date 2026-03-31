@@ -114,7 +114,7 @@ def _cost(model: str, tokens_input: int, tokens_output: int,
 
 ENHANCEMENT_SYSTEM = """\
 You are an OCI migration architect synthesizing multiple translated Terraform files \
-into a single, production-ready migration plan.
+into a single, production-ready Terraform stack.
 
 INPUT: JSON containing "migration_name" and "jobs" — each job has a "skill_type" \
 and "artifacts" dict of filename→content for already-translated OCI Terraform.
@@ -135,77 +135,16 @@ common ones (compartment_id, region, availability_domain, etc.) into a single de
 var.<name> or data source lookups consistent with networking_tf outputs.
    - Keep resource logical names consistent across files.
 
-3. Write iam_setup_md: OCI IAM is applied separately from Terraform.
-   Collect all IAM requirements implied by the resources and write clear \
-step-by-step instructions for creating the needed policies in the OCI Console \
-or via OCI CLI. Include exact policy statement syntax.
-
-4. Write migration_runbook_md: Phase-by-phase apply guide with exact commands:
-   Phase 1 — Networking: terraform init && terraform apply -target=...
-   Phase 2 — Database: ...
-   etc.
-   Include: pre-requisites, variable file setup, plan/apply commands, \
-expected outputs to note for the next phase.
-
-5. Write special_attention_md: Flag ALL of the following found in the source \
-translations:
-   - Resources that couldn't be fully translated (placeholder comments)
-   - AWS services with no direct OCI equivalent (manual workaround needed)
-   - Data migration steps (RDS → OCI DB, EBS snapshots → Block Volume backups)
-   - Licensing differences (BYOL vs OCI licensing)
-   - DNS cutover requirements
-   - Security rules with 0.0.0.0/0 on sensitive ports
-   - kms_key_id / encryption gaps flagged by individual translations
-   - Any TODO or FIXME comments in the source Terraform
-   - Every issue, warning, or note flagged in the input .md reports from each skill
-
-6. Write synthesis_summary_md: A COMPREHENSIVE human-readable summary of this entire \
-migration. This is the single document a migration engineer reads first. Include:
-
-   ## Overview
-   One paragraph: what is being migrated, how many resources, confidence level, and \
-overall recommendation.
-
-   ## Migration Phases
-   For each phase in the runbook, a subsection with:
-   - What resources are created in this phase
-   - Which .tf file to apply
-   - Pre-requisites for this phase
-   - Expected outputs to capture (IDs, endpoints) for use in later phases
-   - Any risks specific to this phase
-
-   ## Critical Attention Items
-   Numbered list of ALL items from special_attention_md that require action \
-BEFORE applying Terraform. Group by category: Security, Data Migration, \
-Manual Steps, Unsupported Services.
-
-   ## Per-Skill Translation Notes
-   For each input skill job, a subsection summarizing:
-   - What was translated (resource count, types)
-   - Confidence and any issues the translator flagged
-   - Anything that needs manual review specific to that skill
-   Pull ALL of this from the input .md report files for each skill.
-
-   ## Pre-Apply Checklist
-   A markdown checklist (- [ ] items) of every step that must be completed \
-before running terraform apply, including: OCI tenancy setup, compartment \
-creation, IAM policies (reference iam-setup.md), variable file population, \
-and any data migration prerequisites.
-
-   ## Apply Order
-   Numbered list of .tf files in apply order with a one-line description of \
-what each file creates.
+3. Write special_attention_md: Brief list of items needing manual attention — \
+gaps, TODOs, security concerns from the source translations.
 
 RULES:
 - If a tf section is not needed (no resources of that type), use empty string "".
 - Do NOT invent resources that were not in the input translations.
 - Preserve all resource attribute values from the source translations exactly.
-- synthesis_summary_md must be thorough — it is the primary document engineers use.
-  Do NOT write a brief summary. Pull ALL relevant details from the input .md reports.
 - Return ONLY a JSON object with these exact keys (string values):
   networking_tf, database_tf, compute_tf, storage_tf, loadbalancer_tf,
-  variables_tf, outputs_tf, iam_setup_md, migration_runbook_md, special_attention_md,
-  synthesis_summary_md
+  variables_tf, outputs_tf, special_attention_md
 """
 
 REVIEW_SYSTEM = """\
@@ -243,15 +182,14 @@ Return JSON:
 """
 
 FIX_SYSTEM = """\
-You are an OCI migration architect fixing issues in a synthesized migration plan.
+You are an OCI migration architect fixing issues in a synthesized Terraform stack.
 
 You will receive the current synthesis output and a list of CRITICAL and HIGH \
 severity issues. Fix ONLY those issues. Do not change anything that is not broken.
 
 Return the corrected synthesis as the same JSON object:
   networking_tf, database_tf, compute_tf, storage_tf, loadbalancer_tf,
-  variables_tf, outputs_tf, iam_setup_md, migration_runbook_md, special_attention_md,
-  synthesis_summary_md
+  variables_tf, outputs_tf, special_attention_md
 
 Include a "fixes_applied" key listing what you changed (for logging).
 """
@@ -305,8 +243,7 @@ def _build_enhancement_prompt(input_data: dict, current: Optional[dict],
     parts.append(
         "\nReturn ONLY the JSON object with keys: "
         "networking_tf, database_tf, compute_tf, storage_tf, loadbalancer_tf, "
-        "variables_tf, outputs_tf, iam_setup_md, migration_runbook_md, special_attention_md, "
-        "synthesis_summary_md"
+        "variables_tf, outputs_tf, special_attention_md"
     )
     return "".join(parts)
 
@@ -369,10 +306,9 @@ _TF_FILE_MAP = {
 }
 
 _MD_FILE_MAP = {
-    "iam_setup_md":          "iam-setup.md",
-    "migration_runbook_md":  "migration-runbook.md",
     "special_attention_md":  "special-attention.md",
-    "synthesis_summary_md":  "synthesis-summary.md",
+    # iam_setup_md, migration_runbook_md, synthesis_summary_md removed —
+    # runbook is produced by workload_planning skill, not synthesis
 }
 
 

@@ -62,6 +62,27 @@ class AWSConnection(Base):
 
 
 # ---------------------------------------------------------------------------
+# OCIConnection
+# ---------------------------------------------------------------------------
+class OCIConnection(Base):
+    __tablename__ = "oci_connections"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    tenancy_ocid: Mapped[str] = mapped_column(String(255), nullable=False)
+    user_ocid: Mapped[str] = mapped_column(String(255), nullable=False)
+    region: Mapped[str] = mapped_column(String(64), nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(255), nullable=False)
+    private_key: Mapped[str] = mapped_column(Text, nullable=False)  # PEM key content
+    compartment_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+    tenant: Mapped["Tenant"] = relationship()
+
+
+# ---------------------------------------------------------------------------
 # Migration
 # ---------------------------------------------------------------------------
 class Migration(Base):
@@ -83,6 +104,17 @@ class Migration(Base):
     plan_workload_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     plan_started_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     plan_max_iterations: Mapped[Optional[int]] = mapped_column(nullable=True)
+    # Phase 2: Migrate
+    migrate_status: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    migrate_workload_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    migrate_oci_connection_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("oci_connections.id"), nullable=True
+    )
+    migrate_started_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    migrate_current_step: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    migrate_terraform_plan: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    migrate_terraform_state: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    migrate_logs: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
 
     tenant: Mapped["Tenant"] = relationship(back_populates="migrations")
     resources: Mapped[list["Resource"]] = relationship(back_populates="migration")
