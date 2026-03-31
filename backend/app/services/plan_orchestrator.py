@@ -209,6 +209,10 @@ def run_workload_plan(
 
     Orchestrates the full plan generation pipeline for a single workload.
     """
+    import os
+    os.setpgrp()
+    os.environ.pop("CLAUDECODE", None)  # Allow Agent SDK to spawn nested sessions
+
     logging.basicConfig(level=logging.INFO)
 
     engine = create_engine(_sync_database_url(), echo=False)

@@ -86,6 +86,10 @@ def execute_migration(
     variable_overrides: dict | None = None,
 ) -> None:
     """Main entry point — runs in a child process."""
+    import os
+    os.setpgrp()
+    os.environ.pop("CLAUDECODE", None)  # Allow Agent SDK nested sessions
+
     logging.basicConfig(level=logging.INFO)
 
     engine = create_engine(_sync_database_url(), echo=False)

@@ -153,6 +153,7 @@ def _run_assessment_in_process(assessment_id: str) -> None:
     """Entry point for the child process -- must be a module-level function."""
     import os
     os.setpgrp()
+    os.environ.pop("CLAUDECODE", None)  # Allow Agent SDK nested sessions
     from app.services.assessment_runner import run_assessment
     run_assessment(assessment_id)
 
