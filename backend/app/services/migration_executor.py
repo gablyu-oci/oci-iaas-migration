@@ -389,9 +389,12 @@ def rollback_migration(migration_id: str) -> None:
 
         workload_name = row[0]
         workspace = WORKSPACE_ROOT / migration_id / workload_name.replace(" ", "_")
-        if not workspace.exists():
-            _update_migrate_status(session, migration_id, status="failed",
-                                   log_line="Workspace not found for rollback")
+
+        # Check if there's anything to destroy
+        tfstate_path = workspace / "terraform.tfstate"
+        if not workspace.exists() or not tfstate_path.exists():
+            _update_migrate_status(session, migration_id, status="rolled_back",
+                                   log_line="Nothing to rollback — no terraform state exists")
             return
 
         _update_migrate_status(session, migration_id, status="rolling_back", step="destroy",
