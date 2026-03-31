@@ -233,6 +233,109 @@ async def generate_migration_plan(
     return _plan_to_out(loaded)
 
 
+class PlanFromAssessmentRequest(BaseModel):
+    assessment_id: str
+    app_group_ids: list[str] | None = None
+    max_iterations: int = 3  # LLM debate rounds (1-5)
+
+
+@router.post("/migrations/{mig_id}/plan-from-assessment", status_code=202)
+async def generate_plan_from_assessment(
+    mig_id: str,
+    body: PlanFromAssessmentRequest,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate a migration plan for a workload (app group).
+
+    Spawns a child process that runs the full pipeline:
+    resource mapping → translation skills → data migration → runbook → synthesis.
+    """
+    import multiprocessing
+
+    try:
+        mig_uuid = uuid.UUID(mig_id)
+        assessment_uuid = uuid.UUID(body.assessment_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    if not body.app_group_ids or len(body.app_group_ids) != 1:
+        raise HTTPException(status_code=400, detail="Exactly one app_group_id required")
+
+    app_group_id = body.app_group_ids[0]
+    try:
+        uuid.UUID(app_group_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid app_group_id format")
+
+    result = await db.execute(
+        select(Migration).where(Migration.id == mig_uuid, Migration.tenant_id == tenant.id)
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Migration not found")
+
+    max_iters = max(1, min(5, body.max_iterations))
+
+    # Spawn child process for the plan orchestrator
+    from app.services.plan_orchestrator import run_workload_plan
+
+    ctx = multiprocessing.get_context("spawn")
+    p = ctx.Process(
+        target=run_workload_plan,
+        args=(str(mig_uuid), str(assessment_uuid), app_group_id, str(tenant.id), max_iters),
+        daemon=True,
+    )
+    p.start()
+
+    return {
+        "status": "started",
+        "migration_id": str(mig_uuid),
+        "app_group_id": app_group_id,
+        "message": "Plan generation started. Results will appear on the workload.",
+    }
+
+
+@router.post("/app-groups/{app_group_id}/cancel-plan", status_code=200)
+async def cancel_workload_plan(
+    app_group_id: str,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cancel a running plan and reset status so it can be re-run."""
+    from sqlalchemy import text
+
+    ag_result = await db.execute(
+        select(AppGroup).where(
+            AppGroup.id == uuid.UUID(app_group_id),
+            AppGroup.tenant_id == tenant.id,
+        )
+    )
+    ag = ag_result.scalar_one_or_none()
+    if not ag:
+        raise HTTPException(status_code=404, detail="App group not found")
+
+    asmt_result = await db.execute(
+        select(Assessment).where(Assessment.id == ag.assessment_id)
+    )
+    asmt = asmt_result.scalar_one_or_none()
+    if not asmt:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+
+    arts = asmt.dependency_artifacts or {}
+    wp = arts.get("workload_plans", {})
+    if ag.name in wp:
+        del wp[ag.name]
+        arts["workload_plans"] = wp
+        # Use raw SQL to avoid JSONB mutation issues
+        await db.execute(
+            text("UPDATE assessments SET dependency_artifacts = :arts WHERE id = :id"),
+            {"arts": json.dumps(arts), "id": str(asmt.id)},
+        )
+        await db.commit()
+
+    return {"status": "cancelled", "app_group_id": app_group_id}
+
+
 @router.post("/migrations/{mig_id}/synthesize", status_code=202)
 async def synthesize_migration(
     mig_id: str,

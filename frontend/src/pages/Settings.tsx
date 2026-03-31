@@ -1,244 +1,112 @@
-import { useState, type FormEvent } from 'react';
-import { useConnections, useCreateConnection, useDeleteConnection } from '../api/hooks/useConnections';
-import { formatDate } from '../lib/utils';
+import { useState } from 'react';
 
-const AWS_REGIONS = [
-  'us-east-1','us-east-2','us-west-1','us-west-2',
-  'eu-west-1','eu-west-2','eu-west-3','eu-central-1','eu-north-1',
-  'ap-southeast-1','ap-southeast-2','ap-northeast-1','ap-northeast-2','ap-south-1',
-  'sa-east-1','ca-central-1',
+type SettingsSection = 'account' | 'notifications';
+
+const NAV_ITEMS: { id: SettingsSection; label: string; icon: JSX.Element }[] = [
+  {
+    id: 'account',
+    label: 'Account',
+    icon: (
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+      </svg>
+    ),
+  },
+  {
+    id: 'notifications',
+    label: 'Notifications',
+    icon: (
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+      </svg>
+    ),
+  },
 ];
 
-function statusBadge(status: string) {
-  const map: Record<string, string> = {
-    active: 'badge badge-success',
-    inactive: 'badge badge-neutral',
-    error: 'badge badge-error',
-  };
-  return map[status] || 'badge badge-neutral';
+function AccountSection() {
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl p-5"
+        style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}>
+        <h3 className="text-sm font-semibold mb-3" style={{ color: 'var(--color-text-bright)' }}>Account Settings</h3>
+        <div className="rounded-lg p-4 text-center"
+          style={{ background: 'var(--color-well)', border: '1px dashed var(--color-fence)' }}>
+          <p className="text-xs" style={{ color: 'var(--color-text-dim)' }}>
+            Account settings will be available in a future release.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NotificationsSection() {
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl p-5"
+        style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}>
+        <h3 className="text-sm font-semibold mb-3" style={{ color: 'var(--color-text-bright)' }}>Notification Preferences</h3>
+        <div className="rounded-lg p-4 text-center"
+          style={{ background: 'var(--color-well)', border: '1px dashed var(--color-fence)' }}>
+          <p className="text-xs" style={{ color: 'var(--color-text-dim)' }}>
+            Notification settings will be available in a future release.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export default function Settings() {
-  const { data: connections, isLoading } = useConnections();
-  const createConnection = useCreateConnection();
-  const deleteConnection = useDeleteConnection();
-
-  const [name, setName] = useState('');
-  const [region, setRegion] = useState('us-east-1');
-  const [credentialType, setCredentialType] = useState<'key_pair' | 'assume_role'>('key_pair');
-  const [accessKeyId, setAccessKeyId] = useState('');
-  const [secretAccessKey, setSecretAccessKey] = useState('');
-  const [roleArn, setRoleArn] = useState('');
-
-  const handleSubmit = (e: FormEvent) => {
-    e.preventDefault();
-    const credentials: Record<string, string> =
-      credentialType === 'key_pair'
-        ? { access_key_id: accessKeyId, secret_access_key: secretAccessKey }
-        : { role_arn: roleArn };
-    createConnection.mutate(
-      { name, region, credential_type: credentialType, credentials },
-      {
-        onSuccess: () => {
-          setName('');
-          setAccessKeyId('');
-          setSecretAccessKey('');
-          setRoleArn('');
-        },
-      }
-    );
-  };
-
-  const handleDelete = (id: string) => {
-    if (window.confirm('Delete this connection?')) deleteConnection.mutate(id);
-  };
+  const [activeSection, setActiveSection] = useState<SettingsSection>('account');
 
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
       <div>
-        <h1 className="page-title">Settings</h1>
-        <p className="page-subtitle">Manage AWS connections for resource extraction</p>
+        <h1 className="page-title" style={{ fontFamily: 'var(--font-display)', fontSize: '1.75rem' }}>Settings</h1>
+        <p className="page-subtitle">Configure platform preferences</p>
       </div>
 
-      {/* Add connection form */}
-      <div className="panel">
-        <div className="panel-header">
-          <h2 className="text-sm font-semibold" style={{ color: '#0f172a' }}>Add AWS Connection</h2>
-        </div>
-        <div className="panel-body">
-          {createConnection.isError && (
-            <div className="alert alert-error mb-4" role="alert">
-              {(createConnection.error as any)?.response?.data?.detail || 'Failed to create connection.'}
+      <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'flex-start' }}>
+        <aside style={{ width: '200px', flexShrink: 0, position: 'sticky', top: '1.5rem' }}>
+          <nav className="rounded-xl overflow-hidden"
+            style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}>
+            <div className="px-4 py-3" style={{ borderBottom: '1px solid var(--color-rule)' }}>
+              <p className="text-xs font-semibold" style={{ color: 'var(--color-text-dim)' }}>Configuration</p>
             </div>
-          )}
-          {createConnection.isSuccess && (
-            <div className="alert alert-success mb-4" role="status">
-              Connection created successfully.
+            <div className="p-2">
+              {NAV_ITEMS.map((item) => {
+                const isActive = activeSection === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => setActiveSection(item.id)}
+                    className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-left transition-colors"
+                    style={{
+                      background: isActive ? 'var(--color-ember-dim)' : 'transparent',
+                      color: isActive ? 'var(--color-ember)' : 'var(--color-text-dim)',
+                      border: 'none', cursor: 'pointer',
+                      fontFamily: 'var(--font-sans)',
+                      fontSize: '0.8125rem',
+                      fontWeight: isActive ? 600 : 400,
+                      marginBottom: '1px',
+                    }}
+                    onMouseEnter={(e) => { if (!isActive) (e.currentTarget as HTMLElement).style.background = 'var(--color-well)'; }}
+                    onMouseLeave={(e) => { if (!isActive) (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+                  >
+                    <span style={{ opacity: isActive ? 1 : 0.7 }}>{item.icon}</span>
+                    {item.label}
+                  </button>
+                );
+              })}
             </div>
-          )}
+          </nav>
+        </aside>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label htmlFor="conn-name" className="field-label">Connection Name</label>
-                <input
-                  id="conn-name"
-                  type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  required
-                  placeholder="My AWS Account"
-                  className="field-input"
-                />
-              </div>
-              <div>
-                <label htmlFor="conn-region" className="field-label">Region</label>
-                <select
-                  id="conn-region"
-                  value={region}
-                  onChange={(e) => setRegion(e.target.value)}
-                  className="field-input field-select"
-                >
-                  {AWS_REGIONS.map((r) => <option key={r} value={r}>{r}</option>)}
-                </select>
-              </div>
-            </div>
-
-            <div>
-              <p className="field-label mb-2">Credential Type</p>
-              <div className="flex gap-6">
-                {(['key_pair', 'assume_role'] as const).map((type) => (
-                  <label key={type} className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="credential_type"
-                      value={type}
-                      checked={credentialType === type}
-                      onChange={() => setCredentialType(type)}
-                      style={{ accentColor: 'var(--color-ember)' }}
-                    />
-                    <span className="text-xs" style={{ color: '#475569' }}>
-                      {type === 'key_pair' ? 'Access Key Pair' : 'Assume Role'}
-                    </span>
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            {credentialType === 'key_pair' && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label htmlFor="access-key-id" className="field-label">Access Key ID</label>
-                  <input
-                    id="access-key-id"
-                    type="text"
-                    value={accessKeyId}
-                    onChange={(e) => setAccessKeyId(e.target.value)}
-                    required
-                    placeholder="AKIA…"
-                    className="field-input"
-                    style={{ fontFamily: 'var(--font-mono)' }}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="secret-access-key" className="field-label">Secret Access Key</label>
-                  <input
-                    id="secret-access-key"
-                    type="password"
-                    value={secretAccessKey}
-                    onChange={(e) => setSecretAccessKey(e.target.value)}
-                    required
-                    className="field-input"
-                    style={{ fontFamily: 'var(--font-mono)' }}
-                  />
-                </div>
-              </div>
-            )}
-
-            {credentialType === 'assume_role' && (
-              <div>
-                <label htmlFor="role-arn" className="field-label">Role ARN</label>
-                <input
-                  id="role-arn"
-                  type="text"
-                  value={roleArn}
-                  onChange={(e) => setRoleArn(e.target.value)}
-                  required
-                  placeholder="arn:aws:iam::123456789012:role/MyRole"
-                  className="field-input"
-                  style={{ fontFamily: 'var(--font-mono)' }}
-                />
-              </div>
-            )}
-
-            <button
-              type="submit"
-              disabled={createConnection.isPending}
-              className="btn btn-primary"
-            >
-              {createConnection.isPending ? <><span className="spinner" />Creating…</> : 'Add Connection'}
-            </button>
-          </form>
-        </div>
-      </div>
-
-      {/* Existing connections */}
-      <div className="panel">
-        <div className="panel-header">
-          <h2 className="text-sm font-semibold" style={{ color: '#0f172a' }}>AWS Connections</h2>
-          {connections?.length ? (
-            <span className="badge badge-neutral">{connections.length}</span>
-          ) : null}
-        </div>
-        {isLoading ? (
-          <div className="panel-body space-y-2">
-            {[...Array(2)].map((_, i) => <div key={i} className="skel h-10" />)}
-          </div>
-        ) : !connections?.length ? (
-          <div className="empty-state">
-            <p>No connections configured. Add one above.</p>
-          </div>
-        ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table className="dt">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Region</th>
-                  <th>Type</th>
-                  <th>Status</th>
-                  <th>Created</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {connections.map((conn) => (
-                  <tr key={conn.id}>
-                    <td className="td-primary">{conn.name}</td>
-                    <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>{conn.region}</td>
-                    <td style={{ fontSize: '0.75rem' }}>{conn.credential_type}</td>
-                    <td>
-                      <span className={statusBadge(conn.status)}>
-                        <span className="badge-dot" />
-                        {conn.status}
-                      </span>
-                    </td>
-                    <td>{formatDate(conn.created_at)}</td>
-                    <td>
-                      <button
-                        onClick={() => handleDelete(conn.id)}
-                        disabled={deleteConnection.isPending}
-                        className="btn btn-danger btn-sm"
-                      >
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <main className="flex-1 min-w-0">
+          {activeSection === 'account' && <AccountSection />}
+          {activeSection === 'notifications' && <NotificationsSection />}
+        </main>
       </div>
     </div>
   );

@@ -140,7 +140,7 @@ export default function TranslationJobResults() {
         <div className="space-y-4 animate-fade-in">
           <div className="panel">
             <div className="panel-header">
-              <h2 className="text-sm font-semibold" style={{ color: '#0f172a' }}>Summary</h2>
+              <h2 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>Summary</h2>
             </div>
             <div className="panel-body space-y-5">
               {/* Resource(s) */}
@@ -153,11 +153,11 @@ export default function TranslationJobResults() {
                 {run.resource_names && run.resource_names.length > 1 ? (
                   <ul className="space-y-0.5">
                     {run.resource_names.map((n, i) => (
-                      <li key={i} className="text-sm" style={{ color: '#0f172a', fontFamily: 'var(--font-mono)' }}>{n || '—'}</li>
+                      <li key={i} className="text-sm" style={{ color: 'var(--color-text-bright)', fontFamily: 'var(--font-mono)' }}>{n || '—'}</li>
                     ))}
                   </ul>
                 ) : (
-                  <p className="text-sm" style={{ color: '#0f172a', fontFamily: 'var(--font-mono)' }}>
+                  <p className="text-sm" style={{ color: 'var(--color-text-bright)', fontFamily: 'var(--font-mono)' }}>
                     {run.resource_name || '—'}
                   </p>
                 )}
@@ -178,7 +178,7 @@ export default function TranslationJobResults() {
                     style={{ background: 'var(--color-well)', border: '1px solid var(--color-rule)' }}
                   >
                     <p className="field-label">{label}</p>
-                    <p className="text-sm mt-1" style={{ color: '#0f172a', fontFamily: mono ? 'var(--font-mono)' : undefined }}>
+                    <p className="text-sm mt-1" style={{ color: 'var(--color-text-bright)', fontFamily: mono ? 'var(--font-mono)' : undefined }}>
                       {value}
                     </p>
                   </div>
@@ -188,10 +188,10 @@ export default function TranslationJobResults() {
               {/* Dates */}
               <div
                 className="grid grid-cols-2 gap-4 pt-4 text-xs"
-                style={{ borderTop: '1px solid var(--color-rule)', color: '#64748b' }}
+                style={{ borderTop: '1px solid var(--color-rule)', color: 'var(--color-text-dim)' }}
               >
-                <div><span>Started: </span><span style={{ color: '#475569' }}>{formatDate(run.started_at)}</span></div>
-                <div><span>Completed: </span><span style={{ color: '#475569' }}>{formatDate(run.completed_at)}</span></div>
+                <div><span>Started: </span><span style={{ color: 'var(--color-text-dim)' }}>{formatDate(run.started_at)}</span></div>
+                <div><span>Completed: </span><span style={{ color: 'var(--color-text-dim)' }}>{formatDate(run.completed_at)}</span></div>
               </div>
             </div>
           </div>
@@ -208,7 +208,7 @@ export default function TranslationJobResults() {
           {run.skill_type === 'dependency_discovery' && graphData && (
             <div className="panel">
               <div className="panel-header">
-                <h2 className="text-sm font-semibold" style={{ color: '#0f172a' }}>Dependency Graph</h2>
+                <h2 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>Dependency Graph</h2>
               </div>
               <div className="panel-body">
                 <DependencyGraph data={graphData} />
@@ -253,28 +253,28 @@ export default function TranslationJobResults() {
                 <tbody>
                   {interactions.map((ix) => (
                     <tr key={ix.id}>
-                      <td style={{ color: '#475569' }}>{ix.agent_type ?? '—'}</td>
-                      <td style={{ color: '#64748b' }}>{ix.model ?? '—'}</td>
-                      <td style={{ color: '#64748b', textAlign: 'center' }}>{ix.iteration ?? '—'}</td>
+                      <td style={{ color: 'var(--color-text-dim)' }}>{ix.agent_type ?? '—'}</td>
+                      <td style={{ color: 'var(--color-text-dim)' }}>{ix.model ?? '—'}</td>
+                      <td style={{ color: 'var(--color-text-dim)', textAlign: 'center' }}>{ix.iteration ?? '—'}</td>
                       <td style={{ color: ix.decision ? (DECISION_COLORS[ix.decision] ?? '#475569') : '#475569', fontWeight: 600 }}>
                         {ix.decision ?? '—'}
                       </td>
-                      <td style={{ textAlign: 'right', color: '#64748b' }}>
+                      <td style={{ textAlign: 'right', color: 'var(--color-text-dim)' }}>
                         {ix.confidence != null ? `${Math.round(ix.confidence * 100)}%` : '—'}
                       </td>
-                      <td style={{ textAlign: 'right', color: '#475569' }}>
+                      <td style={{ textAlign: 'right', color: 'var(--color-text-dim)' }}>
                         {ix.tokens_input?.toLocaleString() ?? '—'}
                       </td>
-                      <td style={{ textAlign: 'right', color: '#475569' }}>
+                      <td style={{ textAlign: 'right', color: 'var(--color-text-dim)' }}>
                         {ix.tokens_output?.toLocaleString() ?? '—'}
                       </td>
-                      <td style={{ textAlign: 'right', color: '#475569' }}>
+                      <td style={{ textAlign: 'right', color: 'var(--color-text-dim)' }}>
                         {ix.cost_usd != null ? `$${ix.cost_usd.toFixed(4)}` : '—'}
                       </td>
-                      <td style={{ textAlign: 'right', color: '#94a3b8' }}>
+                      <td style={{ textAlign: 'right', color: 'var(--color-rail)' }}>
                         {ix.duration_seconds != null ? `${ix.duration_seconds.toFixed(1)}s` : '—'}
                       </td>
-                      <td style={{ textAlign: 'right', color: '#94a3b8' }}>
+                      <td style={{ textAlign: 'right', color: 'var(--color-rail)' }}>
                         {new Date(ix.created_at).toLocaleTimeString()}
                       </td>
                     </tr>

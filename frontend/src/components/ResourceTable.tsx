@@ -52,7 +52,7 @@ const RUN_STATUS_CLASS: Record<string, string> = {
 };
 
 function LatestRunLinkCell({ run }: { run: LatestSkillRunSummary | null | undefined }) {
-  if (!run) return <span style={{ color: '#475569' }}>—</span>;
+  if (!run) return <span style={{ color: 'var(--color-text-dim)' }}>—</span>;
   return (
     <Link
       to={run.status === 'complete' ? `/translation-jobs/${run.id}/results` : `/translation-jobs/${run.id}`}
@@ -66,7 +66,7 @@ function LatestRunLinkCell({ run }: { run: LatestSkillRunSummary | null | undefi
 }
 
 function RunStatusCell({ run }: { run: LatestSkillRunSummary | null | undefined }) {
-  if (!run) return <span style={{ color: '#475569' }}>—</span>;
+  if (!run) return <span style={{ color: 'var(--color-text-dim)' }}>—</span>;
   return (
     <span className={RUN_STATUS_CLASS[run.status] ?? 'badge badge-neutral'}>
       <span className="badge-dot" />
@@ -76,8 +76,8 @@ function RunStatusCell({ run }: { run: LatestSkillRunSummary | null | undefined 
 }
 
 function ConfidenceCell({ run }: { run: LatestSkillRunSummary | null | undefined }) {
-  if (!run || run.status !== 'complete') return <span style={{ color: '#475569' }}>—</span>;
-  return <span className="text-xs" style={{ color: '#475569' }}>{Math.round(run.confidence * 100)}%</span>;
+  if (!run || run.status !== 'complete') return <span style={{ color: 'var(--color-text-dim)' }}>—</span>;
+  return <span className="text-xs" style={{ color: 'var(--color-text-dim)' }}>{Math.round(run.confidence * 100)}%</span>;
 }
 
 export default function ResourceTable({
@@ -158,11 +158,11 @@ export default function ResourceTable({
                     />
                   </td>
                 )}
-                <td style={{ color: '#0f172a', fontWeight: 500 }}>{r.name || '—'}</td>
-                <td style={{ color: '#475569', fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>{r.aws_type}</td>
+                <td style={{ color: 'var(--color-text-bright)', fontWeight: 500 }}>{r.name || '—'}</td>
+                <td style={{ color: 'var(--color-text-dim)', fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>{r.aws_type}</td>
                 <td
                   style={{
-                    color: '#64748b',
+                    color: 'var(--color-text-dim)',
                     fontFamily: 'var(--font-mono)',
                     fontSize: '0.75rem',
                     maxWidth: '16rem',
@@ -199,10 +199,10 @@ export default function ResourceTable({
                       {r.migration_name}
                     </Link>
                   ) : (
-                    <span style={{ color: '#475569' }}>—</span>
+                    <span style={{ color: 'var(--color-text-dim)' }}>—</span>
                   )}
                 </td>
-                <td style={{ color: '#475569' }}>{formatDate(r.created_at)}</td>
+                <td style={{ color: 'var(--color-text-dim)' }}>{formatDate(r.created_at)}</td>
                 {(onDelete || onView) && (
                   <td onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center gap-2">
@@ -224,7 +224,7 @@ export default function ResourceTable({
           })}
           {filtered.length === 0 && (
             <tr>
-              <td colSpan={colCount} style={{ textAlign: 'center', padding: '2rem', color: '#475569' }}>
+              <td colSpan={colCount} style={{ textAlign: 'center', padding: '2rem', color: 'var(--color-text-dim)' }}>
                 No resources found.
               </td>
             </tr>

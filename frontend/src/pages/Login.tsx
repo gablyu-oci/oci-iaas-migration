@@ -18,49 +18,73 @@ export default function Login() {
       className="min-h-screen flex items-center justify-center relative"
       style={{ background: 'var(--color-void)' }}
     >
-      {/* Subtle grid background */}
+      {/* Decorative diagonals */}
       <div
-        className="absolute inset-0 pointer-events-none"
-        style={{
-          backgroundImage: `
-            linear-gradient(rgba(148,163,184,0.3) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(148,163,184,0.3) 1px, transparent 1px)
-          `,
-          backgroundSize: '40px 40px',
-          maskImage: 'radial-gradient(ellipse 70% 70% at 50% 50%, black 40%, transparent 100%)',
-        }}
-      />
+        className="absolute inset-0 pointer-events-none overflow-hidden"
+        style={{ opacity: 0.035 }}
+      >
+        <div style={{
+          position: 'absolute',
+          top: '-20%',
+          right: '-10%',
+          width: '60%',
+          height: '140%',
+          background: 'linear-gradient(135deg, var(--color-ember) 0%, transparent 60%)',
+          transform: 'rotate(-12deg)',
+        }} />
+        <div style={{
+          position: 'absolute',
+          bottom: '-20%',
+          left: '-10%',
+          width: '50%',
+          height: '120%',
+          background: 'linear-gradient(-45deg, var(--color-ember) 0%, transparent 50%)',
+          transform: 'rotate(8deg)',
+        }} />
+      </div>
 
       {/* Card */}
       <div
-        className="relative w-full max-w-sm mx-4 rounded-xl overflow-hidden"
+        className="relative w-full max-w-sm mx-4 rounded-lg overflow-hidden animate-slide-up"
         style={{
           background: 'var(--color-surface)',
-          border: '1px solid var(--color-fence)',
+          border: '1px solid var(--color-rule)',
           boxShadow: 'var(--shadow-modal)',
         }}
       >
-        {/* Top accent bar */}
-        <div className="h-0.5 w-full" style={{ background: 'var(--color-ember)' }} />
+        {/* Top accent */}
+        <div style={{ height: 3, background: 'var(--color-ember)' }} />
 
         <div className="px-8 py-8">
           {/* Brand */}
           <div className="mb-8 text-center">
             <div
-              className="inline-flex items-center justify-center w-10 h-10 rounded-lg mb-4 text-sm font-bold"
+              className="inline-flex items-center justify-center w-10 h-10 rounded mb-4"
               style={{
-                background: 'rgba(249,115,22,0.12)',
-                border: '1px solid rgba(249,115,22,0.25)',
-                color: 'var(--color-ember)',
+                background: 'var(--color-ember)',
+                color: '#fff',
                 fontFamily: 'var(--font-mono)',
+                fontSize: '0.6rem',
+                fontWeight: 700,
+                letterSpacing: '0.05em',
               }}
             >
               OCI
             </div>
-            <h1 className="text-base font-semibold" style={{ color: '#0f172a' }}>
-              OCI Migration Tool
+            <h1 style={{
+              fontFamily: 'var(--font-display)',
+              fontSize: '1.25rem',
+              fontWeight: 600,
+              color: 'var(--color-text-bright)',
+              letterSpacing: '-0.01em',
+            }}>
+              Migration Platform
             </h1>
-            <p className="text-xs mt-1" style={{ color: '#64748b' }}>
+            <p style={{
+              fontSize: '0.8125rem',
+              color: 'var(--color-text-dim)',
+              marginTop: 4,
+            }}>
               Sign in to your account
             </p>
           </div>
@@ -103,17 +127,18 @@ export default function Login() {
               className="btn btn-primary btn-lg w-full mt-2"
             >
               {login.isPending ? (
-                <>
-                  <span className="spinner" />
-                  Signing in…
-                </>
+                <><span className="spinner" /> Signing in…</>
               ) : 'Sign In'}
             </button>
           </form>
 
-          <p className="mt-5 text-center text-xs" style={{ color: '#64748b' }}>
+          <p className="mt-5 text-center text-xs" style={{ color: 'var(--color-text-dim)' }}>
             No account?{' '}
-            <Link to="/register" style={{ color: 'var(--color-ember)' }} className="font-medium hover:opacity-80 transition-opacity">
+            <Link
+              to="/register"
+              style={{ color: 'var(--color-ember)', fontWeight: 500 }}
+              className="hover:opacity-80 transition-opacity"
+            >
               Create one
             </Link>
           </p>

@@ -65,10 +65,10 @@ function InteractionRow({ ix }: { ix: InteractionEvent }) {
   const totalTokens = (ix.tokens_input ?? 0) + (ix.tokens_output ?? 0);
   return (
     <tr>
-      <td style={{ padding: '0.25rem 0.75rem', color: '#475569', whiteSpace: 'nowrap' }}>
+      <td style={{ padding: '0.25rem 0.75rem', color: 'var(--color-text-dim)', whiteSpace: 'nowrap' }}>
         {ix.agent_type ?? '—'}
       </td>
-      <td style={{ padding: '0.25rem 0.75rem', color: '#64748b', textAlign: 'center' }}>
+      <td style={{ padding: '0.25rem 0.75rem', color: 'var(--color-text-dim)', textAlign: 'center' }}>
         {ix.iteration ?? '—'}
       </td>
       <td style={{
@@ -79,16 +79,16 @@ function InteractionRow({ ix }: { ix: InteractionEvent }) {
       }}>
         {ix.decision ?? '—'}
       </td>
-      <td style={{ padding: '0.25rem 0.75rem', textAlign: 'right', color: '#64748b' }}>
+      <td style={{ padding: '0.25rem 0.75rem', textAlign: 'right', color: 'var(--color-text-dim)' }}>
         {ix.confidence != null ? `${Math.round(ix.confidence * 100)}%` : '—'}
       </td>
-      <td style={{ padding: '0.25rem 0.75rem', textAlign: 'right', color: '#475569' }}>
+      <td style={{ padding: '0.25rem 0.75rem', textAlign: 'right', color: 'var(--color-text-dim)' }}>
         {totalTokens > 0 ? totalTokens.toLocaleString() : '—'}
       </td>
-      <td style={{ padding: '0.25rem 0.75rem', textAlign: 'right', color: '#475569' }}>
+      <td style={{ padding: '0.25rem 0.75rem', textAlign: 'right', color: 'var(--color-text-dim)' }}>
         {ix.cost_usd != null ? `$${ix.cost_usd.toFixed(4)}` : '—'}
       </td>
-      <td style={{ padding: '0.25rem 0.75rem', textAlign: 'right', color: '#94a3b8' }}>
+      <td style={{ padding: '0.25rem 0.75rem', textAlign: 'right', color: 'var(--color-rail)' }}>
         {ix.duration_seconds != null ? `${ix.duration_seconds.toFixed(1)}s` : '—'}
       </td>
     </tr>
@@ -153,7 +153,7 @@ export default function SkillProgressTracker({ skillRunId, onComplete }: Props) 
             </p>
             <p
               className="text-xs truncate max-w-xs mt-1"
-              style={{ color: '#475569', fontFamily: 'var(--font-mono)' }}
+              style={{ color: 'var(--color-text-dim)', fontFamily: 'var(--font-mono)' }}
             >
               {skillRunId}
             </p>
@@ -184,12 +184,12 @@ export default function SkillProgressTracker({ skillRunId, onComplete }: Props) 
             </svg>
             <span
               className="absolute inset-0 flex items-center justify-center text-lg font-bold"
-              style={{ color: '#0f172a' }}
+              style={{ color: 'var(--color-text-bright)' }}
             >
               {confidencePct}%
             </span>
           </div>
-          <p className="text-xs" style={{ color: '#64748b' }}>
+          <p className="text-xs" style={{ color: 'var(--color-text-dim)' }}>
             {confidencePct >= 85 ? 'Approved' : confidencePct >= 65 ? 'With notes' : 'Needs fixes'}
           </p>
         </div>
@@ -197,11 +197,11 @@ export default function SkillProgressTracker({ skillRunId, onComplete }: Props) 
         {/* Iteration */}
         <div className="panel flex flex-col items-center justify-center gap-1 p-5">
           <p className="field-label">Iteration</p>
-          <p className="text-3xl font-bold" style={{ color: '#0f172a' }}>
+          <p className="text-3xl font-bold" style={{ color: 'var(--color-text-bright)' }}>
             {iteration}
-            <span className="text-xl font-normal" style={{ color: '#475569' }}>/{maxIterations}</span>
+            <span className="text-xl font-normal" style={{ color: 'var(--color-text-dim)' }}>/{maxIterations}</span>
           </p>
-          <p className="text-xs" style={{ color: '#64748b' }}>enhancement loops</p>
+          <p className="text-xs" style={{ color: 'var(--color-text-dim)' }}>enhancement loops</p>
         </div>
 
         {/* Elapsed */}
@@ -209,11 +209,11 @@ export default function SkillProgressTracker({ skillRunId, onComplete }: Props) 
           <p className="field-label">Elapsed</p>
           <p
             className="text-3xl font-bold"
-            style={{ color: '#0f172a', fontFamily: 'var(--font-mono)' }}
+            style={{ color: 'var(--color-text-bright)', fontFamily: 'var(--font-mono)' }}
           >
             {formatTime(elapsed)}
           </p>
-          <p className="text-xs" style={{ color: '#64748b' }}>
+          <p className="text-xs" style={{ color: 'var(--color-text-dim)' }}>
             {isRunning ? 'in progress' : isComplete ? 'total' : '—'}
           </p>
         </div>
@@ -291,7 +291,7 @@ export default function SkillProgressTracker({ skillRunId, onComplete }: Props) 
           style={{
             background: 'var(--color-well)',
             border: '1px solid var(--color-rule)',
-            color: '#64748b',
+            color: 'var(--color-text-dim)',
           }}
         >
           {[
@@ -328,7 +328,7 @@ export default function SkillProgressTracker({ skillRunId, onComplete }: Props) 
             }}
           >
             {interactions.length === 0 ? (
-              <div className="px-5 py-4" style={{ color: '#475569', fontStyle: 'italic' }}>
+              <div className="px-5 py-4" style={{ color: 'var(--color-text-dim)', fontStyle: 'italic' }}>
                 Waiting for agent activity…
               </div>
             ) : (
@@ -341,7 +341,7 @@ export default function SkillProgressTracker({ skillRunId, onComplete }: Props) 
                         style={{
                           padding: '0.375rem 0.75rem',
                           textAlign: h === 'Agent' || h === 'Iter' || h === 'Decision' ? 'left' : 'right',
-                          color: '#475569',
+                          color: 'var(--color-text-dim)',
                           fontWeight: 600,
                           fontSize: '0.6875rem',
                           textTransform: 'uppercase',

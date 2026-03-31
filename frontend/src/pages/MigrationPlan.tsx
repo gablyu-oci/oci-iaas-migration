@@ -96,11 +96,11 @@ function DownloadDropdown({ synthesisJobId }: { synthesisJobId: string }) {
         )}
       </span>
       <span className="text-sm flex-1 truncate"
-        style={{ color: '#0f172a', fontFamily: mono ? 'var(--font-mono)' : undefined }}>
+        style={{ color: 'var(--color-text-bright)', fontFamily: mono ? 'var(--font-mono)' : undefined }}>
         {art.file_name}
       </span>
       <a href={getArtifactDownloadUrl(art.id)} download={art.file_name}
-        className="flex-shrink-0 p-1 rounded" style={{ color: '#475569' }}
+        className="flex-shrink-0 p-1 rounded" style={{ color: 'var(--color-text-dim)' }}
         title="Download this file" onClick={e => e.stopPropagation()}
         onMouseEnter={e => (e.currentTarget.style.color = '#94a3b8')}
         onMouseLeave={e => (e.currentTarget.style.color = '#475569')}
@@ -138,18 +138,18 @@ function DownloadDropdown({ synthesisJobId }: { synthesisJobId: string }) {
           }}
         >
           {isLoading ? (
-            <div className="flex items-center gap-2 p-4 text-sm" style={{ color: '#64748b' }}>
+            <div className="flex items-center gap-2 p-4 text-sm" style={{ color: 'var(--color-text-dim)' }}>
               <span className="spinner" /> Loading files…
             </div>
           ) : allFiles.length === 0 ? (
-            <div className="p-4 text-sm" style={{ color: '#64748b' }}>No output files available.</div>
+            <div className="p-4 text-sm" style={{ color: 'var(--color-text-dim)' }}>No output files available.</div>
           ) : (
             <>
               {tfFiles.length > 0 && (
                 <div>
                   <div className="flex items-center justify-between px-4 pt-3 pb-1.5">
-                    <p className="text-xs font-semibold uppercase tracking-widest" style={{ color: '#475569' }}>Terraform Files</p>
-                    <button className="text-xs" style={{ color: '#475569', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                    <p className="text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--color-text-dim)' }}>Terraform Files</p>
+                    <button className="text-xs" style={{ color: 'var(--color-text-dim)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
                       onClick={() => toggleSection(tfFiles.map(a => a.id))}
                       onMouseEnter={e => (e.currentTarget.style.color = '#94a3b8')}
                       onMouseLeave={e => (e.currentTarget.style.color = '#475569')}
@@ -164,8 +164,8 @@ function DownloadDropdown({ synthesisJobId }: { synthesisJobId: string }) {
               {mdFiles.length > 0 && (
                 <div style={{ borderTop: tfFiles.length > 0 ? '1px solid var(--color-rule)' : undefined }}>
                   <div className="flex items-center justify-between px-4 pt-3 pb-1.5">
-                    <p className="text-xs font-semibold uppercase tracking-widest" style={{ color: '#475569' }}>Guides &amp; Runbooks</p>
-                    <button className="text-xs" style={{ color: '#475569', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                    <p className="text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--color-text-dim)' }}>Guides &amp; Runbooks</p>
+                    <button className="text-xs" style={{ color: 'var(--color-text-dim)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
                       onClick={() => toggleSection(mdFiles.map(a => a.id))}
                       onMouseEnter={e => (e.currentTarget.style.color = '#94a3b8')}
                       onMouseLeave={e => (e.currentTarget.style.color = '#475569')}
@@ -180,7 +180,7 @@ function DownloadDropdown({ synthesisJobId }: { synthesisJobId: string }) {
               {/* Footer */}
               <div className="flex items-center justify-between px-4 py-3"
                 style={{ borderTop: '1px solid var(--color-rule)', background: 'var(--color-well)' }}>
-                <span className="text-xs" style={{ color: '#64748b' }}>
+                <span className="text-xs" style={{ color: 'var(--color-text-dim)' }}>
                   {selected.size > 0 ? `${selected.size} of ${allFiles.length} selected` : 'Select files to download'}
                 </span>
                 <div className="flex items-center gap-2">
@@ -400,9 +400,9 @@ function WorkloadRow({
               )}
             </div>
             {workload.description && (
-              <p className="text-xs mt-0.5" style={{ color: '#64748b' }}>{workload.description}</p>
+              <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)' }}>{workload.description}</p>
             )}
-            <p className="text-xs mt-0.5" style={{ color: '#475569' }}>
+            <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)' }}>
               {workload.resource_count} resource{workload.resource_count !== 1 ? 's' : ''}
             </p>
           </div>
@@ -423,7 +423,7 @@ function WorkloadRow({
             </button>
           )}
           {workload.status === 'pending' && !phaseUnlocked && (
-            <span className="text-xs" style={{ color: '#475569' }}>Previous phase not complete</span>
+            <span className="text-xs" style={{ color: 'var(--color-text-dim)' }}>Previous phase not complete</span>
           )}
           {workload.status === 'running' && workload.translation_job_id && (
             <Link to={`/translation-jobs/${workload.translation_job_id}`} className="btn btn-ghost btn-sm">
@@ -513,28 +513,28 @@ function PhaseSection({
         className="w-full flex items-center justify-between px-5 py-4 text-left transition-colors"
         aria-expanded={expanded}
         style={{ cursor: 'pointer', background: 'transparent' }}
-        onMouseEnter={e => (e.currentTarget.style.background = 'rgba(0,0,0,0.02)')}
+        onMouseEnter={e => (e.currentTarget.style.background = 'var(--color-well)')}
         onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
       >
         <div className="flex items-center gap-3 min-w-0">
           {/* Chevron */}
           <svg
             className="w-4 h-4 flex-shrink-0 transition-transform duration-200"
-            style={{ color: '#475569', transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)' }}
+            style={{ color: 'var(--color-text-dim)', transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)' }}
             fill="none" stroke="currentColor" viewBox="0 0 24 24"
           >
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
           </svg>
 
           <div className="min-w-0">
-            <p className="text-sm font-semibold" style={{ color: '#0f172a' }}>
+            <p className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>
               Phase {phase.order_index}: {phase.name}
             </p>
             {phase.description && (
-              <p className="text-xs mt-0.5" style={{ color: '#64748b' }}>{phase.description}</p>
+              <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)' }}>{phase.description}</p>
             )}
             {!isUnlocked && phase.status === 'pending' && (
-              <p className="text-xs mt-0.5" style={{ color: '#475569' }}>
+              <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)' }}>
                 Complete Phase {phase.order_index - 1} to unlock
               </p>
             )}
@@ -542,7 +542,7 @@ function PhaseSection({
         </div>
 
         <div className="flex items-center gap-3 flex-shrink-0 ml-4">
-          <span className="text-xs" style={{ color: '#475569' }}>
+          <span className="text-xs" style={{ color: 'var(--color-text-dim)' }}>
             {completedCount}/{total} complete
           </span>
           <StatusBadge status={phase.status} />
@@ -554,7 +554,7 @@ function PhaseSection({
         <div style={{ borderTop: `1px solid var(--color-rule)`, background: 'rgba(0,0,0,0.015)' }}>
           {/* Workload checklist */}
           {phase.workloads.length === 0 ? (
-            <p className="text-xs text-center py-8" style={{ color: '#475569' }}>No workloads in this phase.</p>
+            <p className="text-xs text-center py-8" style={{ color: 'var(--color-text-dim)' }}>No workloads in this phase.</p>
           ) : (
             phase.workloads.map((workload, i) => (
               <WorkloadRow
@@ -586,7 +586,7 @@ function PhaseSection({
                 </svg>
                 <span className="text-xs font-semibold" style={{ color: '#dc2626' }}>Special Attention Required</span>
               </div>
-              <p className="text-xs leading-relaxed" style={{ color: '#94a3b8' }}>
+              <p className="text-xs leading-relaxed" style={{ color: 'var(--color-rail)' }}>
                 {failedWorkloads.length === 1
                   ? `"${failedWorkloads[0].name}" failed and needs attention.`
                   : `${failedWorkloads.length} workloads failed: ${failedWorkloads.map(w => `"${w.name}"`).join(', ')}.`}{' '}
@@ -794,7 +794,7 @@ export default function MigrationPlanPage() {
         ].map(({ label, value, sub, progress }) => (
           <div key={label} className="panel panel-body">
             <p className="field-label">{label}</p>
-            <p className="text-2xl font-bold mt-1" style={{ color: '#0f172a' }}>{value}</p>
+            <p className="text-2xl font-bold mt-1" style={{ color: 'var(--color-text-bright)' }}>{value}</p>
             {progress && (
               <div className="w-full h-1.5 rounded-full mt-2 overflow-hidden" style={{ background: 'var(--color-well)' }}>
                 <div
@@ -803,7 +803,7 @@ export default function MigrationPlanPage() {
                 />
               </div>
             )}
-            <p className="text-xs mt-1" style={{ color: '#64748b' }}>{sub}</p>
+            <p className="text-xs mt-1" style={{ color: 'var(--color-text-dim)' }}>{sub}</p>
           </div>
         ))}
       </div>

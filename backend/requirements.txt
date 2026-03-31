@@ -2,6 +2,7 @@ fastapi>=0.115
 uvicorn[standard]
 sqlalchemy[asyncio]>=2.0
 asyncpg
+psycopg2-binary
 alembic
 arq
 redis

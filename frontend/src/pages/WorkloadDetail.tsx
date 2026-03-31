@@ -177,12 +177,12 @@ export default function WorkloadDetail() {
               </span>
             </div>
             {phase && (
-              <p className="text-xs mt-1" style={{ color: '#64748b' }}>
+              <p className="text-xs mt-1" style={{ color: 'var(--color-text-dim)' }}>
                 Phase {phase.order_index}: {phase.name}
               </p>
             )}
             {workload.skill_type && (
-              <p className="text-xs mt-0.5" style={{ color: '#475569', fontFamily: 'var(--font-mono)' }}>
+              <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)', fontFamily: 'var(--font-mono)' }}>
                 {workload.skill_type} · {workload.resource_count} resource{workload.resource_count !== 1 ? 's' : ''}
               </p>
             )}
@@ -208,7 +208,7 @@ export default function WorkloadDetail() {
         <div className="space-y-4">
           <div className="panel">
             <div className="panel-header">
-              <h2 className="text-sm font-semibold" style={{ color: '#0f172a' }}>Workload Details</h2>
+              <h2 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>Workload Details</h2>
             </div>
             <div className="panel-body">
               <div className="grid grid-cols-2 md:grid-cols-4 gap-6 text-xs">
@@ -222,7 +222,7 @@ export default function WorkloadDetail() {
                     <p className="field-label">{label}</p>
                     <p
                       className="mt-1 text-xs"
-                      style={{ color: '#0f172a', fontFamily: mono ? 'var(--font-mono)' : undefined }}
+                      style={{ color: 'var(--color-text-bright)', fontFamily: mono ? 'var(--font-mono)' : undefined }}
                     >
                       {value}
                     </p>
@@ -234,13 +234,13 @@ export default function WorkloadDetail() {
 
           <div className="panel">
             <div className="panel-header">
-              <h2 className="text-sm font-semibold" style={{ color: '#0f172a' }}>
+              <h2 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>
                 Included Resources
                 <span className="tab-count ml-2">{workload.resource_count}</span>
               </h2>
             </div>
             <div className="panel-body">
-              <p className="text-xs" style={{ color: '#64748b' }}>
+              <p className="text-xs" style={{ color: 'var(--color-text-dim)' }}>
                 This workload contains {workload.resource_count} AWS resource{workload.resource_count !== 1 ? 's' : ''} for migration.
               </p>
             </div>
@@ -301,7 +301,7 @@ export default function WorkloadDetail() {
           {/* Summary */}
           <div className="panel">
             <div className="panel-header">
-              <h2 className="text-sm font-semibold" style={{ color: '#0f172a' }}>Summary</h2>
+              <h2 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>Summary</h2>
             </div>
             <div className="panel-body">
               <div className="grid grid-cols-2 md:grid-cols-5 gap-6">
@@ -324,7 +324,7 @@ export default function WorkloadDetail() {
                     <p className="field-label">{label}</p>
                     <p
                       className="text-sm mt-1"
-                      style={{ color: '#0f172a', fontFamily: mono ? 'var(--font-mono)' : undefined }}
+                      style={{ color: 'var(--color-text-bright)', fontFamily: mono ? 'var(--font-mono)' : undefined }}
                     >
                       {value}
                     </p>
@@ -333,14 +333,14 @@ export default function WorkloadDetail() {
               </div>
               <div
                 className="mt-4 pt-4 grid grid-cols-2 gap-4 text-xs"
-                style={{ borderTop: '1px solid var(--color-rule)', color: '#475569' }}
+                style={{ borderTop: '1px solid var(--color-rule)', color: 'var(--color-text-dim)' }}
               >
                 <div>
-                  <span style={{ color: '#64748b' }}>Started: </span>
+                  <span style={{ color: 'var(--color-text-dim)' }}>Started: </span>
                   {formatDate(skillRun.started_at)}
                 </div>
                 <div>
-                  <span style={{ color: '#64748b' }}>Completed: </span>
+                  <span style={{ color: 'var(--color-text-dim)' }}>Completed: </span>
                   {formatDate(skillRun.completed_at)}
                 </div>
               </div>
@@ -381,7 +381,7 @@ export default function WorkloadDetail() {
           {artifacts && artifacts.length > 0 && (
             <div className="panel">
               <div className="panel-header">
-                <h2 className="text-sm font-semibold" style={{ color: '#0f172a' }}>Artifacts</h2>
+                <h2 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>Artifacts</h2>
               </div>
               <div className="panel-body">
                 <ArtifactViewer skillRunId={activeSkillRunId} />

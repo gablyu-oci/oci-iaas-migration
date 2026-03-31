@@ -295,7 +295,7 @@ function MarkdownModal({
           className="panel-header flex items-center justify-between"
           style={{ flexShrink: 0 }}
         >
-          <span className="text-sm font-semibold" style={{ color: '#0f172a', fontFamily: 'var(--font-mono)' }}>
+          <span className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)', fontFamily: 'var(--font-mono)' }}>
             {title}
           </span>
           <button
@@ -310,7 +310,7 @@ function MarkdownModal({
         </div>
         <div
           className="panel-body prose prose-sm max-w-none overflow-y-auto"
-          style={{ flex: 1, color: '#0f172a' }}
+          style={{ flex: 1, color: 'var(--color-text-bright)' }}
         >
           <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
             {content}
@@ -584,7 +584,7 @@ export default function MigrationSynthesisResults() {
             </svg>
             <span
               className="absolute inset-0 flex items-center justify-center text-sm font-bold"
-              style={{ color: '#0f172a' }}
+              style={{ color: 'var(--color-text-bright)' }}
             >
               {confidencePct}%
             </span>
@@ -602,14 +602,14 @@ export default function MigrationSynthesisResults() {
         {/* File count */}
         <div className="panel panel-body">
           <p className="field-label">Output Files</p>
-          <p className="text-2xl font-bold mt-1" style={{ color: '#0f172a' }}>
+          <p className="text-2xl font-bold mt-1" style={{ color: 'var(--color-text-bright)' }}>
             {loadingArtifacts ? (
               <span className="skel" style={{ display: 'inline-block', width: 40, height: 28 }} />
             ) : (
               allFiles.length
             )}
           </p>
-          <p className="text-xs mt-1" style={{ color: '#64748b' }}>
+          <p className="text-xs mt-1" style={{ color: 'var(--color-text-dim)' }}>
             {tfFiles.length} Terraform &middot; {mdFiles.length} docs
           </p>
         </div>
@@ -632,11 +632,11 @@ export default function MigrationSynthesisResults() {
               View full summary &rarr;
             </button>
           ) : (
-            <p className="text-xs mt-1" style={{ color: '#64748b' }}>
+            <p className="text-xs mt-1" style={{ color: 'var(--color-text-dim)' }}>
               No summary available
             </p>
           )}
-          <p className="text-xs mt-1" style={{ color: '#94a3b8' }}>
+          <p className="text-xs mt-1" style={{ color: 'var(--color-rail)' }}>
             Phases &middot; attention items &middot; pre-apply checklist
           </p>
         </div>
@@ -654,7 +654,7 @@ export default function MigrationSynthesisResults() {
                   <li key={i}>{item}</li>
                 ))}
                 {attentionItems.length > 5 && (
-                  <li style={{ color: '#64748b' }}>
+                  <li style={{ color: 'var(--color-text-dim)' }}>
                     and {attentionItems.length - 5} more items...
                   </li>
                 )}
@@ -675,7 +675,7 @@ export default function MigrationSynthesisResults() {
         <div className="space-y-3">
           <h2
             className="text-base font-semibold"
-            style={{ color: '#0f172a' }}
+            style={{ color: 'var(--color-text-bright)' }}
           >
             Migration Phases
           </h2>
@@ -701,7 +701,7 @@ export default function MigrationSynthesisResults() {
                   aria-expanded={isOpen}
                   aria-controls={`phase-${phase.number}-content`}
                 >
-                  <span style={{ color: '#64748b' }}>
+                  <span style={{ color: 'var(--color-text-dim)' }}>
                     <ChevronIcon open={isOpen} />
                   </span>
                   <span
@@ -717,7 +717,7 @@ export default function MigrationSynthesisResults() {
                     >
                       {phase.number}
                     </span>
-                    <span className="text-sm font-semibold truncate" style={{ color: '#0f172a' }}>
+                    <span className="text-sm font-semibold truncate" style={{ color: 'var(--color-text-bright)' }}>
                       {phase.name}
                     </span>
                   </span>
@@ -767,7 +767,7 @@ export default function MigrationSynthesisResults() {
                       <div>
                         <p
                           className="text-xs font-semibold uppercase tracking-widest mb-2"
-                          style={{ color: '#475569' }}
+                          style={{ color: 'var(--color-text-dim)' }}
                         >
                           Checklist
                         </p>
@@ -776,7 +776,7 @@ export default function MigrationSynthesisResults() {
                             <label
                               key={i}
                               className="flex items-start gap-2 text-sm"
-                              style={{ color: '#334155', cursor: 'default' }}
+                              style={{ color: 'var(--color-text)', cursor: 'default' }}
                             >
                               <input
                                 type="checkbox"
@@ -805,7 +805,7 @@ export default function MigrationSynthesisResults() {
                       <div>
                         <p
                           className="text-xs font-semibold uppercase tracking-widest mb-2"
-                          style={{ color: '#475569' }}
+                          style={{ color: 'var(--color-text-dim)' }}
                         >
                           Files
                         </p>
@@ -822,7 +822,7 @@ export default function MigrationSynthesisResults() {
                                 </span>
                                 <span
                                   className="text-sm truncate"
-                                  style={{ fontFamily: 'var(--font-mono)', color: '#0f172a' }}
+                                  style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-bright)' }}
                                 >
                                   {art.file_name}
                                 </span>
@@ -873,10 +873,10 @@ export default function MigrationSynthesisResults() {
             aria-controls="all-files-panel"
           >
             <span className="flex items-center gap-2">
-              <span style={{ color: '#64748b' }}>
+              <span style={{ color: 'var(--color-text-dim)' }}>
                 <ChevronIcon open={allFilesOpen} />
               </span>
-              <span className="text-sm font-semibold" style={{ color: '#0f172a' }}>
+              <span className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>
                 All Output Files
               </span>
               <span className="badge badge-neutral text-xs">{allFiles.length}</span>
@@ -893,25 +893,25 @@ export default function MigrationSynthesisResults() {
                   <tr style={{ background: 'var(--color-pit)' }}>
                     <th
                       className="text-left px-5 py-2 text-xs font-semibold uppercase tracking-widest"
-                      style={{ color: '#475569', borderBottom: '1px solid var(--color-rule)' }}
+                      style={{ color: 'var(--color-text-dim)', borderBottom: '1px solid var(--color-rule)' }}
                     >
                       File
                     </th>
                     <th
                       className="text-left px-5 py-2 text-xs font-semibold uppercase tracking-widest"
-                      style={{ color: '#475569', borderBottom: '1px solid var(--color-rule)' }}
+                      style={{ color: 'var(--color-text-dim)', borderBottom: '1px solid var(--color-rule)' }}
                     >
                       Type
                     </th>
                     <th
                       className="text-left px-5 py-2 text-xs font-semibold uppercase tracking-widest"
-                      style={{ color: '#475569', borderBottom: '1px solid var(--color-rule)' }}
+                      style={{ color: 'var(--color-text-dim)', borderBottom: '1px solid var(--color-rule)' }}
                     >
                       Created
                     </th>
                     <th
                       className="text-right px-5 py-2 text-xs font-semibold uppercase tracking-widest"
-                      style={{ color: '#475569', borderBottom: '1px solid var(--color-rule)' }}
+                      style={{ color: 'var(--color-text-dim)', borderBottom: '1px solid var(--color-rule)' }}
                     >
                       Action
                     </th>
@@ -934,7 +934,7 @@ export default function MigrationSynthesisResults() {
                             <span
                               style={{
                                 fontFamily: 'var(--font-mono)',
-                                color: '#0f172a',
+                                color: 'var(--color-text-bright)',
                                 fontSize: '0.8125rem',
                               }}
                             >
@@ -949,7 +949,7 @@ export default function MigrationSynthesisResults() {
                             {tf ? 'Terraform' : md ? 'Markdown' : art.content_type}
                           </span>
                         </td>
-                        <td className="px-5 py-2.5 text-xs" style={{ color: '#64748b' }}>
+                        <td className="px-5 py-2.5 text-xs" style={{ color: 'var(--color-text-dim)' }}>
                           {formatDate(art.created_at)}
                         </td>
                         <td className="px-5 py-2.5 text-right">

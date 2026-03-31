@@ -142,7 +142,6 @@ def extract_ec2_instances(
         session = _build_session(credentials, region)
         ec2 = session.client("ec2")
 
-        filters: list[dict] = []
         instance_ids: list[str] = []
         if instance_id:
             instance_ids = [instance_id]
@@ -150,8 +149,11 @@ def extract_ec2_instances(
         kwargs: dict[str, Any] = {}
         if instance_ids:
             kwargs["InstanceIds"] = instance_ids
-        if filters:
-            kwargs["Filters"] = filters
+        else:
+            # Exclude terminated instances from bulk discovery
+            kwargs["Filters"] = [
+                {"Name": "instance-state-name", "Values": ["pending", "running", "stopping", "stopped"]}
+            ]
 
         results: list[dict[str, Any]] = []
         paginator = ec2.get_paginator("describe_instances")
@@ -177,6 +179,7 @@ def extract_ec2_instances(
                         "arn": (
                             f"arn:aws:ec2:{region}::instance/{inst['InstanceId']}"
                         ),
+                        "Tags": inst.get("Tags", []),
                     })
         return results
     except (ClientError, BotoCoreError) as e:
@@ -471,6 +474,7 @@ def extract_ebs_volumes(
                     "attachments": attachments,
                     "name": name,
                     "arn": f"arn:aws:ec2:{region}:{account_id}:volume/{vol['VolumeId']}",
+                    "Tags": vol.get("Tags", []),
                 })
         return results
     except (ClientError, BotoCoreError) as e:

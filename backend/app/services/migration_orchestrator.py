@@ -33,10 +33,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db.models import (
+    AppGroup,
+    AppGroupMember,
+    Assessment,
     Migration,
     MigrationPlan,
     PlanPhase,
     Resource,
+    ResourceAssessment,
     Workload,
     WorkloadResource,
 )
@@ -500,3 +504,210 @@ def _format_input(skill_type: str, resources: list[Resource]) -> Optional[str]:
 
     logger.warning("Unknown skill_type '%s' -- returning None", skill_type)
     return None
+
+
+# ---------------------------------------------------------------------------
+# App-group-based plan generator
+# ---------------------------------------------------------------------------
+
+# Map AWS type patterns to skill_type
+_TYPE_TO_SKILL: list[tuple[str, str]] = [
+    ("EC2::VPC", "network_translation"),
+    ("EC2::Subnet", "network_translation"),
+    ("EC2::SecurityGroup", "network_translation"),
+    ("EC2::NetworkInterface", "network_translation"),
+    ("EC2::Instance", "ec2_translation"),
+    ("AutoScaling", "ec2_translation"),
+    ("EC2::Volume", "storage_translation"),
+    ("RDS", "database_translation"),
+    ("Aurora", "database_translation"),
+    ("ElasticLoadBalancing", "loadbalancer_translation"),
+    ("LoadBalancer", "loadbalancer_translation"),
+    ("CloudFormation::Stack", "cfn_terraform"),
+    ("IAM::Policy", "iam_translation"),
+    ("IAM::Role", "iam_translation"),
+    ("Lambda", None),  # Future
+]
+
+
+def _skill_for_type(aws_type: str) -> Optional[str]:
+    """Return the skill_type that handles a given AWS resource type."""
+    for pattern, skill in _TYPE_TO_SKILL:
+        if pattern in (aws_type or ""):
+            return skill
+    return None
+
+
+async def generate_plan_from_app_groups(
+    migration_id: uuid.UUID,
+    assessment_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    db: AsyncSession,
+    app_group_ids: list[uuid.UUID] | None = None,
+) -> MigrationPlan:
+    """Generate a plan from Assessment app groups.
+
+    Each non-singleton app group becomes a PlanPhase. Within each phase,
+    workloads are created per skill_type needed, plus data_migration and
+    workload_planning workloads if applicable.
+    """
+    from datetime import datetime, timezone
+
+    # Verify migration
+    mig_result = await db.execute(
+        select(Migration).where(
+            Migration.id == migration_id,
+            Migration.tenant_id == tenant_id,
+        )
+    )
+    if mig_result.scalar_one_or_none() is None:
+        raise ValueError(f"Migration {migration_id} not found")
+
+    # Delete existing plan
+    await _delete_existing_plan(migration_id, db)
+
+    # Load app groups from assessment
+    ag_query = select(AppGroup).where(
+        AppGroup.assessment_id == assessment_id,
+        AppGroup.tenant_id == tenant_id,
+    )
+    if app_group_ids:
+        ag_query = ag_query.where(AppGroup.id.in_(app_group_ids))
+
+    ag_result = await db.execute(ag_query)
+    app_groups = list(ag_result.scalars().all())
+
+    # Filter out singletons
+    non_singleton = []
+    for ag in app_groups:
+        mem_result = await db.execute(
+            select(AppGroupMember).where(AppGroupMember.app_group_id == ag.id)
+        )
+        members = list(mem_result.scalars().all())
+        if len(members) >= 2 or (app_group_ids and ag.id in app_group_ids):
+            non_singleton.append((ag, members))
+
+    if not non_singleton:
+        raise ValueError("No eligible app groups found for plan generation")
+
+    # Create plan
+    plan = MigrationPlan(
+        migration_id=migration_id,
+        tenant_id=tenant_id,
+        status="draft",
+        generated_at=datetime.now(timezone.utc),
+        summary={
+            "source": "app_groups",
+            "assessment_id": str(assessment_id),
+            "app_group_count": len(non_singleton),
+        },
+    )
+    db.add(plan)
+    await db.flush()
+
+    total_resources = 0
+
+    for order_idx, (ag, members) in enumerate(non_singleton):
+        # Create phase for this app group
+        phase = PlanPhase(
+            plan_id=plan.id,
+            tenant_id=tenant_id,
+            name=ag.name,
+            description=f"Migrate workload: {ag.name} ({ag.workload_type or 'web_api'})",
+            order_index=order_idx,
+            status="pending",
+        )
+        db.add(phase)
+        await db.flush()
+
+        # Load resources for this group
+        resource_ids = [m.resource_id for m in members]
+        res_result = await db.execute(
+            select(Resource).where(Resource.id.in_(resource_ids))
+        )
+        resources = list(res_result.scalars().all())
+        total_resources += len(resources)
+
+        # Group resources by skill_type
+        skill_resources: dict[str, list[Resource]] = {}
+        for r in resources:
+            skill = _skill_for_type(r.aws_type or "")
+            if skill:
+                skill_resources.setdefault(skill, []).append(r)
+
+        # Create translation workloads per skill
+        for skill_type, skill_resources_list in skill_resources.items():
+            skill_label = skill_type.replace("_", " ").title()
+            workload = Workload(
+                phase_id=phase.id,
+                tenant_id=tenant_id,
+                name=f"{ag.name} — {skill_label}",
+                description=f"Translate {len(skill_resources_list)} resource(s) via {skill_type}",
+                skill_type=skill_type,
+                status="pending",
+                app_group_id=ag.id,
+            )
+            db.add(workload)
+            await db.flush()
+            for r in skill_resources_list:
+                db.add(WorkloadResource(workload_id=workload.id, resource_id=r.id))
+
+        # Check if data migration planning is needed
+        has_rds = any("RDS" in (r.aws_type or "") or "Aurora" in (r.aws_type or "") for r in resources)
+        # Also check for local DBs via software inventory
+        has_local_db = False
+        ec2_ids = [r.id for r in resources if "EC2::Instance" in (r.aws_type or "")]
+        if ec2_ids:
+            ra_result = await db.execute(
+                select(ResourceAssessment).where(
+                    ResourceAssessment.resource_id.in_(ec2_ids),
+                    ResourceAssessment.assessment_id == assessment_id,
+                )
+            )
+            for ra in ra_result.scalars().all():
+                inv = ra.software_inventory or {}
+                for app in inv.get("applications", []):
+                    app_name = (app.get("Name") or app.get("name") or "").lower()
+                    if any(kw in app_name for kw in ("mysql", "mariadb", "postgres", "mongodb", "redis")):
+                        has_local_db = True
+                        break
+
+        if has_rds or has_local_db:
+            dm_workload = Workload(
+                phase_id=phase.id,
+                tenant_id=tenant_id,
+                name=f"{ag.name} — Data Migration",
+                description="Plan and execute database data migration",
+                skill_type="data_migration_planning",
+                status="pending",
+                app_group_id=ag.id,
+            )
+            db.add(dm_workload)
+            await db.flush()
+            for r in resources:
+                db.add(WorkloadResource(workload_id=dm_workload.id, resource_id=r.id))
+
+        # Create workload planning workload (runbook + anomaly)
+        wp_workload = Workload(
+            phase_id=phase.id,
+            tenant_id=tenant_id,
+            name=f"{ag.name} — Migration Runbook",
+            description="Generate migration runbook and anomaly analysis",
+            skill_type="workload_planning",
+            status="pending",
+            app_group_id=ag.id,
+        )
+        db.add(wp_workload)
+        await db.flush()
+        for r in resources:
+            db.add(WorkloadResource(workload_id=wp_workload.id, resource_id=r.id))
+
+    plan.summary["total_resources"] = total_resources
+    await db.commit()
+    await db.refresh(plan)
+
+    logger.info(
+        "Generated plan from %d app groups with %d total resources",
+        len(non_singleton), total_resources,
+    )
+    return plan

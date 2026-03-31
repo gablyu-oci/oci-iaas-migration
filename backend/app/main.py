@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db.base import init_db
-from app.api import auth, aws, jobs, plans
+from app.api import auth, aws, assessments, jobs, plans
 
 
 @asynccontextmanager
@@ -28,6 +28,7 @@ app.add_middleware(
 
 app.include_router(auth.router)
 app.include_router(aws.router)
+app.include_router(assessments.router)
 app.include_router(jobs.router)
 app.include_router(plans.router)
 

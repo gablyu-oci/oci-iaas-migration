@@ -1,6 +1,7 @@
 """AWS connection, migration, and resource extraction endpoints."""
 
 import json
+import multiprocessing
 import uuid
 from typing import Optional
 
@@ -68,6 +69,14 @@ class MigrationOut(BaseModel):
     status: str
     created_at: str
     resource_count: Optional[int] = None
+    discovery_status: str = "pending"
+    discovery_error: Optional[str] = None
+    discovered_at: Optional[str] = None
+    plan_status: Optional[str] = None
+    plan_workload_id: Optional[str] = None
+    plan_workload_name: Optional[str] = None
+    plan_started_at: Optional[str] = None
+    plan_max_iterations: Optional[int] = None
 
     model_config = {"from_attributes": True}
 
@@ -107,6 +116,35 @@ def _to_str(val):
     if val is None:
         return None
     return str(val)
+
+
+def _mig_to_out(mig) -> MigrationOut:
+    """Convert a Migration ORM object to MigrationOut."""
+    return MigrationOut(
+        id=str(mig.id), name=mig.name,
+        aws_connection_id=_to_str(mig.aws_connection_id),
+        status=mig.status, created_at=str(mig.created_at),
+        discovery_status=mig.discovery_status,
+        discovery_error=mig.discovery_error,
+        discovered_at=_to_str(mig.discovered_at),
+        plan_status=mig.plan_status,
+        plan_workload_id=_to_str(mig.plan_workload_id),
+        plan_workload_name=mig.plan_workload_name,
+        plan_started_at=(_to_str(mig.plan_started_at) + 'Z') if mig.plan_started_at else None,
+        plan_max_iterations=mig.plan_max_iterations,
+    )
+
+
+# Registry of running discovery processes keyed by migration_id (str).
+_running_discovery_processes: dict[str, multiprocessing.Process] = {}
+
+
+def _run_discovery_in_process(migration_id: str) -> None:
+    """Entry point for the child process that runs auto-discovery."""
+    import os
+    os.setpgrp()
+    from app.services.discovery_runner import run_discovery
+    run_discovery(migration_id)
 
 
 # ---------------------------------------------------------------------------
@@ -195,11 +233,23 @@ async def create_migration(
     db.add(mig)
     await db.commit()
     await db.refresh(mig)
-    return MigrationOut(
-        id=str(mig.id), name=mig.name,
-        aws_connection_id=_to_str(mig.aws_connection_id),
-        status=mig.status, created_at=str(mig.created_at),
-    )
+
+    # Auto-trigger discovery if AWS connection is provided
+    if mig.aws_connection_id:
+        mig.discovery_status = "discovering"
+        await db.commit()
+        await db.refresh(mig)
+
+        ctx = multiprocessing.get_context("spawn")
+        p = ctx.Process(
+            target=_run_discovery_in_process,
+            args=(str(mig.id),),
+            daemon=True,
+        )
+        _running_discovery_processes[str(mig.id)] = p
+        p.start()
+
+    return _mig_to_out(mig)
 
 
 @router.get("/migrations", response_model=list[MigrationOut])
@@ -217,12 +267,9 @@ async def list_migrations(
             select(func.count()).where(Resource.migration_id == m.id)
         )
         resource_count = count_result.scalar()
-        out.append(MigrationOut(
-            id=str(m.id), name=m.name,
-            aws_connection_id=_to_str(m.aws_connection_id),
-            status=m.status, created_at=str(m.created_at),
-            resource_count=resource_count,
-        ))
+        o = _mig_to_out(m)
+        o.resource_count = resource_count
+        out.append(o)
     return out
 
 
@@ -241,11 +288,7 @@ async def get_migration(
     mig = result.scalar_one_or_none()
     if not mig:
         raise HTTPException(status_code=404, detail="Migration not found")
-    return MigrationOut(
-        id=str(mig.id), name=mig.name,
-        aws_connection_id=_to_str(mig.aws_connection_id),
-        status=mig.status, created_at=str(mig.created_at),
-    )
+    return _mig_to_out(mig)
 
 
 @router.delete("/migrations/{mig_id}", status_code=204)
@@ -309,16 +352,184 @@ async def delete_migration(
         )
         await db.execute(delete(TranslationJob).where(TranslationJob.id.in_(sr_ids)))
 
-    # 7: Nullify Resource.migration_id (return resources to global pool)
+    # 7: Delete assessments and their children
+    from app.db.models import (
+        Assessment, AppGroup, AppGroupMember, ResourceAssessment,
+        DependencyEdge, TCOReport,
+    )
+    asmt_result = await db.execute(
+        select(Assessment.id).where(Assessment.migration_id == mid)
+    )
+    asmt_ids = [r[0] for r in asmt_result.all()]
+    if asmt_ids:
+        # App group members → app groups
+        ag_result = await db.execute(
+            select(AppGroup.id).where(AppGroup.assessment_id.in_(asmt_ids))
+        )
+        ag_ids = [r[0] for r in ag_result.all()]
+        if ag_ids:
+            await db.execute(delete(AppGroupMember).where(AppGroupMember.app_group_id.in_(ag_ids)))
+            await db.execute(delete(AppGroup).where(AppGroup.id.in_(ag_ids)))
+        # Resource assessments, dependency edges, TCO reports
+        await db.execute(delete(ResourceAssessment).where(ResourceAssessment.assessment_id.in_(asmt_ids)))
+        await db.execute(delete(DependencyEdge).where(DependencyEdge.assessment_id.in_(asmt_ids)))
+        await db.execute(delete(TCOReport).where(TCOReport.assessment_id.in_(asmt_ids)))
+        await db.execute(delete(Assessment).where(Assessment.id.in_(asmt_ids)))
+
+    # 8: Nullify Resource.migration_id (return resources to global pool)
     res_result = await db.execute(
         select(Resource).where(Resource.migration_id == mid)
     )
     for res in res_result.scalars().all():
         res.migration_id = None
 
-    # 8: Delete migration
+    # 9: Delete migration
     await db.delete(mig)
     await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Workloads
+# ---------------------------------------------------------------------------
+@router.get("/migrations/{mig_id}/workloads")
+async def get_workloads(
+    mig_id: str,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return workload groups for a migration.
+
+    Uses the latest assessment's app groups if available,
+    otherwise runs the grouper on-the-fly from discovered resources.
+    """
+    from app.db.models import Assessment, AppGroup, AppGroupMember
+
+    result = await db.execute(
+        select(Migration).where(
+            Migration.id == uuid.UUID(mig_id),
+            Migration.tenant_id == tenant.id,
+        )
+    )
+    mig = result.scalar_one_or_none()
+    if not mig:
+        raise HTTPException(status_code=404, detail="Migration not found")
+
+    # Try to find app groups from the latest assessment
+    asmt_result = await db.execute(
+        select(Assessment)
+        .where(Assessment.migration_id == mig.id)
+        .order_by(Assessment.created_at.desc())
+        .limit(1)
+    )
+    latest_assessment = asmt_result.scalar_one_or_none()
+
+    if latest_assessment:
+        # Load app groups from assessment
+        ag_result = await db.execute(
+            select(AppGroup).where(AppGroup.assessment_id == latest_assessment.id)
+        )
+        groups = ag_result.scalars().all()
+
+        # Load members in bulk
+        group_ids = [g.id for g in groups]
+        members_by_group: dict = {gid: [] for gid in group_ids}
+        if group_ids:
+            mem_result = await db.execute(
+                select(AppGroupMember).where(AppGroupMember.app_group_id.in_(group_ids))
+            )
+            for m in mem_result.scalars().all():
+                members_by_group[m.app_group_id].append(m)
+
+        # Load resource details
+        all_resource_ids = set()
+        for members in members_by_group.values():
+            for m in members:
+                all_resource_ids.add(m.resource_id)
+
+        resource_map: dict = {}
+        if all_resource_ids:
+            res_result = await db.execute(
+                select(Resource).where(Resource.id.in_(list(all_resource_ids)))
+            )
+            for r in res_result.scalars().all():
+                resource_map[r.id] = r
+
+        workloads = []
+        for g in groups:
+            members = members_by_group.get(g.id, [])
+            member_resources = []
+            for m in members:
+                r = resource_map.get(m.resource_id)
+                if r:
+                    member_resources.append({
+                        "id": str(r.id),
+                        "name": r.name or "",
+                        "aws_type": r.aws_type or "",
+                    })
+            workloads.append({
+                "id": str(g.id),
+                "name": g.name,
+                "workload_type": g.workload_type or "web_api",
+                "grouping_method": g.grouping_method,
+                "sixr_strategy": g.sixr_strategy,
+                "readiness_score": g.readiness_score,
+                "total_aws_cost_usd": g.total_aws_cost_usd,
+                "total_oci_cost_usd": g.total_oci_cost_usd,
+                "resource_count": len(members),
+                "resources": member_resources,
+            })
+        return workloads
+
+    # No assessment yet -- run grouper on the fly
+    res_result = await db.execute(
+        select(Resource).where(Resource.migration_id == mig.id)
+    )
+    resources = res_result.scalars().all()
+
+    if not resources:
+        return []
+
+    from app.services.app_grouper import compute_app_groups
+    resource_dicts = [
+        {
+            "id": str(r.id),
+            "resource_id": str(r.id),
+            "name": r.name,
+            "aws_type": r.aws_type,
+            "raw_config": r.raw_config or {},
+        }
+        for r in resources
+    ]
+
+    groups_result = compute_app_groups(resource_dicts, [])
+
+    # Build resource lookup
+    resource_lookup = {str(r.id): r for r in resources}
+
+    workloads = []
+    for g in groups_result:
+        member_resources = []
+        for rid in g.get("resource_ids", []):
+            r = resource_lookup.get(rid)
+            if r:
+                member_resources.append({
+                    "id": str(r.id),
+                    "name": r.name or "",
+                    "aws_type": r.aws_type or "",
+                })
+        workloads.append({
+            "id": None,
+            "name": g["name"],
+            "workload_type": g.get("workload_type", "web_api"),
+            "grouping_method": g.get("strategy"),
+            "sixr_strategy": None,
+            "readiness_score": None,
+            "total_aws_cost_usd": None,
+            "total_oci_cost_usd": None,
+            "resource_count": g.get("resource_count", 0),
+            "resources": member_resources,
+        })
+    return workloads
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +569,17 @@ async def _build_existing_arns(tenant: Tenant, db: AsyncSession) -> set[str]:
     return {row[0] for row in existing_result.all()}
 
 
+async def _build_existing_resource_map(tenant: Tenant, db: AsyncSession) -> dict[str, Resource]:
+    """Return a mapping of aws_arn -> Resource for all existing tenant resources."""
+    result = await db.execute(
+        select(Resource).where(
+            Resource.tenant_id == tenant.id,
+            Resource.aws_arn.isnot(None),
+        )
+    )
+    return {r.aws_arn: r for r in result.scalars().all()}
+
+
 # ---------------------------------------------------------------------------
 # Extraction endpoints
 # ---------------------------------------------------------------------------
@@ -375,13 +597,22 @@ async def extract_resources(
 
     extracted_count = 0
     extracted_resources: list = []
-    existing_arns = await _build_existing_arns(tenant, db)
+    existing_resource_map = await _build_existing_resource_map(tenant, db)
+    seen_arns: set[str] = set()
 
-    def _add_if_new(resource: Resource) -> bool:
-        if resource.aws_arn and resource.aws_arn in existing_arns:
+    def _upsert(resource: Resource) -> bool:
+        """Add new resource or update raw_config of existing one. Returns True if new."""
+        arn = resource.aws_arn
+        if arn and arn in seen_arns:
             return False
-        if resource.aws_arn:
-            existing_arns.add(resource.aws_arn)
+        if arn:
+            seen_arns.add(arn)
+        if arn and arn in existing_resource_map:
+            # Update raw_config on existing record
+            existing_resource_map[arn].raw_config = resource.raw_config
+            existing_resource_map[arn].name = resource.name or existing_resource_map[arn].name
+            extracted_resources.append(existing_resource_map[arn])
+            return False
         db.add(resource)
         extracted_resources.append(resource)
         return True
@@ -397,7 +628,7 @@ async def extract_resources(
                 raw_config={"template": stack["template"], "status": stack["status"]},
                 status="discovered",
             )
-            if _add_if_new(resource):
+            if _upsert(resource):
                 extracted_count += 1
     except Exception as e:
         print(f"CFN extraction error: {e}")
@@ -411,14 +642,16 @@ async def extract_resources(
                 name=pol["policy_name"], raw_config=pol["policy_document"],
                 status="discovered",
             )
-            if _add_if_new(resource):
+            if _upsert(resource):
                 extracted_count += 1
     except Exception as e:
         print(f"IAM extraction error: {e}")
 
+    existing_arns = set(existing_resource_map.keys())
     extracted_count += await _extract_all_resources(
         creds=creds, region=region, tenant=tenant, mig=mig, conn=conn,
         db=db, collected=extracted_resources, existing_arns=existing_arns,
+        existing_resource_map=existing_resource_map,
     )
 
     await db.commit()
@@ -775,15 +1008,22 @@ async def _extract_all_resources(
     db: AsyncSession,
     collected: list,
     existing_arns: set,
+    existing_resource_map: dict | None = None,
 ) -> int:
-    """Region-wide extraction of all supported resource types. Skips duplicates by ARN."""
+    """Region-wide extraction of all supported resource types. Upserts by ARN."""
     count = 0
 
     def _add(resource: Resource) -> bool:
-        if resource.aws_arn and resource.aws_arn in existing_arns:
+        arn = resource.aws_arn
+        if arn and arn in existing_arns:
+            # Update raw_config on existing record if we have the map
+            if existing_resource_map and arn in existing_resource_map:
+                existing_resource_map[arn].raw_config = resource.raw_config
+                existing_resource_map[arn].name = resource.name or existing_resource_map[arn].name
+                collected.append(existing_resource_map[arn])
             return False
-        if resource.aws_arn:
-            existing_arns.add(resource.aws_arn)
+        if arn:
+            existing_arns.add(arn)
         db.add(resource)
         collected.append(resource)
         return True

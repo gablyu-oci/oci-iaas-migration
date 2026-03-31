@@ -437,6 +437,16 @@ async def run_translation_job(ctx, translation_job_id: str):
                     result_data = run_storage(
                         input_content, progress_callback, client, max_iterations
                     )
+                elif job.skill_type == "data_migration_planning":
+                    from app.skills.data_migration.orchestrator import run as run_data_mig
+                    result_data = run_data_mig(
+                        input_content, progress_callback, client, max_iterations
+                    )
+                elif job.skill_type == "workload_planning":
+                    from app.skills.workload_planning.orchestrator import run as run_wp
+                    result_data = run_wp(
+                        input_content, progress_callback, client, max_iterations
+                    )
                 elif job.skill_type == "migration_synthesis":
                     if not input_content and job.migration_id:
                         input_content = await _build_synthesis_input_async(db, job.migration_id)

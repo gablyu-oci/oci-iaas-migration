@@ -108,7 +108,7 @@ export default function TranslationJobNew() {
         {/* Skill Type */}
         <div className="panel">
           <div className="panel-header">
-            <h2 className="text-sm font-semibold" style={{ color: '#0f172a' }}>Skill Type</h2>
+            <h2 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>Skill Type</h2>
           </div>
           <div className="panel-body">
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
@@ -132,7 +132,7 @@ export default function TranslationJobNew() {
                   <p className="text-xs font-semibold" style={{ color: skillType === st.value ? 'var(--color-ember)' : '#0f172a' }}>
                     {st.label}
                   </p>
-                  <p className="text-xs mt-0.5" style={{ color: '#64748b' }}>{st.description}</p>
+                  <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)' }}>{st.description}</p>
                 </label>
               ))}
             </div>
@@ -142,7 +142,7 @@ export default function TranslationJobNew() {
         {/* Input Source */}
         <div className="panel">
           <div className="panel-header">
-            <h2 className="text-sm font-semibold" style={{ color: '#0f172a' }}>Input Source</h2>
+            <h2 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>Input Source</h2>
           </div>
           <div className="panel-body space-y-4">
             <div className="flex gap-5">
@@ -156,7 +156,7 @@ export default function TranslationJobNew() {
                     onChange={() => setInputMode(mode)}
                     style={{ accentColor: 'var(--color-ember)' }}
                   />
-                  <span className="text-sm" style={{ color: '#475569' }}>
+                  <span className="text-sm" style={{ color: 'var(--color-text-dim)' }}>
                     {mode === 'resource' ? 'Select from resources' : 'Upload file or paste text'}
                   </span>
                 </label>
@@ -181,7 +181,7 @@ export default function TranslationJobNew() {
                     />
                   </div>
                 ) : (
-                  <p className="text-sm" style={{ color: '#64748b' }}>
+                  <p className="text-sm" style={{ color: 'var(--color-text-dim)' }}>
                     No resources available. Extract or upload resources first.
                   </p>
                 )}
@@ -216,14 +216,14 @@ export default function TranslationJobNew() {
                   {fileName ? (
                     <div>
                       <p className="text-sm font-medium" style={{ color: '#16a34a' }}>✓ {fileName}</p>
-                      <p className="text-xs mt-1" style={{ color: '#475569' }}>
+                      <p className="text-xs mt-1" style={{ color: 'var(--color-text-dim)' }}>
                         {(inputContent.length / 1024).toFixed(1)} KB loaded · click to replace
                       </p>
                     </div>
                   ) : (
                     <div>
-                      <p className="text-sm" style={{ color: '#64748b' }}>Drop file here or click to browse</p>
-                      <p className="text-xs mt-1" style={{ color: '#475569' }}>{currentSkill.hint}</p>
+                      <p className="text-sm" style={{ color: 'var(--color-text-dim)' }}>Drop file here or click to browse</p>
+                      <p className="text-xs mt-1" style={{ color: 'var(--color-text-dim)' }}>{currentSkill.hint}</p>
                     </div>
                   )}
                 </div>
@@ -233,7 +233,7 @@ export default function TranslationJobNew() {
                 <div>
                   <div className="flex items-center gap-3 mb-3">
                     <div className="flex-1 h-px" style={{ background: 'var(--color-rule)' }} />
-                    <span className="text-xs uppercase" style={{ color: '#475569' }}>Or paste content</span>
+                    <span className="text-xs uppercase" style={{ color: 'var(--color-text-dim)' }}>Or paste content</span>
                     <div className="flex-1 h-px" style={{ background: 'var(--color-rule)' }} />
                   </div>
                   <textarea
@@ -255,7 +255,7 @@ export default function TranslationJobNew() {
                   <details className="text-sm">
                     <summary
                       className="cursor-pointer text-xs"
-                      style={{ color: '#475569' }}
+                      style={{ color: 'var(--color-text-dim)' }}
                     >
                       Preview content
                     </summary>
@@ -264,7 +264,7 @@ export default function TranslationJobNew() {
                       style={{
                         background: 'var(--color-well)',
                         border: '1px solid var(--color-fence)',
-                        color: '#64748b',
+                        color: 'var(--color-text-dim)',
                         fontFamily: 'var(--font-mono)',
                         maxHeight: '12rem',
                       }}
@@ -282,7 +282,7 @@ export default function TranslationJobNew() {
         {/* Configuration */}
         <div className="panel">
           <div className="panel-header">
-            <h2 className="text-sm font-semibold" style={{ color: '#0f172a' }}>Configuration</h2>
+            <h2 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>Configuration</h2>
           </div>
           <div className="panel-body">
             <label htmlFor="max-iterations" className="field-label">
@@ -298,7 +298,7 @@ export default function TranslationJobNew() {
               className="w-full mt-2"
               style={{ accentColor: 'var(--color-ember)' }}
             />
-            <div className="flex justify-between text-xs mt-1" style={{ color: '#475569' }}>
+            <div className="flex justify-between text-xs mt-1" style={{ color: 'var(--color-text-dim)' }}>
               <span>1 — Fast</span>
               <span>3 — Balanced</span>
               <span>5 — Thorough</span>

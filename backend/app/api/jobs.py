@@ -195,6 +195,7 @@ async def create_translation_job(
         "cfn_terraform", "iam_translation", "dependency_discovery",
         "network_translation", "ec2_translation", "database_translation",
         "loadbalancer_translation", "storage_translation", "migration_synthesis",
+        "data_migration_planning", "workload_planning",
     }
     if body.skill_type not in valid_types:
         raise HTTPException(

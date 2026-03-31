@@ -134,7 +134,7 @@ export default function ArtifactViewer({ skillRunId }: Props) {
                   </span>
                   <span
                     className="text-xs truncate"
-                    style={{ color: '#0f172a', fontFamily: 'var(--font-mono)' }}
+                    style={{ color: 'var(--color-text-bright)', fontFamily: 'var(--font-mono)' }}
                   >
                     {a.file_name}
                   </span>
@@ -173,7 +173,7 @@ export default function ArtifactViewer({ skillRunId }: Props) {
                     className="text-xs overflow-auto p-4"
                     style={{
                       background: 'var(--color-pit)',
-                      color: '#475569',
+                      color: 'var(--color-text-dim)',
                       fontFamily: 'var(--font-mono)',
                       maxHeight: '24rem',
                       whiteSpace: 'pre-wrap',
@@ -208,7 +208,7 @@ export default function ArtifactViewer({ skillRunId }: Props) {
                 </span>
                 <span
                   className="text-xs font-medium truncate"
-                  style={{ color: '#0f172a', fontFamily: 'var(--font-mono)' }}
+                  style={{ color: 'var(--color-text-bright)', fontFamily: 'var(--font-mono)' }}
                 >
                   {modalArtifact.file_name}
                 </span>
@@ -236,7 +236,7 @@ export default function ArtifactViewer({ skillRunId }: Props) {
             <div
               className="modal-body overflow-y-auto flex-1"
               style={{
-                color: '#1e293b',
+                color: 'var(--color-text-bright)',
                 fontSize: '0.875rem',
                 lineHeight: '1.7',
               }}
@@ -247,11 +247,11 @@ export default function ArtifactViewer({ skillRunId }: Props) {
                     remarkPlugins={[remarkGfm]}
                     rehypePlugins={[rehypeHighlight]}
                     components={{
-                      h1: ({ children }) => <h1 style={{ color: '#0f172a', fontSize: '1.25rem', fontWeight: 700, marginBottom: '0.75rem', marginTop: '1.5rem', paddingBottom: '0.5rem', borderBottom: '1px solid var(--color-fence)' }}>{children}</h1>,
-                      h2: ({ children }) => <h2 style={{ color: '#0f172a', fontSize: '1.1rem', fontWeight: 600, marginBottom: '0.5rem', marginTop: '1.25rem' }}>{children}</h2>,
-                      h3: ({ children }) => <h3 style={{ color: '#1e293b', fontSize: '0.95rem', fontWeight: 600, marginBottom: '0.4rem', marginTop: '1rem' }}>{children}</h3>,
-                      p: ({ children }) => <p style={{ color: '#475569', marginBottom: '0.75rem' }}>{children}</p>,
-                      li: ({ children }) => <li style={{ color: '#475569', marginBottom: '0.25rem' }}>{children}</li>,
+                      h1: ({ children }) => <h1 style={{ color: 'var(--color-text-bright)', fontSize: '1.25rem', fontWeight: 700, marginBottom: '0.75rem', marginTop: '1.5rem', paddingBottom: '0.5rem', borderBottom: '1px solid var(--color-fence)' }}>{children}</h1>,
+                      h2: ({ children }) => <h2 style={{ color: 'var(--color-text-bright)', fontSize: '1.1rem', fontWeight: 600, marginBottom: '0.5rem', marginTop: '1.25rem' }}>{children}</h2>,
+                      h3: ({ children }) => <h3 style={{ color: 'var(--color-text-bright)', fontSize: '0.95rem', fontWeight: 600, marginBottom: '0.4rem', marginTop: '1rem' }}>{children}</h3>,
+                      p: ({ children }) => <p style={{ color: 'var(--color-text-dim)', marginBottom: '0.75rem' }}>{children}</p>,
+                      li: ({ children }) => <li style={{ color: 'var(--color-text-dim)', marginBottom: '0.25rem' }}>{children}</li>,
                       code: ({ children, className }) =>
                         className ? (
                           <code className={className}>{children}</code>
@@ -264,7 +264,7 @@ export default function ArtifactViewer({ skillRunId }: Props) {
                         </pre>
                       ),
                       blockquote: ({ children }) => (
-                        <blockquote style={{ borderLeft: '3px solid var(--color-ember)', paddingLeft: '1rem', margin: '1rem 0', color: '#64748b' }}>
+                        <blockquote style={{ borderLeft: '3px solid var(--color-ember)', paddingLeft: '1rem', margin: '1rem 0', color: 'var(--color-text-dim)' }}>
                           {children}
                         </blockquote>
                       ),
@@ -273,8 +273,8 @@ export default function ArtifactViewer({ skillRunId }: Props) {
                           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>{children}</table>
                         </div>
                       ),
-                      th: ({ children }) => <th style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid var(--color-fence)', color: '#64748b', textAlign: 'left', fontWeight: 600 }}>{children}</th>,
-                      td: ({ children }) => <td style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid var(--color-rule)', color: '#475569' }}>{children}</td>,
+                      th: ({ children }) => <th style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid var(--color-fence)', color: 'var(--color-text-dim)', textAlign: 'left', fontWeight: 600 }}>{children}</th>,
+                      td: ({ children }) => <td style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid var(--color-rule)', color: 'var(--color-text-dim)' }}>{children}</td>,
                     }}
                   >
                     {previewContent[modalId]}

@@ -8,6 +8,14 @@ export interface Migration {
   aws_connection_id: string | null;
   created_at: string;
   resource_count?: number | null;
+  discovery_status: string;
+  discovery_error?: string | null;
+  discovered_at?: string | null;
+  plan_status?: string | null;
+  plan_workload_id?: string | null;
+  plan_workload_name?: string | null;
+  plan_started_at?: string | null;
+  plan_max_iterations?: number | null;
 }
 
 export function useMigrations() {
@@ -31,6 +39,12 @@ export function useMigration(id: string) {
     queryKey: ['migrations', id],
     queryFn: () => client.get(`/api/migrations/${id}`).then((r) => r.data),
     enabled: !!id,
+    refetchInterval: (query) => {
+      const d = query.state.data;
+      if (d?.discovery_status === 'discovering') return 3000;
+      if (d?.plan_status === 'running') return 3000;
+      return false;
+    },
   });
 }
 

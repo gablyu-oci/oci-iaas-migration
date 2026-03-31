@@ -75,12 +75,21 @@ class Migration(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="active")
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    discovery_status: Mapped[str] = mapped_column(String(32), default="pending")
+    discovery_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    discovered_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    plan_status: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    plan_workload_id: Mapped[Optional[uuid.UUID]] = mapped_column(nullable=True)
+    plan_workload_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    plan_started_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    plan_max_iterations: Mapped[Optional[int]] = mapped_column(nullable=True)
 
     tenant: Mapped["Tenant"] = relationship(back_populates="migrations")
     resources: Mapped[list["Resource"]] = relationship(back_populates="migration")
     plan: Mapped[Optional["MigrationPlan"]] = relationship(
         back_populates="migration", uselist=False
     )
+    assessments: Mapped[list["Assessment"]] = relationship(back_populates="migration")
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +290,9 @@ class Workload(Base):
     translation_job_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         ForeignKey("translation_jobs.id"), nullable=True
     )
+    app_group_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("app_groups.id"), nullable=True
+    )
 
     phase: Mapped["PlanPhase"] = relationship(back_populates="workloads")
     resources: Mapped[list["WorkloadResource"]] = relationship(back_populates="workload")
@@ -303,3 +315,199 @@ class WorkloadResource(Base):
     __table_args__ = (UniqueConstraint("workload_id", "resource_id"),)
 
     workload: Mapped["Workload"] = relationship(back_populates="resources")
+
+
+# ---------------------------------------------------------------------------
+# Assessment
+# ---------------------------------------------------------------------------
+class Assessment(Base):
+    __tablename__ = "assessments"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    migration_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("migrations.id"), nullable=False
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    config: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    summary: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    current_step: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    dependency_artifacts: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True, default=None)
+
+    migration: Mapped["Migration"] = relationship(back_populates="assessments")
+    resource_assessments: Mapped[list["ResourceAssessment"]] = relationship(
+        back_populates="assessment", cascade="all, delete-orphan"
+    )
+    app_groups: Mapped[list["AppGroup"]] = relationship(
+        back_populates="assessment", cascade="all, delete-orphan"
+    )
+    tco_report: Mapped[Optional["TCOReport"]] = relationship(
+        back_populates="assessment", uselist=False, cascade="all, delete-orphan"
+    )
+    dependency_edges: Mapped[list["DependencyEdge"]] = relationship(
+        back_populates="assessment", cascade="all, delete-orphan"
+    )
+
+
+# ---------------------------------------------------------------------------
+# ResourceAssessment
+# ---------------------------------------------------------------------------
+class ResourceAssessment(Base):
+    __tablename__ = "resource_assessments"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    assessment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assessments.id"), nullable=False
+    )
+    resource_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("resources.id"), nullable=False
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False
+    )
+
+    # Rightsizing
+    metrics: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    current_instance_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    current_monthly_cost_usd: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    recommended_oci_shape: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    recommended_oci_ocpus: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    recommended_oci_memory_gb: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    projected_oci_monthly_cost_usd: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    rightsizing_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    rightsizing_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # OS Compatibility
+    os_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    os_version: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    os_compat_status: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    os_compat_details: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+
+    # Software Inventory
+    software_inventory: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    ssm_available: Mapped[Optional[bool]] = mapped_column(nullable=True)
+
+    # 6R Classification
+    sixr_strategy: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    sixr_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    sixr_rationale: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Readiness Score
+    readiness_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    readiness_factors: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+    assessment: Mapped["Assessment"] = relationship(back_populates="resource_assessments")
+
+    __table_args__ = (UniqueConstraint("assessment_id", "resource_id"),)
+
+
+# ---------------------------------------------------------------------------
+# AppGroup
+# ---------------------------------------------------------------------------
+class AppGroup(Base):
+    __tablename__ = "app_groups"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    assessment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assessments.id"), nullable=False
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    grouping_method: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    workload_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    sixr_strategy: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    readiness_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    total_aws_cost_usd: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    total_oci_cost_usd: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    metadata_: Mapped[Optional[dict]] = mapped_column("metadata", JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+    assessment: Mapped["Assessment"] = relationship(back_populates="app_groups")
+    members: Mapped[list["AppGroupMember"]] = relationship(
+        back_populates="app_group", cascade="all, delete-orphan"
+    )
+
+
+# ---------------------------------------------------------------------------
+# AppGroupMember
+# ---------------------------------------------------------------------------
+class AppGroupMember(Base):
+    __tablename__ = "app_group_members"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    app_group_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("app_groups.id"), nullable=False
+    )
+    resource_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("resources.id"), nullable=False
+    )
+
+    __table_args__ = (UniqueConstraint("app_group_id", "resource_id"),)
+
+    app_group: Mapped["AppGroup"] = relationship(back_populates="members")
+
+
+# ---------------------------------------------------------------------------
+# TCOReport
+# ---------------------------------------------------------------------------
+class TCOReport(Base):
+    __tablename__ = "tco_reports"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    assessment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assessments.id"), nullable=False, unique=True
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False
+    )
+    aws_monthly_total_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    oci_monthly_total_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    annual_savings_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    savings_percentage: Mapped[float] = mapped_column(Float, default=0.0)
+    breakdown: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    three_year_tco: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+    assessment: Mapped["Assessment"] = relationship(back_populates="tco_report")
+
+
+# ---------------------------------------------------------------------------
+# DependencyEdge
+# ---------------------------------------------------------------------------
+class DependencyEdge(Base):
+    __tablename__ = "dependency_edges"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    assessment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assessments.id"), nullable=False
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id"), nullable=False
+    )
+    source_resource_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("resources.id"), nullable=True
+    )
+    target_resource_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("resources.id"), nullable=True
+    )
+    source_ip: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    target_ip: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    port: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    protocol: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    edge_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    byte_count: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    packet_count: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+    assessment: Mapped["Assessment"] = relationship(back_populates="dependency_edges")

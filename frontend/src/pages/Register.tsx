@@ -29,18 +29,10 @@ export default function Register() {
       className="min-h-screen flex items-center justify-center relative"
       style={{ background: 'var(--color-void)' }}
     >
-      {/* Grid bg */}
-      <div
-        className="absolute inset-0 pointer-events-none"
-        style={{
-          backgroundImage: `
-            linear-gradient(rgba(148,163,184,0.3) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(148,163,184,0.3) 1px, transparent 1px)
-          `,
-          backgroundSize: '40px 40px',
-          maskImage: 'radial-gradient(ellipse 70% 70% at 50% 50%, black 40%, transparent 100%)',
-        }}
-      />
+      {/* Decorative */}
+      <div className="absolute inset-0 pointer-events-none overflow-hidden" style={{ opacity: 0.03 }}>
+        <div style={{ position: 'absolute', top: '-20%', right: '-10%', width: '60%', height: '140%', background: 'linear-gradient(135deg, var(--color-ember) 0%, transparent 60%)', transform: 'rotate(-12deg)' }} />
+      </div>
 
       <div
         className="relative w-full max-w-sm mx-4 rounded-xl overflow-hidden"
@@ -65,10 +57,10 @@ export default function Register() {
             >
               OCI
             </div>
-            <h1 className="text-base font-semibold" style={{ color: '#0f172a' }}>
+            <h1 className="text-base font-semibold" style={{ color: 'var(--color-text-bright)' }}>
               Create Account
             </h1>
-            <p className="text-xs mt-1" style={{ color: '#64748b' }}>
+            <p className="text-xs mt-1" style={{ color: 'var(--color-text-dim)' }}>
               Get started with OCI Migration Tool
             </p>
           </div>
@@ -131,7 +123,7 @@ export default function Register() {
             </button>
           </form>
 
-          <p className="mt-5 text-center text-xs" style={{ color: '#64748b' }}>
+          <p className="mt-5 text-center text-xs" style={{ color: 'var(--color-text-dim)' }}>
             Already have an account?{' '}
             <Link to="/login" style={{ color: 'var(--color-ember)' }} className="font-medium hover:opacity-80 transition-opacity">
               Sign in

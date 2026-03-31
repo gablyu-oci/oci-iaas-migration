@@ -805,3 +805,133 @@ def run(
         }
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def run_graph_only(
+    input_content: str,
+    flowlog_content: str | None,
+    anthropic_client,
+) -> dict:
+    """Run dependency discovery pipeline: graph + LLM review only.
+
+    Same as ``run()`` but skips the runbook and anomaly LLM agents.
+    Returns graph artifacts (dependency.json, graph.mmd, graph.dot) and
+    the review agent's confidence/decision.
+    """
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent / "src"))
+
+    from aws_dependency_discovery.graph.db import Database
+    from aws_dependency_discovery.ingestion.cloudtrail import parse_cloudtrail_file
+    from aws_dependency_discovery.graph.builder import build_graph, enrich_graph_with_network_deps
+    from aws_dependency_discovery.analysis.classifier import classify_all, compute_migration_order
+    from aws_dependency_discovery.output.mermaid import export_mermaid
+    from aws_dependency_discovery.output.dot import export_dot
+    from aws_dependency_discovery.output.report import format_report
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="oci-discovery-"))
+    db_path = tmp_dir / "discovery.db"
+
+    try:
+        # Parse CloudTrail
+        events = json.loads(input_content)
+        if isinstance(events, dict) and "Records" in events:
+            events = events["Records"]
+        event_count = len(events)
+
+        ct_file = tmp_dir / "cloudtrail.json"
+        ct_file.write_text(json.dumps({"Records": events}))
+
+        db = Database(db_path)
+        ct_events = list(parse_cloudtrail_file(ct_file))
+        db.insert_events_batch(ct_events)
+
+        # Ingest flow logs if provided
+        if flowlog_content:
+            fl_file = tmp_dir / "flowlogs.log"
+            fl_file.write_text(flowlog_content)
+            from aws_dependency_discovery.ingestion.flowlogs import (
+                parse_flow_log_file,
+                aggregate_dependencies,
+            )
+            records = list(parse_flow_log_file(fl_file))
+            net_deps = aggregate_dependencies(iter(records))
+            db.insert_network_deps_batch(net_deps)
+
+        # Build graph
+        backend = build_graph(db)
+        if flowlog_content and db.get_network_dep_count() > 0:
+            enrich_graph_with_network_deps(db, backend)
+
+        # Classify and order
+        dependencies = classify_all(backend)
+        migration_steps = compute_migration_order(backend)
+        has_cycles = backend.has_cycles()
+        cycles = backend.get_cycles() if has_cycles else []
+
+        nodes_data = [{"id": nid, **attrs} for nid, attrs in backend.get_nodes()]
+        edges_data = [{"source": s, "target": t, **d} for s, t, d in backend.get_edges()]
+
+        # Generate report for review context
+        report_md = format_report(
+            dependencies, migration_steps,
+            limit=50, has_cycles=has_cycles, cycles=cycles,
+        )
+
+        # Export formats
+        graph_mmd = export_mermaid(backend)
+        graph_dot = export_dot(backend)
+        dependency_json = json.dumps(
+            {"nodes": nodes_data, "edges": edges_data, "migration_order": migration_steps},
+            indent=2,
+        )
+
+        # LLM Review agent only (no runbook, no anomaly)
+        review, review_usage = _call_review(
+            client=anthropic_client,
+            node_count=len(nodes_data),
+            edge_count=len(edges_data),
+            step_count=len(migration_steps),
+            event_count=event_count,
+            has_cycles=has_cycles,
+            cycles=cycles,
+            flowlog_provided=bool(flowlog_content),
+            report_md=report_md,
+        )
+
+        issues = review.get("issues", [])
+        final_confidence = ConfidenceCalculator.calculate(
+            total_items=max(len(nodes_data), 1),
+            mapped_count=len(nodes_data),
+            issues=issues,
+        )
+        reviewer_conf = review.get("confidence")
+        if reviewer_conf is not None and not issues:
+            final_confidence = float(reviewer_conf)
+
+        final_decision = ConfidenceCalculator.make_decision(final_confidence, issues).value
+
+        review_cost = calculate_cost(
+            REVIEW_MODEL,
+            tokens_input=review_usage["tokens_input"],
+            tokens_output=review_usage["tokens_output"],
+            tokens_cache_read=review_usage["tokens_cache_read"],
+            tokens_cache_write=review_usage["tokens_cache_write"],
+        ) or 0.0
+
+        db.close()
+
+        artifacts = {
+            "dependency.json": dependency_json,
+            "graph.mmd": graph_mmd,
+            "graph.dot": graph_dot,
+        }
+
+        return {
+            "artifacts": artifacts,
+            "confidence": final_confidence,
+            "decision": final_decision,
+            "cost": review_cost,
+        }
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)

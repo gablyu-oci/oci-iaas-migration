@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef, type DragEvent } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useMigration, useUploadToMigration, useDeleteMigration } from '../api/hooks/useMigrations';
 import { useResources, type Resource } from '../api/hooks/useResources';
@@ -7,6 +7,10 @@ import { useTranslationJobs } from '../api/hooks/useTranslationJobs';
 import { formatDate, cn, getSkillRunName } from '../lib/utils';
 import client from '../api/client';
 import { synthesizeMigration, getLatestSynthesis } from '../api/plans';
+import { useAssessments, useRunAssessment, useWorkloads } from '../api/hooks/useAssessments';
+import ReadinessScoreBadge from '../components/ReadinessScoreBadge';
+import WorkloadCard from '../components/WorkloadCard';
+import ResourceMappingTable from '../components/ResourceMappingTable';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -55,6 +59,8 @@ const SKILL_LABELS: Record<string, string> = {
   dependency_discovery: 'Dependency Discovery (CloudTrail → Graph)',
 };
 
+type ActiveStep = 'discover' | 'assess' | 'plan';
+
 function migrationStatusBadge(status: string) {
   const map: Record<string, string> = {
     created: 'badge badge-neutral',
@@ -62,6 +68,16 @@ function migrationStatusBadge(status: string) {
     extracted: 'badge badge-success',
     planning: 'badge badge-warning',
     complete: 'badge badge-success',
+    failed: 'badge badge-error',
+  };
+  return map[status] || 'badge badge-neutral';
+}
+
+function discoveryStatusBadge(status: string) {
+  const map: Record<string, string> = {
+    pending: 'badge badge-neutral',
+    discovering: 'badge badge-running',
+    discovered: 'badge badge-success',
     failed: 'badge badge-error',
   };
   return map[status] || 'badge badge-neutral';
@@ -109,7 +125,1168 @@ function groupResourcesBySkill(resources: Resource[], selectedIds: Set<string>):
   return groups;
 }
 
-// ── Component ─────────────────────────────────────────────────────────────────
+// ── Resource Type Icon ─────────────────────────────────────────────────────────
+
+function ResourceTypeIcon({ awsType }: { awsType: string }) {
+  if (awsType.includes('EC2::VPC') || awsType.includes('EC2::Subnet') || awsType.includes('EC2::SecurityGroup') || awsType.includes('NetworkInterface')) {
+    return (
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18" />
+      </svg>
+    );
+  }
+  if (awsType.includes('EC2::Instance') || awsType.includes('AutoScaling')) {
+    return (
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 3H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2V5a2 2 0 00-2-2h-4M9 3v4m0-4h6m0 4H9m6-4v4" />
+      </svg>
+    );
+  }
+  if (awsType.includes('RDS')) {
+    return (
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 7c0-1.657 3.582-3 8-3s8 1.343 8 3v10c0 1.657-3.582 3-8 3s-8-1.343-8-3V7z" />
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 12c0 1.657 3.582 3 8 3s8-1.343 8-3" />
+      </svg>
+    );
+  }
+  if (awsType.includes('IAM')) {
+    return (
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+      </svg>
+    );
+  }
+  if (awsType.includes('LoadBalanc')) {
+    return (
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+      </svg>
+    );
+  }
+  return (
+    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+    </svg>
+  );
+}
+
+// ── Step: Discover ─────────────────────────────────────────────────────────────
+
+function DiscoverStep({
+  migration,
+  allResources,
+  filteredResources,
+  selectedIds,
+  typeFilter,
+  search,
+  uniqueTypes,
+  loadingResources,
+  resourcesError,
+  extracting,
+  extractingInstance,
+  extractError,
+  instances,
+  loadingInstances,
+  instanceError,
+  selectedInstance,
+  showResources,
+  allFilteredSelected,
+  skillGroups,
+  skillRunning,
+  onToggle,
+  onToggleAll,
+  onRunSkill,
+  onSetTypeFilter,
+  onSetSearch,
+  onSetExtractError,
+  onExtractAll,
+  onOpenInstanceModal,
+  onExtractByInstance,
+  onSetSelectedInstance,
+  onSetShowResources,
+  onUploadClick,
+}: {
+  migration: { id: string; name: string; status: string; discovery_status?: string; aws_connection_id?: string | null; created_at: string; resource_count?: number | null };
+  allResources: Resource[];
+  filteredResources: Resource[];
+  selectedIds: Set<string>;
+  typeFilter: string;
+  search: string;
+  uniqueTypes: string[];
+  loadingResources: boolean;
+  resourcesError: unknown;
+  extracting: boolean;
+  extractingInstance: boolean;
+  extractError: string | null;
+  instances: Resource[];
+  loadingInstances: boolean;
+  instanceError: string | null;
+  selectedInstance: Resource | null;
+  showResources: boolean;
+  allFilteredSelected: boolean;
+  skillGroups: Map<string, Resource[]>;
+  skillRunning: boolean;
+  onToggle: (id: string) => void;
+  onToggleAll: () => void;
+  onRunSkill: () => void;
+  onSetTypeFilter: (v: string) => void;
+  onSetSearch: (v: string) => void;
+  onSetExtractError: (v: string | null) => void;
+  onExtractAll: () => void;
+  onOpenInstanceModal: () => void;
+  onExtractByInstance: () => void;
+  onSetSelectedInstance: (r: Resource | null) => void;
+  onSetShowResources: (v: boolean) => void;
+  onUploadClick: () => void;
+}) {
+  // Group resources by type for the type breakdown
+  const resourcesByType = useMemo(() => {
+    const groups = new Map<string, Resource[]>();
+    for (const r of allResources) {
+      const list = groups.get(r.aws_type) || [];
+      list.push(r);
+      groups.set(r.aws_type, list);
+    }
+    return Array.from(groups.entries()).sort((a, b) => b[1].length - a[1].length);
+  }, [allResources]);
+
+  const [expandedTypes, setExpandedTypes] = useState<Set<string>>(new Set());
+
+  const toggleType = (t: string) => {
+    setExpandedTypes((prev) => {
+      const next = new Set(prev);
+      next.has(t) ? next.delete(t) : next.add(t);
+      return next;
+    });
+  };
+
+  const isPending = migration.discovery_status === 'discovering';
+  const hasPendingDiscovery = migration.discovery_status === 'pending' && allResources.length === 0;
+
+  return (
+    <div className="space-y-5">
+      {/* Discovery in progress banner */}
+      {isPending && (
+        <div
+          className="rounded-xl p-4"
+          style={{ background: 'rgba(184,74,28,0.06)', border: '1px solid rgba(184,74,28,0.2)' }}
+        >
+          <div className="flex items-center gap-3">
+            <span className="spinner flex-shrink-0" />
+            <div>
+              <p className="text-sm font-medium" style={{ color: 'var(--color-text-bright)' }}>
+                Discovering AWS resources…
+              </p>
+              <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)' }}>
+                Auto-scanning your AWS environment. This usually takes 30–60 seconds.
+              </p>
+            </div>
+          </div>
+          <div className="mt-3 rounded-full overflow-hidden" style={{ height: '3px', background: 'var(--color-rule)' }}>
+            <div
+              className="h-full rounded-full"
+              style={{ width: '60%', background: 'var(--color-ember)', animation: 'shimmer 1.8s ease-in-out infinite' }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Manual discovery panel (no connection) */}
+      {hasPendingDiscovery && (
+        <div className="panel">
+          <div className="panel-header">
+            <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>Resource Discovery</h3>
+          </div>
+          <div className="panel-body space-y-4">
+            <p className="text-xs" style={{ color: 'var(--color-text-dim)' }}>
+              No AWS connection linked. Discover resources manually or upload a resource file.
+            </p>
+            {extractError && (
+              <div className="alert alert-error" role="alert">
+                {extractError}
+                <button onClick={() => onSetExtractError(null)} className="ml-2 underline hover:no-underline text-xs">Dismiss</button>
+              </div>
+            )}
+            <div className="flex flex-wrap items-center gap-3">
+              <button onClick={onOpenInstanceModal} className="btn btn-secondary">Select Instance</button>
+              {selectedInstance && (
+                <span className="flex items-center gap-2 px-3 py-1.5 rounded text-xs" style={{ background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.2)', color: '#16a34a' }}>
+                  <span className="truncate max-w-[180px]">{selectedInstance.name || selectedInstance.aws_arn}</span>
+                  <button onClick={() => onSetSelectedInstance(null)} className="flex-shrink-0 opacity-60 hover:opacity-100" aria-label="Clear instance">
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                  </button>
+                </span>
+              )}
+              {selectedInstance && (
+                <button onClick={onExtractByInstance} disabled={extractingInstance} className="btn btn-success">
+                  {extractingInstance ? <><span className="spinner" />Discovering…</> : 'Discover Resources'}
+                </button>
+              )}
+              <div className="w-px h-6 flex-shrink-0" style={{ background: 'var(--color-fence)' }} aria-hidden="true" />
+              <button onClick={onExtractAll} disabled={extracting} className="btn btn-primary">
+                {extracting ? <><span className="spinner" />Extracting…</> : 'Extract All Resources'}
+              </button>
+              <div className="w-px h-6 flex-shrink-0" style={{ background: 'var(--color-fence)' }} aria-hidden="true" />
+              <button onClick={onUploadClick} className="btn btn-secondary">Upload Resource File</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Resource type breakdown (expandable sections) */}
+      {allResources.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>
+              Resource Breakdown
+              <span className="ml-2 font-normal" style={{ color: 'var(--color-text-dim)' }}>
+                {allResources.length} total across {resourcesByType.length} type{resourcesByType.length !== 1 ? 's' : ''}
+              </span>
+            </h3>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={onExtractAll}
+                disabled={extracting || isPending}
+                className="btn btn-secondary btn-sm"
+                title="Re-run discovery to refresh resources from AWS"
+              >
+                {extracting || isPending ? <><span className="spinner" />Refreshing…</> : 'Re-discover'}
+              </button>
+              <button
+                onClick={() => onSetShowResources(!showResources)}
+                className="btn btn-ghost btn-sm"
+              >
+                {showResources ? 'Hide list' : 'Show full list'}
+              </button>
+            </div>
+          </div>
+
+          {resourcesByType.map(([type, resources]) => {
+            const expanded = expandedTypes.has(type);
+            return (
+              <div
+                key={type}
+                className="rounded-xl overflow-hidden"
+                style={{ border: '1px solid var(--color-rule)' }}
+              >
+                <button
+                  onClick={() => toggleType(type)}
+                  className="w-full flex items-center justify-between px-4 py-3 transition-colors text-left"
+                  style={{ background: expanded ? 'var(--color-raised)' : 'var(--color-surface)' }}
+                >
+                  <div className="flex items-center gap-3">
+                    <span style={{ color: 'var(--color-ember)' }}>
+                      <ResourceTypeIcon awsType={type} />
+                    </span>
+                    <span className="text-sm font-medium" style={{ color: 'var(--color-text-bright)' }}>
+                      {shortType(type)}
+                    </span>
+                    <span
+                      className="text-xs px-2 py-0.5 rounded-full font-semibold"
+                      style={{ background: 'var(--color-ember-dim)', color: 'var(--color-ember)' }}
+                    >
+                      {resources.length}
+                    </span>
+                  </div>
+                  <svg
+                    className="w-4 h-4 transition-transform"
+                    style={{
+                      transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)',
+                      color: 'var(--color-rail)',
+                    }}
+                    fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+
+                {expanded && (
+                  <div style={{ borderTop: '1px solid var(--color-rule)', background: 'var(--color-well)' }}>
+                    {resources.slice(0, 20).map((r) => (
+                      <div
+                        key={r.id}
+                        className="flex items-center justify-between px-4 py-2.5 text-xs"
+                        style={{ borderBottom: '1px solid var(--color-rule)' }}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <input
+                            type="checkbox"
+                            checked={selectedIds.has(r.id)}
+                            onChange={() => onToggle(r.id)}
+                            className="cb"
+                            aria-label={`Select ${r.name || r.aws_arn}`}
+                          />
+                          <span className="truncate font-medium" style={{ color: 'var(--color-text-bright)' }}>
+                            {r.name || 'Unnamed'}
+                          </span>
+                          <span
+                            className="truncate max-w-[180px] hidden sm:block"
+                            style={{ color: 'var(--color-rail)', fontFamily: 'var(--font-mono)' }}
+                          >
+                            {r.aws_arn}
+                          </span>
+                        </div>
+                        <span className={resourceStatusBadge(r.status)}>
+                          <span className="badge-dot" />
+                          {r.status}
+                        </span>
+                      </div>
+                    ))}
+                    {resources.length > 20 && (
+                      <div className="px-4 py-2 text-xs" style={{ color: 'var(--color-text-dim)' }}>
+                        +{resources.length - 20} more resources
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Full resource table (collapsible) */}
+      {allResources.length > 0 && showResources && (
+        <div className="panel">
+          <div className="panel-header">
+            <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>
+              All Resources
+              <span className="ml-2 font-normal" style={{ color: 'var(--color-text-dim)' }}>
+                {allResources.length} total{selectedIds.size > 0 && `, ${selectedIds.size} selected`}
+              </span>
+            </h3>
+            <div className="flex items-center gap-2">
+              <select
+                value={typeFilter}
+                onChange={(e) => onSetTypeFilter(e.target.value)}
+                className="field-input field-select"
+                style={{ width: 'auto', fontSize: '0.75rem', padding: '0.3125rem 2rem 0.3125rem 0.625rem' }}
+                aria-label="Filter by type"
+              >
+                <option value="">All Types</option>
+                {uniqueTypes.map((t) => <option key={t} value={t}>{shortType(t)}</option>)}
+              </select>
+              <div className="relative">
+                <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style={{ color: 'var(--color-text-dim)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+                <input
+                  type="text"
+                  value={search}
+                  onChange={(e) => onSetSearch(e.target.value)}
+                  placeholder="Search…"
+                  className="field-input"
+                  style={{ paddingLeft: '2rem', width: '11rem', fontSize: '0.75rem', padding: '0.3125rem 0.625rem 0.3125rem 2rem' }}
+                />
+              </div>
+            </div>
+          </div>
+
+          {selectedIds.size > 0 && (
+            <div className="selection-bar">
+              <p>
+                {selectedIds.size} resource{selectedIds.size !== 1 ? 's' : ''} selected
+                {skillGroups.size > 1 && (
+                  <span className="opacity-70"> · {skillGroups.size} translation job types</span>
+                )}
+              </p>
+              <button onClick={onRunSkill} disabled={skillRunning} className="btn btn-primary btn-sm">
+                {skillRunning ? <><span className="spinner" />Starting…</> : 'Run Translation Jobs'}
+              </button>
+            </div>
+          )}
+
+          {loadingResources ? (
+            <div className="panel-body space-y-2">
+              {[...Array(5)].map((_, i) => <div key={i} className="skel h-10" />)}
+            </div>
+          ) : resourcesError ? (
+            <div className="alert alert-error m-4">Failed to load resources. Please try again.</div>
+          ) : filteredResources.length === 0 ? (
+            <div className="empty-state"><p>No resources match your filters.</p></div>
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              <table className="dt">
+                <thead>
+                  <tr>
+                    <th style={{ width: '2.5rem' }}>
+                      <input type="checkbox" checked={allFilteredSelected} onChange={onToggleAll} className="cb" aria-label="Select all" />
+                    </th>
+                    <th>Type</th>
+                    <th>Name / ID</th>
+                    <th>Status</th>
+                    <th>Latest Run</th>
+                    <th>Run Status</th>
+                    <th>Confidence</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredResources.map((r) => (
+                    <tr key={r.id} style={selectedIds.has(r.id) ? { background: 'rgba(249,115,22,0.05)' } : undefined}>
+                      <td>
+                        <input type="checkbox" checked={selectedIds.has(r.id)} onChange={() => onToggle(r.id)} className="cb" aria-label={`Select ${r.name || r.aws_arn}`} />
+                      </td>
+                      <td><span className={getTypeBadgeClass(r.aws_type)}>{shortType(r.aws_type)}</span></td>
+                      <td>
+                        <p className="text-sm font-medium" style={{ color: 'var(--color-text-bright)' }}>{r.name || 'Unnamed'}</p>
+                        <p className="text-xs truncate max-w-xs" style={{ color: 'var(--color-text-dim)', fontFamily: 'var(--font-mono)' }}>{r.aws_arn}</p>
+                      </td>
+                      <td>
+                        <span className={resourceStatusBadge(r.status)}><span className="badge-dot" />{r.status}</span>
+                      </td>
+                      <td>
+                        {r.latest_skill_run ? (
+                          <Link
+                            to={r.latest_skill_run.status === 'complete' ? `/translation-jobs/${r.latest_skill_run.id}/results` : `/translation-jobs/${r.latest_skill_run.id}`}
+                            style={{ color: 'var(--color-ember)', fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {r.latest_skill_run.skill_type}
+                          </Link>
+                        ) : <span style={{ color: 'var(--color-rail)' }}>—</span>}
+                      </td>
+                      <td>
+                        {r.latest_skill_run ? (
+                          <span className={jobStatusBadge(r.latest_skill_run.status)}><span className="badge-dot" />{r.latest_skill_run.status}</span>
+                        ) : <span style={{ color: 'var(--color-rail)' }}>—</span>}
+                      </td>
+                      <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>
+                        {r.latest_skill_run?.status === 'complete' ? `${Math.round(r.latest_skill_run.confidence * 100)}%` : <span style={{ color: 'var(--color-rail)' }}>—</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Plan Results Display ─────────────────────────────────────────────────────
+
+function PlanResults({ results }: { results: { resource_mapping?: Array<Record<string, unknown>>; artifacts?: Record<string, string>; skills_ran?: string[] } }) {
+  const [activeTab, setActiveTab] = useState<string>('mapping');
+
+  const mapping = results.resource_mapping || [];
+  const artifacts = results.artifacts || {};
+
+  // Build tabs from available artifacts
+  const tabs: { id: string; label: string }[] = [
+    { id: 'mapping', label: 'Resource Mapping' },
+  ];
+
+  // Group artifacts by category — synthesis is the primary Terraform output
+  const terraformArtifacts: Record<string, string> = {};
+  const dataMigArtifacts: Record<string, string> = {};
+  const runbookArtifacts: Record<string, string> = {};
+
+  for (const [key, content] of Object.entries(artifacts)) {
+    if (key.startsWith('synthesis/')) {
+      // Synthesis output = the unified Terraform stack
+      const name = key.replace('synthesis/', '');
+      terraformArtifacts[name] = content;
+    } else if (key.startsWith('data_migration/')) {
+      dataMigArtifacts[key.replace('data_migration/', '')] = content;
+    } else if (key.startsWith('workload_planning/')) {
+      runbookArtifacts[key.replace('workload_planning/', '')] = content;
+    }
+    // Individual translation outputs are subsumed by synthesis — skip
+  }
+
+  if (Object.keys(terraformArtifacts).length > 0) tabs.push({ id: 'terraform', label: 'Terraform' });
+  if (Object.keys(dataMigArtifacts).length > 0) tabs.push({ id: 'data', label: 'Data Migration' });
+  if (Object.keys(runbookArtifacts).length > 0) tabs.push({ id: 'runbook', label: 'Runbook & Risks' });
+
+  const currentTab = tabs.find(t => t.id === activeTab) ? activeTab : tabs[0]?.id;
+
+  return (
+    <div className="space-y-4">
+      {/* Skills ran badge bar */}
+      {results.skills_ran && results.skills_ran.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {results.skills_ran.map(s => (
+            <span key={s} className="badge badge-success" style={{ fontSize: '0.5625rem' }}>
+              {s.replace(/_/g, ' ')}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Tabs */}
+      <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--color-rule)', background: 'var(--color-surface)' }}>
+        <div className="flex gap-0 px-2 pt-2" style={{ borderBottom: '1px solid var(--color-rule)' }}>
+          {tabs.map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className="px-4 py-2 text-xs font-medium transition-colors"
+              style={{
+                color: currentTab === tab.id ? 'var(--color-ember)' : 'var(--color-text-dim)',
+                borderBottom: `2px solid ${currentTab === tab.id ? 'var(--color-ember)' : 'transparent'}`,
+                background: 'transparent',
+                border: 'none',
+                borderBottomWidth: '2px',
+                borderBottomStyle: 'solid',
+                borderBottomColor: currentTab === tab.id ? 'var(--color-ember)' : 'transparent',
+                cursor: 'pointer',
+              }}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="p-4">
+          {currentTab === 'mapping' && (
+            <PlanMappingTable mapping={mapping} />
+          )}
+          {currentTab === 'terraform' && (
+            <ArtifactList artifacts={terraformArtifacts} />
+          )}
+          {currentTab === 'data' && (
+            <ArtifactList artifacts={dataMigArtifacts} />
+          )}
+          {currentTab === 'runbook' && (
+            <ArtifactList artifacts={runbookArtifacts} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PlanMappingTable({ mapping }: { mapping: Array<Record<string, unknown>> }) {
+  if (mapping.length === 0) return <p className="text-xs" style={{ color: 'var(--color-text-dim)' }}>No mapping data</p>;
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
+        <thead>
+          <tr style={{ borderBottom: '1px solid var(--color-rule)' }}>
+            <th className="text-left px-3 py-2" style={{ color: 'var(--color-text-dim)' }}>AWS Resource</th>
+            <th className="text-left px-1 py-2" />
+            <th className="text-left px-3 py-2" style={{ color: 'var(--color-text-dim)' }}>OCI Target</th>
+            <th className="text-center px-3 py-2" style={{ color: 'var(--color-text-dim)' }}>Confidence</th>
+            <th className="text-left px-3 py-2" style={{ color: 'var(--color-text-dim)' }}>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {mapping.map((m, i) => (
+            <tr key={i} style={{ borderBottom: '1px solid var(--color-rule)' }}>
+              <td className="px-3 py-2">
+                <span className="font-medium" style={{ color: 'var(--color-text-bright)' }}>{String(m.aws_name || '')}</span>
+                <br />
+                <span style={{ color: 'var(--color-text-dim)', fontSize: '0.625rem' }}>{String(m.aws_config_summary || '')}</span>
+              </td>
+              <td className="px-1" style={{ color: 'var(--color-ember)' }}>→</td>
+              <td className="px-3 py-2">
+                <span className="font-medium" style={{ color: '#F80000' }}>{String(m.oci_resource_type || '')}</span>
+                <br />
+                <span style={{ color: 'var(--color-text-dim)', fontSize: '0.625rem' }}>{String(m.oci_config_summary || '')}</span>
+              </td>
+              <td className="px-3 py-2 text-center">
+                <span className="badge" style={{
+                  fontSize: '0.5625rem',
+                  background: m.mapping_confidence === 'high' ? 'rgba(22,163,74,0.1)' : m.mapping_confidence === 'medium' ? 'rgba(217,119,6,0.1)' : 'rgba(220,38,38,0.1)',
+                  color: m.mapping_confidence === 'high' ? '#16a34a' : m.mapping_confidence === 'medium' ? '#d97706' : '#dc2626',
+                }}>
+                  {String(m.mapping_confidence || 'low')}
+                </span>
+              </td>
+              <td className="px-3 py-2" style={{ maxWidth: '180px', fontSize: '0.625rem', color: 'var(--color-text-dim)' }}>
+                {(m.notes as string[] || []).map((n, j) => <div key={j}>+ {n}</div>)}
+                {(m.gaps as string[] || []).map((g, j) => <div key={`g${j}`} style={{ color: 'var(--color-warning)' }}>! {g}</div>)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ArtifactList({ artifacts }: { artifacts: Record<string, string> }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const entries = Object.entries(artifacts);
+  if (entries.length === 0) return <p className="text-xs" style={{ color: 'var(--color-text-dim)' }}>No artifacts</p>;
+
+  return (
+    <div className="space-y-2">
+      {entries.map(([key, content]) => {
+        const name = key.split('/').pop() || key;
+        const isOpen = expanded === key;
+        return (
+          <div key={key} className="rounded-lg" style={{ border: '1px solid var(--color-rule)' }}>
+            <button
+              onClick={() => setExpanded(isOpen ? null : key)}
+              className="w-full flex items-center justify-between px-3 py-2.5 text-left text-xs font-medium"
+              style={{ background: isOpen ? 'var(--color-raised)' : 'transparent', color: 'var(--color-text-bright)', border: 'none', cursor: 'pointer' }}
+            >
+              <span className="flex items-center gap-2">
+                <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ember)' }}>{name}</span>
+                <span style={{ color: 'var(--color-text-dim)', fontWeight: 400 }}>
+                  {content.length > 1000 ? `${(content.length / 1024).toFixed(1)} KB` : `${content.length} chars`}
+                </span>
+              </span>
+              <svg className="w-3 h-3 transition-transform" style={{ transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)', color: 'var(--color-rail)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+            {isOpen && (
+              <pre
+                className="px-3 py-3 overflow-auto text-xs"
+                style={{
+                  borderTop: '1px solid var(--color-rule)',
+                  maxHeight: '500px',
+                  background: 'var(--color-well)',
+                  color: 'var(--color-text)',
+                  fontFamily: 'var(--font-mono)',
+                  whiteSpace: 'pre-wrap',
+                  margin: 0,
+                }}
+              >
+                {content}
+              </pre>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Step: Assess ──────────────────────────────────────────────────────────────
+
+function AssessStep({
+  migrationId,
+  workloads,
+  loadingWorkloads,
+  latestAssessment,
+  loadingAssessments,
+  runAssessment,
+  onPlanWorkload,
+}: {
+  migrationId: string;
+  workloads: Array<{
+    id?: string;
+    name: string;
+    workload_type?: string;
+    resource_count?: number;
+    resources: Array<{ id: string; aws_type: string; name?: string }>;
+    readiness_score?: number;
+    sixr_strategy?: string;
+    total_aws_cost_usd?: number;
+    total_oci_cost_usd?: number;
+    grouping_method?: string;
+  }> | undefined;
+  loadingWorkloads: boolean;
+  latestAssessment: {
+    id: string;
+    status: string;
+    avg_readiness_score: number;
+    resources_assessed: number;
+    aws_monthly_cost: number;
+    oci_projected_cost: number;
+    current_step?: string | null;
+    dependency_artifacts?: {
+      workload_graphs?: Record<string, string>;
+      cloudtrail_event_count?: number;
+      has_flowlogs?: boolean;
+    } | null;
+  } | null;
+  loadingAssessments: boolean;
+  runAssessment: { mutate: (id: string) => void; isPending: boolean };
+  onPlanWorkload: (workloadId: string) => void;
+}) {
+  const namedWorkloads = (workloads || []).filter((w) => w.name && !w.name.startsWith('ungrouped-'));
+  const ungrouped = (workloads || []).filter((w) => w.name?.startsWith('ungrouped-'));
+
+  return (
+    <div className="space-y-5">
+      {/* Assessment status bar */}
+      <div
+        className="rounded-xl p-4 flex items-start justify-between gap-4"
+        style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}
+      >
+        <div>
+          <p className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>Migration Assessment</p>
+          <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)' }}>
+            Analyze readiness, cost comparison, and OS compatibility across all workloads
+          </p>
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <button
+            onClick={() => runAssessment.mutate(migrationId)}
+            disabled={runAssessment.isPending || latestAssessment?.status === 'pending' || latestAssessment?.status === 'running'}
+            className="btn btn-primary"
+          >
+            {runAssessment.isPending || latestAssessment?.status === 'pending' || latestAssessment?.status === 'running'
+              ? <><span className="spinner" />Running…</>
+              : latestAssessment?.status === 'complete'
+                ? 'Re-run Assessment'
+                : 'Run Assessment'}
+          </button>
+          {latestAssessment?.status === 'complete' && (
+            <Link to={`/assessments/${latestAssessment.id}`} className="btn btn-secondary">
+              Full Report →
+            </Link>
+          )}
+        </div>
+      </div>
+
+      {/* Assessment summary */}
+      {loadingAssessments ? (
+        <div className="skel h-16 rounded-xl" />
+      ) : latestAssessment?.status === 'running' || latestAssessment?.status === 'pending' ? (
+        <div className="rounded-xl p-4" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)' }}>
+          {(() => {
+            const STEPS = [
+              { key: 'collecting_metrics',   label: 'Collecting Metrics' },
+              { key: 'collecting_inventory', label: 'Collecting Inventory' },
+              { key: 'rightsizing',          label: 'Rightsizing' },
+              { key: 'os_compatibility',     label: 'OS Compatibility' },
+              { key: 'dependency_mapping',   label: 'Dependency Discovery' },
+              { key: 'grouping',             label: 'Grouping' },
+              { key: 'classifying',          label: 'Classifying' },
+              { key: 'scoring',              label: 'Scoring' },
+              { key: 'tco',                  label: 'TCO Calculation' },
+            ];
+            const currentIdx = STEPS.findIndex(s => s.key === latestAssessment.current_step);
+            return (
+              <>
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="spinner flex-shrink-0" />
+                  <span className="text-sm font-medium" style={{ color: 'var(--color-text-bright)' }}>
+                    Assessment in progress
+                  </span>
+                  {latestAssessment.current_step && (
+                    <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: 'var(--color-ember-dim)', color: 'var(--color-ember)' }}>
+                      {STEPS.find(s => s.key === latestAssessment.current_step)?.label ?? latestAssessment.current_step}
+                    </span>
+                  )}
+                </div>
+                <div className="flex gap-1">
+                  {STEPS.map((step, i) => {
+                    const done = currentIdx >= 0 && i < currentIdx;
+                    const active = i === currentIdx;
+                    return (
+                      <div key={step.key} className="flex-1 group relative">
+                        <div
+                          className="h-1.5 rounded-full"
+                          style={{
+                            background: done ? 'var(--color-ember)' : active ? 'var(--color-ember)' : 'var(--color-rule)',
+                            opacity: active ? 1 : done ? 0.7 : 0.3,
+                            animation: active ? 'shimmer 1.5s ease-in-out infinite' : undefined,
+                          }}
+                        />
+                        <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 hidden group-hover:block z-10">
+                          <span className="text-xs px-2 py-1 rounded whitespace-nowrap" style={{ background: 'var(--color-raised)', color: 'var(--color-text-dim)', border: '1px solid var(--color-rule)' }}>
+                            {step.label}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            );
+          })()}
+        </div>
+      ) : latestAssessment?.status === 'complete' ? (
+        <div
+          className="grid gap-3 rounded-xl p-4"
+          style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', gridTemplateColumns: 'repeat(3, 1fr)' }}
+        >
+          <div className="text-center">
+            <p className="text-xs mb-1" style={{ color: 'var(--color-text-dim)' }}>Readiness Score</p>
+            <ReadinessScoreBadge score={Math.round(latestAssessment.avg_readiness_score)} />
+          </div>
+          <div className="text-center">
+            <p className="text-xs mb-1" style={{ color: 'var(--color-text-dim)' }}>Resources Assessed</p>
+            <p className="text-lg font-bold" style={{ color: 'var(--color-text-bright)', fontFamily: 'var(--font-display)' }}>
+              {latestAssessment.resources_assessed}
+            </p>
+          </div>
+          <div className="text-center">
+            <p className="text-xs mb-1" style={{ color: 'var(--color-text-dim)' }}>Est. Cost Savings</p>
+            <p className="text-lg font-bold" style={{ color: 'var(--color-success)', fontFamily: 'var(--font-display)' }}>
+              {latestAssessment.aws_monthly_cost > 0
+                ? `${Math.round(((latestAssessment.aws_monthly_cost - latestAssessment.oci_projected_cost) / latestAssessment.aws_monthly_cost) * 100)}%`
+                : '—'}
+            </p>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Workload cards grid */}
+      <div>
+        <h3 className="text-sm font-semibold mb-3" style={{ color: 'var(--color-text-bright)' }}>
+          Detected Workloads
+          {namedWorkloads.length > 0 && (
+            <span className="ml-2 font-normal" style={{ color: 'var(--color-text-dim)' }}>
+              {namedWorkloads.length} workload{namedWorkloads.length !== 1 ? 's' : ''}
+            </span>
+          )}
+        </h3>
+
+        {loadingWorkloads ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {[...Array(4)].map((_, i) => <div key={i} className="skel rounded-xl" style={{ height: '200px' }} />)}
+          </div>
+        ) : namedWorkloads.length > 0 ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {namedWorkloads.map((w, i) => (
+              <WorkloadCard
+                key={w.id || i}
+                name={w.name}
+                workloadType={w.workload_type ?? 'web_api'}
+                resourceCount={w.resource_count ?? 0}
+                resources={w.resources}
+                readinessScore={w.readiness_score}
+                sixrStrategy={w.sixr_strategy}
+                totalAwsCost={w.total_aws_cost_usd}
+                totalOciCost={w.total_oci_cost_usd}
+                groupingMethod={w.grouping_method}
+                graphSvg={latestAssessment?.dependency_artifacts?.workload_graphs?.[w.name] || undefined}
+                onClick={() => onPlanWorkload(w.id || w.name)}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="panel">
+            <div className="empty-state">
+              <p>No workloads detected yet. Resources will be auto-grouped after discovery.</p>
+            </div>
+          </div>
+        )}
+
+        {/* Ungrouped */}
+        {ungrouped.length > 0 && (
+          <details className="panel mt-4" style={{ overflow: 'hidden' }}>
+            <summary className="panel-body flex items-center gap-2 cursor-pointer" style={{ listStyle: 'none' }}>
+              <svg className="w-3.5 h-3.5" style={{ color: 'var(--color-text-dim)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+              <span className="text-sm font-medium" style={{ color: 'var(--color-text-dim)' }}>
+                {ungrouped.length} ungrouped resource{ungrouped.length !== 1 ? 's' : ''}
+              </span>
+            </summary>
+            <div className="panel-body pt-0 space-y-1.5" style={{ borderTop: '1px solid var(--color-rule)' }}>
+              {ungrouped.map((w) =>
+                w.resources.map((r) => (
+                  <div key={r.id} className="flex items-center gap-2 text-xs" style={{ color: 'var(--color-text-dim)' }}>
+                    <span className="badge badge-neutral" style={{ fontSize: '0.5625rem' }}>{shortType(r.aws_type)}</span>
+                    <span className="truncate">{r.name || r.id}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </details>
+        )}
+      </div>
+
+      {/* Translation jobs table */}
+    </div>
+  );
+}
+
+// ── Step: Plan ────────────────────────────────────────────────────────────────
+
+function PlanStep({
+  migrationId,
+  workloads,
+  latestAssessment,
+  migrationSkillRuns,
+  selectedWorkloadId,
+  planStatus,
+  planStartedAt,
+  planMaxIterations,
+}: {
+  migrationId: string;
+  workloads: Array<{
+    id?: string;
+    name: string;
+    workload_type?: string;
+    resource_count?: number;
+    resources: Array<{ id: string; aws_type: string; name?: string }>;
+    readiness_score?: number;
+    sixr_strategy?: string;
+  }> | undefined;
+  latestAssessment: {
+    id: string;
+    status: string;
+  } | null;
+  migrationSkillRuns: Array<{
+    id: string;
+    status: string;
+    skill_type: string;
+    confidence: number;
+    created_at: string;
+    resource_names?: string[] | null;
+    resource_name?: string | null;
+    migration_id?: string | null;
+  }>;
+  selectedWorkloadId: string | null;
+  planStatus?: string | null;
+  planStartedAt?: string | null;
+  planMaxIterations?: number | null;
+}) {
+  type PlanViewState = 'configure' | 'running' | 'results';
+
+  const [maxIterations, setMaxIterations] = useState(3);
+  const [viewState, setViewState] = useState<PlanViewState>(
+    planStatus === 'running' ? 'running' : planStatus === 'completed' ? 'results' : 'configure'
+  );
+  const [planError, setPlanError] = useState<string | null>(null);
+  const [planResults, setPlanResults] = useState<{
+    status: string;
+    current_step?: string;
+    elapsed_seconds?: number;
+    max_iterations?: number;
+    logs?: string[];
+    resource_mapping?: Array<Record<string, unknown>>;
+    artifacts?: Record<string, string>;
+    skills_ran?: string[];
+    completed_at?: string;
+  } | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+
+  const namedWorkloads = (workloads || []).filter((w) => w.name && !w.name.startsWith('ungrouped-'));
+  let selected = namedWorkloads.find(w => w.id === selectedWorkloadId || w.name === selectedWorkloadId);
+
+  // Auto-select: if no workload selected but only one exists, pick it
+  if (!selected && namedWorkloads.length === 1) {
+    selected = namedWorkloads[0];
+  }
+
+  // Check for existing plan results when we have a selected workload
+  useEffect(() => {
+    if (!selected?.id) return;
+    client.get(`/api/app-groups/${selected.id}/plan-results`)
+      .then(res => {
+        if (res.data?.status === 'completed') { setPlanResults(res.data); setViewState('results'); }
+        else if (res.data?.status === 'running') { setPlanResults(res.data); setViewState('running'); }
+      })
+      .catch(() => {});
+  }, [selected?.id]);
+
+  // Poll while running
+  useEffect(() => {
+    if (viewState !== 'running' || !selected?.id) return;
+    const interval = setInterval(async () => {
+      try {
+        const res = await client.get(`/api/app-groups/${selected.id}/plan-results`);
+        setPlanResults(res.data);
+        if (res.data?.status === 'completed') setViewState('results');
+        else if (res.data?.status === 'failed') { setPlanError(res.data?.error || 'Failed'); setViewState('configure'); }
+      } catch { /* ignore */ }
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [viewState, selected?.id]);
+
+  // Simple timer: compute elapsed from start time every second
+  useEffect(() => {
+    if (viewState !== 'running') return;
+    const startMs = planStartedAt ? new Date(planStartedAt).getTime() : Date.now();
+    const tick = () => setElapsed(Math.round((Date.now() - startMs) / 1000));
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [viewState, planStartedAt]);
+
+  const handleGeneratePlan = async () => {
+    if (!latestAssessment || !selected?.id) return;
+    setElapsed(0);
+    setViewState('running');
+    setPlanError(null);
+    setPlanResults(null);
+    try {
+      await client.post(`/api/migrations/${migrationId}/plan-from-assessment`, {
+        assessment_id: latestAssessment.id,
+        app_group_ids: [selected.id],
+        max_iterations: maxIterations,
+      });
+    } catch (err) {
+      setPlanError(err instanceof Error ? err.message : 'Failed to start');
+      setViewState('configure');
+    }
+  };
+
+  const fmtElapsed = (s: number) => { const total = Math.round(s); const m = Math.floor(total / 60); const sec = total % 60; return m > 0 ? `${m}m ${sec}s` : `${sec}s`; };
+
+  // Workloads still loading
+  if (!workloads && selectedWorkloadId) {
+    return (
+      <div className="flex items-center justify-center p-12">
+        <span className="spinner" />
+      </div>
+    );
+  }
+
+  // No workload selected
+  if (!selected) {
+    return (
+      <div className="rounded-xl p-8 text-center" style={{ background: 'var(--color-well)', border: '1px dashed var(--color-fence)' }}>
+        <svg className="w-12 h-12 mx-auto mb-4" style={{ color: 'var(--color-rail)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M11 17l-5-5m0 0l5-5m-5 5h12" />
+        </svg>
+        <p className="text-sm font-medium" style={{ color: 'var(--color-text-bright)' }}>No workload selected</p>
+        <p className="text-xs mt-1" style={{ color: 'var(--color-text-dim)' }}>Go to the Assess step and click "Plan Migration" on a workload.</p>
+      </div>
+    );
+  }
+
+  // ── CONFIGURE ───────────────────────────────────────────────────────
+  if (viewState === 'configure') return (
+    <div className="space-y-5">
+      <div className="rounded-xl p-5" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}>
+        <h3 className="text-sm font-semibold mb-1" style={{ color: 'var(--color-text-bright)' }}>{selected.name}</h3>
+        <p className="text-xs" style={{ color: 'var(--color-text-dim)' }}>
+          {selected.resource_count || selected.resources.length} resources · {selected.workload_type?.replace('_', '/') || 'web/api'}
+          {selected.sixr_strategy ? ` · ${selected.sixr_strategy}` : ''}
+        </p>
+        <div className="flex flex-wrap gap-1.5 mt-2">
+          {selected.resources.map(r => (
+            <span key={r.id} className="badge badge-neutral" style={{ fontSize: '0.5625rem' }}>
+              {r.aws_type.replace('AWS::', '').split('::').pop()} {r.name ? `· ${r.name}` : ''}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div className="rounded-xl p-5" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}>
+        <h4 className="text-sm font-semibold mb-3" style={{ color: 'var(--color-text-bright)' }}>Plan Configuration</h4>
+        <div className="mb-4">
+          <label className="text-xs font-medium mb-1.5 block" style={{ color: 'var(--color-text-dim)' }}>LLM Debate Rounds (per skill)</label>
+          <div className="flex items-center gap-3">
+            <input type="range" min={1} max={5} value={maxIterations} onChange={e => setMaxIterations(Number(e.target.value))} className="flex-1" style={{ accentColor: 'var(--color-ember)' }} />
+            <span className="text-sm font-bold w-6 text-center" style={{ color: 'var(--color-text-bright)', fontFamily: 'var(--font-mono)' }}>{maxIterations}</span>
+          </div>
+          <p className="text-xs mt-1" style={{ color: 'var(--color-rail)' }}>
+            {maxIterations === 1 ? 'Single pass — fastest, good for simple workloads' : maxIterations === 2 ? 'Enhancement + one review — good balance' : maxIterations === 3 ? 'Default — Enhancement → Review → Fix (recommended)' : maxIterations === 4 ? 'Extra refinement — catches edge cases' : 'Maximum quality — thorough but slower'}
+          </p>
+        </div>
+        <div className="rounded-lg p-3 mb-4" style={{ background: 'var(--color-well)', border: '1px solid var(--color-rule)' }}>
+          <p className="text-xs font-medium mb-1.5" style={{ color: 'var(--color-text-dim)' }}>Pipeline will run:</p>
+          <div className="flex flex-wrap gap-1.5">
+            {['Resource Mapping', 'Terraform Translation', 'Data Migration Plan', 'Migration Runbook', 'Risk Analysis', 'Synthesis'].map(s => (
+              <span key={s} className="badge badge-neutral" style={{ fontSize: '0.5625rem' }}>{s}</span>
+            ))}
+          </div>
+          <p className="text-xs mt-2" style={{ color: 'var(--color-rail)' }}>
+            Estimated: {maxIterations <= 2 ? '2–4' : maxIterations <= 3 ? '4–8' : '8–15'} minutes
+          </p>
+        </div>
+        {planError && <div className="alert alert-error mb-3">{planError}</div>}
+        <button onClick={handleGeneratePlan} disabled={!latestAssessment} className="btn btn-primary">Generate Migration Plan</button>
+      </div>
+    </div>
+  );
+
+  // ── RUNNING ─────────────────────────────────────────────────────────
+  if (viewState === 'running') {
+    const currentStep = planResults?.current_step || 'init';
+    const logs = planResults?.logs || [];
+    const PIPELINE = ['resource_mapping', 'ec2_translation', 'storage_translation', 'cfn_terraform', 'data_migration', 'workload_planning', 'synthesis'];
+    const stepIdx = PIPELINE.indexOf(currentStep);
+
+    return (
+      <div className="space-y-5">
+        <div className="rounded-xl p-5" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}>
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-3">
+              <span className="spinner flex-shrink-0" />
+              <div>
+                <p className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>Generating plan for {selected.name}</p>
+                <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)' }}>
+                  {currentStep.replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase())} · {planMaxIterations ?? planResults?.max_iterations ?? maxIterations} round{(planMaxIterations ?? planResults?.max_iterations ?? maxIterations) > 1 ? 's' : ''} per skill
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-4">
+              <div className="text-right">
+                <p className="text-lg font-bold" style={{ color: 'var(--color-ember)', fontFamily: 'var(--font-mono)' }}>{fmtElapsed(elapsed)}</p>
+                <p className="text-xs" style={{ color: 'var(--color-text-dim)' }}>elapsed</p>
+              </div>
+              <button
+                onClick={async () => {
+                  if (!selected?.id) return;
+                  try {
+                    await client.post(`/api/app-groups/${selected.id}/cancel-plan`);
+                  } catch { /* ignore */ }
+                  setPlanResults(null);
+                  setViewState('configure');
+                }}
+                className="btn btn-secondary btn-sm"
+                style={{ color: 'var(--color-error)' }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+          <div className="flex gap-1">
+            {PIPELINE.map((step, i) => (
+              <div key={step} className="flex-1 group relative">
+                <div className="h-2 rounded-full transition-all" style={{
+                  background: i <= stepIdx ? 'var(--color-ember)' : 'var(--color-rule)',
+                  opacity: i < stepIdx ? 0.7 : i === stepIdx ? 1 : 0.3,
+                  animation: i === stepIdx ? 'shimmer 1.5s ease-in-out infinite' : undefined,
+                }} />
+                <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 hidden group-hover:block z-10">
+                  <span className="text-xs px-2 py-1 rounded whitespace-nowrap" style={{ background: 'var(--color-raised)', color: 'var(--color-text-dim)', border: '1px solid var(--color-rule)' }}>
+                    {step.replace(/_/g, ' ')}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--color-rule)' }}>
+          <div className="px-4 py-2.5 flex items-center justify-between" style={{ background: 'var(--color-raised)', borderBottom: '1px solid var(--color-rule)' }}>
+            <span className="text-xs font-semibold" style={{ color: 'var(--color-text-dim)' }}>Live Logs</span>
+            <span className="text-xs" style={{ color: 'var(--color-rail)', fontFamily: 'var(--font-mono)' }}>{logs.length} entries</span>
+          </div>
+          <div className="p-3 overflow-auto" style={{ maxHeight: '300px', background: '#0d1221', fontFamily: 'var(--font-mono)', fontSize: '0.6875rem', lineHeight: 1.6 }}>
+            {logs.length === 0
+              ? <p style={{ color: 'var(--color-rail)' }}>Waiting for logs…</p>
+              : logs.map((line, i) => (
+                  <div key={i} style={{ color: line.includes('complete') || line.includes('Complete') ? '#16a34a' : line.includes('failed') || line.includes('Failed') ? '#dc2626' : '#94a3b8' }}>{line}</div>
+                ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── RESULTS ─────────────────────────────────────────────────────────
+  return (
+    <div className="space-y-5">
+      <div className="rounded-xl p-5" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <svg className="w-5 h-5" style={{ color: '#16a34a' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>{selected.name} — Plan Ready</h3>
+            </div>
+            <p className="text-xs" style={{ color: 'var(--color-text-dim)' }}>
+              {planResults?.skills_ran?.length || 0} skills · {planResults?.elapsed_seconds ? fmtElapsed(Math.round(planResults.elapsed_seconds)) : ''} · {planResults?.completed_at ? formatDate(planResults.completed_at) : ''}
+            </p>
+          </div>
+          <button onClick={() => { setViewState('configure'); setPlanResults(null); }} className="btn btn-secondary">Regenerate</button>
+        </div>
+      </div>
+      {planResults && <PlanResults results={planResults} />}
+    </div>
+  );
+}
+
+// ── Main Component ─────────────────────────────────────────────────────────────
 
 export default function MigrationDetail() {
   const { id } = useParams<{ id: string }>();
@@ -123,6 +1300,26 @@ export default function MigrationDetail() {
   const [skillRunning, setSkillRunning] = useState(false);
   const uploadToMigration = useUploadToMigration();
   const deleteMigration = useDeleteMigration();
+
+  const { data: assessments, isLoading: loadingAssessments } = useAssessments(id || '');
+  const runAssessment = useRunAssessment();
+  const latestAssessment = assessments?.length ? assessments[0] : null;
+
+  const { data: workloads, isLoading: loadingWorkloads } = useWorkloads(
+    migration?.discovery_status === 'discovered' ? (id || '') : ''
+  );
+
+  // Invalidate workloads whenever the latest assessment transitions to completed
+  const prevAssessmentStatus = useRef<string | null>(null);
+  useEffect(() => {
+    const status = latestAssessment?.status ?? null;
+    if (prevAssessmentStatus.current !== null &&
+        prevAssessmentStatus.current !== 'completed' &&
+        status === 'completed') {
+      queryClient.invalidateQueries({ queryKey: ['workloads', id] });
+    }
+    prevAssessmentStatus.current = status;
+  }, [latestAssessment?.status, id, queryClient]);
 
   const { data: allSkillRuns } = useTranslationJobs();
   const migrationSkillRuns = useMemo(
@@ -147,6 +1344,7 @@ export default function MigrationDetail() {
   const [extracting, setExtracting] = useState(false);
   const [extractingInstance, setExtractingInstance] = useState(false);
   const [extractError, setExtractError] = useState<string | null>(null);
+  const [showResources, setShowResources] = useState(false);
 
   const [showInstanceModal, setShowInstanceModal] = useState(false);
   const [instances, setInstances] = useState<Resource[]>([]);
@@ -162,6 +1360,28 @@ export default function MigrationDetail() {
   const [uploadFileType, setUploadFileType] = useState('CloudTrail');
   const [uploadError, setUploadError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Sidebar step state — persisted in URL search params
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeStep = (searchParams.get('step') as ActiveStep) || 'discover';
+  const planSelectedWorkload = searchParams.get('workload');
+
+  const setActiveStep = useCallback((step: ActiveStep) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      next.set('step', step);
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
+
+  const setPlanSelectedWorkload = useCallback((wid: string | null) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      if (wid) next.set('workload', wid);
+      else next.delete('workload');
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
 
   const fetchSynthesis = useCallback(async () => {
     if (!id) return;
@@ -260,15 +1480,15 @@ export default function MigrationDetail() {
         const resResponse = await client.get('/api/aws/resources');
         const scopedSet = new Set(scopedIds);
         const scoped: {id: string; name: string; aws_type: string}[] = resResponse.data
-          .filter((r: any) => scopedSet.has(r.id))
-          .map((r: any) => ({ id: r.id, name: r.name || r.aws_arn || r.id, aws_type: r.aws_type || '' }));
+          .filter((r: { id: string }) => scopedSet.has(r.id))
+          .map((r: { id: string; name?: string; aws_arn?: string; aws_type?: string }) => ({ id: r.id, name: r.name || r.aws_arn || r.id, aws_type: r.aws_type || '' }));
         if (scoped.length === 0) { setExtractError('No resources found for this instance.'); return; }
         setExtractedResources(scoped);
         setAssignSelectedIds(new Set(scoped.map((r) => r.id)));
       } else {
         const resResponse = await client.get('/api/resources/unassigned');
         const unassigned: {id: string; name: string; aws_type: string}[] = resResponse.data.map(
-          (r: any) => ({ id: r.id, name: r.name || r.aws_arn || r.id, aws_type: r.aws_type || '' })
+          (r: { id: string; name?: string; aws_arn?: string; aws_type?: string }) => ({ id: r.id, name: r.name || r.aws_arn || r.id, aws_type: r.aws_type || '' })
         );
         if (unassigned.length === 0) { setExtractError('No unassigned resources found.'); return; }
         setExtractedResources(unassigned);
@@ -315,7 +1535,11 @@ export default function MigrationDetail() {
     setLoadingInstances(true);
     setInstanceError(null);
     try {
-      const res = await client.get('/api/aws/resources', { params: { type: 'AWS::EC2::Instance' } });
+      let res = await client.get('/api/aws/resources', { params: { type: 'AWS::EC2::Instance' } });
+      if (res.data.length === 0 && migration?.aws_connection_id) {
+        await client.post(`/api/migrations/${id}/extract`);
+        res = await client.get('/api/aws/resources', { params: { type: 'AWS::EC2::Instance' } });
+      }
       setInstances(res.data);
     } catch (err: unknown) {
       setInstanceError(err instanceof Error ? err.message : 'Failed to fetch instances');
@@ -436,8 +1660,11 @@ export default function MigrationDetail() {
 
   if (loadingMigration) {
     return (
-      <div className="space-y-4 animate-fade-in">
-        {[...Array(4)].map((_, i) => <div key={i} className="skel h-20" />)}
+      <div style={{ display: 'flex', gap: '1.5rem' }}>
+        <div className="skel rounded-xl" style={{ width: '240px', flexShrink: 0, height: '400px' }} />
+        <div className="flex-1 space-y-4">
+          {[...Array(3)].map((_, i) => <div key={i} className="skel h-24 rounded-xl" />)}
+        </div>
       </div>
     );
   }
@@ -458,12 +1685,26 @@ export default function MigrationDetail() {
     );
   }
 
+  // Step completion status derived from data
+  const stepStatus = {
+    discover: allResources.length > 0 || migration.discovery_status === 'discovered',
+    assess: !!latestAssessment,
+    plan: synthesisJob?.status === 'complete',
+  };
+
+  const STEPS: { id: ActiveStep; label: string; sublabel: string }[] = [
+    { id: 'discover', label: 'Discover', sublabel: allResources.length > 0 ? `${allResources.length} resources` : 'Scan AWS resources' },
+    { id: 'assess', label: 'Assess', sublabel: latestAssessment?.status === 'complete' ? `Score ${Math.round(latestAssessment.avg_readiness_score)}%` : 'Workload analysis' },
+    { id: 'plan', label: 'Plan', sublabel: synthesisJob?.status === 'complete' ? `${Math.round(synthesisJob.confidence * 100)}% confidence` : 'Generate Terraform' },
+  ];
+
   // ── Render ──
 
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className="animate-fade-in">
+      {/* Error banner */}
       {skillRunErrors.length > 0 && (
-        <div className="alert alert-error">
+        <div className="alert alert-error mb-4">
           <p className="font-semibold mb-1">
             {skillRunErrors.length} translation job{skillRunErrors.length !== 1 ? 's' : ''} failed to start:
           </p>
@@ -472,461 +1713,331 @@ export default function MigrationDetail() {
               <li key={i} style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>{e}</li>
             ))}
           </ul>
-          <button
-            onClick={() => setSkillRunErrors([])}
-            className="text-xs underline mt-2 opacity-70 hover:opacity-100"
-          >
-            Dismiss
-          </button>
+          <button onClick={() => setSkillRunErrors([])} className="text-xs underline mt-2 opacity-70 hover:opacity-100">Dismiss</button>
         </div>
       )}
 
-      {/* Back */}
-      <Link to="/dashboard" className="back-link">
+      {/* Back link */}
+      <Link to="/migrations" className="back-link" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.375rem', marginBottom: '1.25rem', fontSize: '0.75rem', color: 'var(--color-text-dim)', textDecoration: 'none' }}>
         <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
         </svg>
-        Back to Dashboard
+        All Migrations
       </Link>
 
-      {/* Header */}
-      <div className="panel">
-        <div className="panel-body">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <div className="flex items-center gap-3 flex-wrap">
-                <h1 className="page-title">{migration.name}</h1>
+      {/* Phase pipeline */}
+      {(() => {
+        const discoverActive = !stepStatus.plan;
+        const migrateActive = false;
+        const validateActive = false;
+        const phases = [
+          { num: 1, title: 'Discover & Assess', desc: 'Scan resources, analyze dependencies, assess readiness', accent: '#1d4ed8', active: discoverActive, done: stepStatus.plan, live: true,  onClick: () => setActiveStep('discover') },
+          { num: 2, title: 'Migrate',            desc: 'Execute migration waves, translate configurations',      accent: '#7c3aed', active: migrateActive,  done: false,            live: false, onClick: () => {} },
+          { num: 3, title: 'Validate',           desc: 'Post-migration testing and verification',                accent: '#059669', active: validateActive,  done: false,            live: false, onClick: () => {} },
+        ];
+        return (
+          <div
+            className="flex items-stretch gap-0 mb-5"
+            style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', borderRadius: 10, boxShadow: 'var(--shadow-card)', overflow: 'hidden' }}
+          >
+            {phases.map((phase, idx) => (
+              <div
+                key={phase.num}
+                className="flex-1 relative"
+                onClick={phase.live ? phase.onClick : undefined}
+                style={{
+                  padding: '16px 20px',
+                  borderRight: idx < 2 ? '1px solid var(--color-rule)' : 'none',
+                  opacity: phase.active || phase.done ? 1 : 0.45,
+                  cursor: phase.live ? 'pointer' : 'default',
+                  transition: 'background 0.15s',
+                }}
+                onMouseEnter={(e) => { if (phase.live) (e.currentTarget as HTMLElement).style.background = 'var(--color-well)'; }}
+                onMouseLeave={(e) => { if (phase.live) (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+              >
+                {(phase.active || phase.done) && (
+                  <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 3, background: phase.accent }} />
+                )}
+                <div className="flex items-start gap-3">
+                  <div style={{
+                    width: 30, height: 30, borderRadius: '50%', flexShrink: 0,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontFamily: 'var(--font-display)', fontSize: '0.875rem', fontWeight: 700, fontStyle: 'italic',
+                    color: phase.active || phase.done ? '#fff' : 'var(--color-rail)',
+                    background: phase.active || phase.done ? phase.accent : 'var(--color-well)',
+                    border: `1.5px solid ${phase.active || phase.done ? phase.accent : 'var(--color-rule)'}`,
+                  }}>
+                    {phase.done ? (
+                      <svg style={{ width: 12, height: 12 }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                      </svg>
+                    ) : phase.num}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="flex items-center gap-2">
+                      <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '0.875rem', fontWeight: 600, margin: 0, lineHeight: 1.3, color: phase.active || phase.done ? 'var(--color-text-bright)' : 'var(--color-rail)' }}>
+                        {phase.title}
+                      </h3>
+                      {!phase.live && (
+                        <span style={{ fontSize: '0.5rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--color-rail)', background: 'var(--color-well)', padding: '1px 5px', borderRadius: 2, border: '1px solid var(--color-rule)' }}>
+                          Soon
+                        </span>
+                      )}
+                    </div>
+                    <p style={{ fontSize: '0.6875rem', color: 'var(--color-text-dim)', margin: '3px 0 0', lineHeight: 1.4 }}>
+                      {phase.desc}
+                    </p>
+                  </div>
+                </div>
+                {idx < 2 && (
+                  <div style={{
+                    position: 'absolute', right: -9, top: '50%', transform: 'translateY(-50%)', zIndex: 1,
+                    width: 18, height: 18, background: 'var(--color-surface)',
+                    border: '1px solid var(--color-rule)', borderRadius: '50%',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>
+                    <svg width="10" height="10" fill="none" stroke="var(--color-rail)" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+
+      {/* Two-column layout: sidebar + main */}
+      <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'flex-start' }}>
+
+        {/* ── Left sidebar ── */}
+        <aside
+          style={{
+            width: '240px',
+            flexShrink: 0,
+            position: 'sticky',
+            top: '1.5rem',
+          }}
+        >
+          <div
+            className="rounded-xl overflow-hidden"
+            style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}
+          >
+            {/* Migration identity */}
+            <div className="p-4" style={{ borderBottom: '1px solid var(--color-rule)' }}>
+              <h1
+                className="text-base font-bold leading-tight mb-2"
+                style={{ color: 'var(--color-text-bright)', fontFamily: 'var(--font-display)', wordBreak: 'break-word' }}
+              >
+                {migration.name}
+              </h1>
+              <div className="flex flex-wrap gap-1.5 mb-3">
                 <span className={migrationStatusBadge(migration.status)}>
                   <span className="badge-dot" />
                   {migration.status}
                 </span>
-              </div>
-              <p className="page-subtitle">Created {formatDate(migration.created_at)}</p>
-              {migration.aws_connection_id && (
-                <p className="text-xs mt-0.5" style={{ color: '#475569' }}>
-                  Connection: <span style={{ fontFamily: 'var(--font-mono)' }}>{migration.aws_connection_id}</span>
-                </p>
-              )}
-            </div>
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <button
-                onClick={handleRunSkill}
-                disabled={selectedIds.size === 0 || skillRunning}
-                className={cn('btn', selectedIds.size > 0 ? 'btn-primary' : 'btn-secondary')}
-              >
-                {skillRunning ? (
-                  <><span className="spinner" />Running…</>
-                ) : (
-                  `Run Translation Job${selectedIds.size > 0 ? ` (${selectedIds.size})` : ''}`
+                {migration.discovery_status && migration.discovery_status !== 'pending' && (
+                  <span className={discoveryStatusBadge(migration.discovery_status)}>
+                    <span className="badge-dot" />
+                    {migration.discovery_status === 'discovering' ? 'Discovering…' : migration.discovery_status}
+                  </span>
                 )}
-              </button>
+              </div>
+              <p className="text-xs" style={{ color: 'var(--color-rail)' }}>
+                Created {formatDate(migration.created_at)}
+              </p>
+            </div>
+
+            {/* Key stats */}
+            <div className="px-4 py-3" style={{ borderBottom: '1px solid var(--color-rule)' }}>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs" style={{ color: 'var(--color-text-dim)' }}>Resources</span>
+                  <span className="text-xs font-semibold" style={{ color: 'var(--color-text-bright)' }}>
+                    {allResources.length || migration.resource_count || 0}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs" style={{ color: 'var(--color-text-dim)' }}>Assessments</span>
+                  <span className="text-xs font-semibold" style={{ color: 'var(--color-text-bright)' }}>
+                    {assessments?.length || 0}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs" style={{ color: 'var(--color-text-dim)' }}>Trans. Jobs</span>
+                  <span className="text-xs font-semibold" style={{ color: 'var(--color-text-bright)' }}>
+                    {migrationSkillRuns.length}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Vertical step list */}
+            <div className="p-3">
+              {STEPS.map((step, idx) => {
+                const isActive = activeStep === step.id;
+                const isDone = stepStatus[step.id];
+                return (
+                  <div key={step.id} className="relative">
+                    {/* Connector line */}
+                    {idx < STEPS.length - 1 && (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          left: '19px',
+                          top: '36px',
+                          bottom: '-4px',
+                          width: '2px',
+                          background: isDone ? 'var(--color-ember)' : 'var(--color-rule)',
+                          zIndex: 0,
+                        }}
+                      />
+                    )}
+                    <button
+                      onClick={() => setActiveStep(step.id)}
+                      className="relative w-full flex items-start gap-3 p-2 rounded-lg text-left transition-colors"
+                      style={{
+                        background: isActive ? 'var(--color-ember-dim)' : 'transparent',
+                        marginBottom: idx < STEPS.length - 1 ? '4px' : 0,
+                        zIndex: 1,
+                      }}
+                    >
+                      {/* Step indicator */}
+                      <div
+                        className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5"
+                        style={{
+                          background: isDone ? 'var(--color-ember)' : isActive ? 'var(--color-surface)' : 'var(--color-well)',
+                          border: isActive ? '2px solid var(--color-ember)' : isDone ? 'none' : '2px solid var(--color-fence)',
+                          color: isDone ? 'white' : isActive ? 'var(--color-ember)' : 'var(--color-rail)',
+                          fontSize: '0.625rem',
+                          fontWeight: 700,
+                        }}
+                      >
+                        {isDone ? (
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                          </svg>
+                        ) : (
+                          idx + 1
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <p
+                          className="text-xs font-semibold"
+                          style={{ color: isActive ? 'var(--color-ember)' : 'var(--color-text-bright)' }}
+                        >
+                          {step.label}
+                        </p>
+                        <p className="text-xs mt-0.5 truncate" style={{ color: 'var(--color-text-dim)' }}>
+                          {step.sublabel}
+                        </p>
+                      </div>
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Actions */}
+            <div className="p-3 pt-0 space-y-2">
+              {selectedIds.size > 0 && (
+                <button
+                  onClick={handleRunSkill}
+                  disabled={skillRunning}
+                  className="btn btn-primary w-full text-xs"
+                >
+                  {skillRunning
+                    ? <><span className="spinner" />Running…</>
+                    : `Run Translation Jobs (${selectedIds.size})`}
+                </button>
+              )}
               <button
                 onClick={handleDeleteMigration}
                 disabled={deleteMigration.isPending}
-                className="btn btn-danger"
+                className="btn btn-danger btn-sm w-full text-xs"
               >
-                {deleteMigration.isPending ? 'Deleting…' : 'Delete'}
+                {deleteMigration.isPending ? 'Deleting…' : 'Delete Migration'}
               </button>
             </div>
           </div>
-        </div>
-      </div>
+        </aside>
 
-      {/* Resource Discovery */}
-      <div className="panel">
-        <div className="panel-header">
-          <h2 className="text-sm font-semibold" style={{ color: '#0f172a' }}>Resource Discovery</h2>
-        </div>
-        <div className="panel-body space-y-4">
-          <p className="text-xs" style={{ color: '#64748b' }}>
-            Discover AWS resources to include in this migration. Select a specific EC2 instance to scope discovery, or extract all resources at once.
-          </p>
-
-          {extractError && (
-            <div className="alert alert-error" role="alert">
-              {extractError}
-              <button onClick={() => setExtractError(null)} className="ml-2 underline hover:no-underline text-xs">
-                Dismiss
-              </button>
-            </div>
+        {/* ── Main content area ── */}
+        <main className="flex-1 min-w-0">
+          {activeStep === 'discover' && (
+            <DiscoverStep
+              migration={migration}
+              allResources={allResources}
+              filteredResources={filteredResources}
+              selectedIds={selectedIds}
+              typeFilter={typeFilter}
+              search={search}
+              uniqueTypes={uniqueTypes}
+              loadingResources={loadingResources}
+              resourcesError={resourcesError}
+              extracting={extracting}
+              extractingInstance={extractingInstance}
+              extractError={extractError}
+              instances={instances}
+              loadingInstances={loadingInstances}
+              instanceError={instanceError}
+              selectedInstance={selectedInstance}
+              showResources={showResources}
+              allFilteredSelected={allFilteredSelected}
+              skillGroups={skillGroups}
+              skillRunning={skillRunning}
+              onToggle={toggleSelect}
+              onToggleAll={toggleSelectAll}
+              onRunSkill={handleRunSkill}
+              onSetTypeFilter={setTypeFilter}
+              onSetSearch={setSearch}
+              onSetExtractError={setExtractError}
+              onExtractAll={handleExtractAll}
+              onOpenInstanceModal={handleOpenInstanceModal}
+              onExtractByInstance={handleExtractByInstance}
+              onSetSelectedInstance={setSelectedInstance}
+              onSetShowResources={setShowResources}
+              onUploadClick={() => { setUploadFile(null); setUploadError(''); setShowUploadModal(true); }}
+            />
           )}
 
-          <div className="flex flex-wrap items-center gap-3">
-            {/* Instance-based */}
-            <button onClick={handleOpenInstanceModal} className="btn btn-secondary">
-              Select Instance
-            </button>
-            {selectedInstance && (
-              <span
-                className="flex items-center gap-2 px-3 py-1.5 rounded text-xs"
-                style={{
-                  background: 'rgba(34,197,94,0.08)',
-                  border: '1px solid rgba(34,197,94,0.2)',
-                  color: '#16a34a',
-                }}
-              >
-                <span className="truncate max-w-[180px]">
-                  {selectedInstance.name || selectedInstance.aws_arn}
-                </span>
-                <button
-                  onClick={() => setSelectedInstance(null)}
-                  className="flex-shrink-0 opacity-60 hover:opacity-100"
-                  aria-label="Clear instance"
-                >
-                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </span>
-            )}
-            {selectedInstance && (
-              <button
-                onClick={handleExtractByInstance}
-                disabled={extractingInstance}
-                className="btn btn-success"
-              >
-                {extractingInstance ? <><span className="spinner" />Discovering…</> : 'Discover Resources'}
-              </button>
-            )}
-
-            <div className="w-px h-6 flex-shrink-0" style={{ background: 'var(--color-fence)' }} aria-hidden="true" />
-
-            <button onClick={handleExtractAll} disabled={extracting} className="btn btn-primary">
-              {extracting ? <><span className="spinner" />Extracting…</> : 'Extract All Resources'}
-            </button>
-
-            <div className="w-px h-6 flex-shrink-0" style={{ background: 'var(--color-fence)' }} aria-hidden="true" />
-
-            <button
-              onClick={() => { setUploadFile(null); setUploadError(''); setShowUploadModal(true); }}
-              className="btn btn-secondary"
-            >
-              Upload Resource File
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Resources Table */}
-      <div className="panel">
-        <div className="panel-header">
-          <h2 className="text-sm font-semibold" style={{ color: '#0f172a' }}>
-            Resources
-            {allResources.length > 0 && (
-              <span className="ml-2 font-normal" style={{ color: '#64748b' }}>
-                {allResources.length} total
-                {selectedIds.size > 0 && `, ${selectedIds.size} selected`}
-              </span>
-            )}
-          </h2>
-          <div className="flex items-center gap-2">
-            <select
-              value={typeFilter}
-              onChange={(e) => setTypeFilter(e.target.value)}
-              className="field-input field-select"
-              style={{ width: 'auto', fontSize: '0.75rem', padding: '0.3125rem 2rem 0.3125rem 0.625rem' }}
-              aria-label="Filter by type"
-            >
-              <option value="">All Types</option>
-              {uniqueTypes.map((t) => <option key={t} value={t}>{shortType(t)}</option>)}
-            </select>
-            <div className="relative">
-              <svg
-                className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5"
-                style={{ color: '#475569' }}
-                fill="none" stroke="currentColor" viewBox="0 0 24 24"
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-              <input
-                type="text"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search…"
-                className="field-input"
-                style={{ paddingLeft: '2rem', width: '11rem', fontSize: '0.75rem', padding: '0.3125rem 0.625rem 0.3125rem 2rem' }}
-                aria-label="Search resources"
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* Selection bar */}
-        {selectedIds.size > 0 && (
-          <div className="selection-bar">
-            <p>
-              {selectedIds.size} resource{selectedIds.size !== 1 ? 's' : ''} selected
-              {skillGroups.size > 1 && (
-                <span className="opacity-70"> · {skillGroups.size} translation job types</span>
-              )}
-            </p>
-            <button
-              onClick={handleRunSkill}
-              disabled={skillRunning}
-              className="btn btn-primary btn-sm"
-            >
-              {skillRunning ? <><span className="spinner" />Starting…</> : 'Run Translation Jobs'}
-            </button>
-          </div>
-        )}
-
-        {loadingResources ? (
-          <div className="panel-body space-y-2">
-            {[...Array(5)].map((_, i) => <div key={i} className="skel h-10" />)}
-          </div>
-        ) : resourcesError ? (
-          <div className="alert alert-error m-4">Failed to load resources. Please try again.</div>
-        ) : allResources.length === 0 ? (
-          <div className="empty-state">
-            <svg className="w-10 h-10 mx-auto mb-3 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
-            </svg>
-            <p>No resources yet. Use discovery above or upload a CloudTrail / Flow Log file.</p>
-          </div>
-        ) : filteredResources.length === 0 ? (
-          <div className="empty-state"><p>No resources match your filters.</p></div>
-        ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table className="dt">
-              <thead>
-                <tr>
-                  <th style={{ width: '2.5rem' }}>
-                    <input
-                      type="checkbox"
-                      checked={allFilteredSelected}
-                      onChange={toggleSelectAll}
-                      className="cb"
-                      aria-label="Select all"
-                    />
-                  </th>
-                  <th>Type</th>
-                  <th>Name / ID</th>
-                  <th>Status</th>
-                  <th>Latest Run</th>
-                  <th>Run Status</th>
-                  <th>Confidence</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredResources.map((r) => (
-                  <tr
-                    key={r.id}
-                    style={selectedIds.has(r.id) ? { background: 'rgba(249,115,22,0.05)' } : undefined}
-                  >
-                    <td>
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.has(r.id)}
-                        onChange={() => toggleSelect(r.id)}
-                        className="cb"
-                        aria-label={`Select ${r.name || r.aws_arn}`}
-                      />
-                    </td>
-                    <td>
-                      <span className={getTypeBadgeClass(r.aws_type)}>
-                        {shortType(r.aws_type)}
-                      </span>
-                    </td>
-                    <td>
-                      <p className="text-sm font-medium" style={{ color: '#0f172a' }}>{r.name || 'Unnamed'}</p>
-                      <p
-                        className="text-xs truncate max-w-xs"
-                        style={{ color: '#475569', fontFamily: 'var(--font-mono)' }}
-                      >
-                        {r.aws_arn}
-                      </p>
-                    </td>
-                    <td>
-                      <span className={resourceStatusBadge(r.status)}>
-                        <span className="badge-dot" />
-                        {r.status}
-                      </span>
-                    </td>
-                    <td>
-                      {r.latest_skill_run ? (
-                        <Link
-                          to={
-                            r.latest_skill_run.status === 'complete'
-                              ? `/translation-jobs/${r.latest_skill_run.id}/results`
-                              : `/translation-jobs/${r.latest_skill_run.id}`
-                          }
-                          style={{ color: 'var(--color-ember)', fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}
-                          onClick={(e) => e.stopPropagation()}
-                          className="hover:opacity-80 transition-opacity"
-                        >
-                          {r.latest_skill_run.skill_type}
-                        </Link>
-                      ) : (
-                        <span style={{ color: '#94a3b8' }}>—</span>
-                      )}
-                    </td>
-                    <td>
-                      {r.latest_skill_run ? (
-                        <span className={jobStatusBadge(r.latest_skill_run.status)}>
-                          <span className="badge-dot" />
-                          {r.latest_skill_run.status}
-                        </span>
-                      ) : (
-                        <span style={{ color: '#94a3b8' }}>—</span>
-                      )}
-                    </td>
-                    <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>
-                      {r.latest_skill_run?.status === 'complete'
-                        ? `${Math.round(r.latest_skill_run.confidence * 100)}%`
-                        : <span style={{ color: '#94a3b8' }}>—</span>}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {/* Migration Plan */}
-      <div className="panel">
-        <div className="panel-header">
-          <div>
-            <h2 className="text-sm font-semibold" style={{ color: '#0f172a' }}>Migration Plan</h2>
-            <p className="text-xs mt-0.5" style={{ color: '#64748b' }}>
-              Combines all completed translation job results into unified Terraform files and a migration runbook.
-            </p>
-          </div>
-          <button
-            onClick={handleGeneratePlan}
-            disabled={synthesizing || synthesisJob?.status === 'queued' || synthesisJob?.status === 'running'}
-            className="btn btn-primary flex-shrink-0"
-          >
-            {synthesizing || synthesisJob?.status === 'queued' || synthesisJob?.status === 'running' ? (
-              <><span className="spinner" />Generating…</>
-            ) : synthesisJob?.status === 'complete' ? (
-              'Regenerate Plan'
-            ) : (
-              'Generate Migration Plan'
-            )}
-          </button>
-        </div>
-
-        {synthesisError && (
-          <div className="alert alert-error mx-4 mt-4">{synthesisError}</div>
-        )}
-
-        {loadingSynthesis ? (
-          <div className="panel-body"><div className="skel h-10" /></div>
-        ) : !synthesisJob ? (
-          <div className="empty-state">
-            <p>No plan yet. Run translation jobs on your resources, then click "Generate Migration Plan".</p>
-          </div>
-        ) : synthesisJob.status === 'queued' || synthesisJob.status === 'running' ? (
-          <div className="panel-body flex items-center gap-3" style={{ color: '#2563eb' }}>
-            <span className="spinner flex-shrink-0" />
-            <span className="text-sm">
-              Synthesizing migration plan
-              {synthesisJob.current_phase ? ` — ${synthesisJob.current_phase}` : '…'}
-            </span>
-          </div>
-        ) : synthesisJob.status === 'complete' ? (
-          <div className="panel-body space-y-3">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <p className="text-sm font-medium" style={{ color: '#16a34a' }}>✓ Migration plan ready</p>
-                <p className="text-xs mt-0.5" style={{ color: '#64748b' }}>
-                  Confidence {Math.round(synthesisJob.confidence * 100)}% · Generated {formatDate(synthesisJob.completed_at || '')}
-                </p>
-              </div>
-              <Link
-                to={`/migrations/${id}/plan`}
-                className="btn btn-success flex-shrink-0"
-              >
-                View & Download →
-              </Link>
-            </div>
-            <p className="text-xs" style={{ color: '#475569', borderTop: '1px solid var(--color-rule)', paddingTop: '0.75rem' }}>
-              Artifacts include: numbered Terraform files (apply in order),{' '}
-              <code>iam-setup.md</code>, <code>migration-runbook.md</code>, <code>special-attention.md</code>
-            </p>
-          </div>
-        ) : (
-          <div className="panel-body">
-            <div className="alert alert-error">
-              Plan generation failed: {synthesisJob.errors?.error as string || 'Unknown error'}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Translation Jobs for this migration */}
-      <div className="panel">
-        <div className="panel-header">
-          <h2 className="text-sm font-semibold" style={{ color: '#0f172a' }}>Translation Jobs</h2>
-          {migrationSkillRuns.length > 0 && (
-            <span className="badge badge-neutral">{migrationSkillRuns.length}</span>
+          {activeStep === 'assess' && (
+            <AssessStep
+              migrationId={id || ''}
+              workloads={workloads}
+              loadingWorkloads={loadingWorkloads}
+              latestAssessment={latestAssessment}
+              loadingAssessments={loadingAssessments}
+              runAssessment={{ mutate: (mid: string) => runAssessment.mutate(mid), isPending: runAssessment.isPending }}
+              onPlanWorkload={(wid) => {
+                setSearchParams({ step: 'plan', workload: wid }, { replace: true });
+              }}
+            />
           )}
-        </div>
-        {migrationSkillRuns.length === 0 ? (
-          <div className="empty-state"><p>No translation jobs for this migration yet.</p></div>
-        ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table className="dt">
-              <thead>
-                <tr>
-                  <th>Run Name</th>
-                  <th>Status</th>
-                  <th>Confidence</th>
-                  <th>Created</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {migrationSkillRuns.map((sr) => (
-                  <tr key={sr.id}>
-                    <td className="td-primary">
-                      {getSkillRunName(sr.skill_type, sr.resource_names, sr.resource_name)}
-                    </td>
-                    <td>
-                      <span className={jobStatusBadge(sr.status)}>
-                        <span className="badge-dot" />
-                        {sr.status}
-                      </span>
-                    </td>
-                    <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>
-                      {(sr.confidence * 100).toFixed(0)}%
-                    </td>
-                    <td>{formatDate(sr.created_at)}</td>
-                    <td>
-                      {sr.status === 'complete' ? (
-                        <Link to={`/translation-jobs/${sr.id}/results`} className="btn btn-ghost btn-sm">
-                          Results →
-                        </Link>
-                      ) : sr.status === 'running' || sr.status === 'queued' ? (
-                        <Link to={`/translation-jobs/${sr.id}`} className="btn btn-ghost btn-sm">
-                          Progress →
-                        </Link>
-                      ) : (
-                        <Link to={`/translation-jobs/${sr.id}/results`} className="btn btn-ghost btn-sm">
-                          Details →
-                        </Link>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+
+          {activeStep === 'plan' && (
+            <PlanStep
+              migrationId={id || ''}
+              workloads={workloads}
+              latestAssessment={latestAssessment ? { id: latestAssessment.id, status: latestAssessment.status } : null}
+              migrationSkillRuns={migrationSkillRuns}
+              selectedWorkloadId={planSelectedWorkload || migration?.plan_workload_id || null}
+              planStatus={migration?.plan_status}
+              planStartedAt={migration?.plan_started_at}
+              planMaxIterations={migration?.plan_max_iterations}
+            />
+          )}
+        </main>
       </div>
+
+      {/* ── Modals (unchanged functionality) ── */}
 
       {/* Upload Modal */}
       {showUploadModal && (
-        <div
-          className="modal-overlay"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Upload Resource File"
-        >
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Upload Resource File">
           <div className="modal">
             <div className="modal-header">
-              <h3 className="text-sm font-semibold" style={{ color: '#0f172a' }}>Upload Resource File</h3>
+              <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>Upload Resource File</h3>
               <button onClick={() => setShowUploadModal(false)} className="btn btn-ghost btn-sm" aria-label="Close">
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -936,12 +2047,7 @@ export default function MigrationDetail() {
             <div className="modal-body space-y-4">
               <div>
                 <label htmlFor="upload-file-type" className="field-label">File Type</label>
-                <select
-                  id="upload-file-type"
-                  value={uploadFileType}
-                  onChange={(e) => setUploadFileType(e.target.value)}
-                  className="field-input field-select"
-                >
+                <select id="upload-file-type" value={uploadFileType} onChange={(e) => setUploadFileType(e.target.value)} className="field-input field-select">
                   <option value="CloudTrail">CloudTrail</option>
                   <option value="FlowLog">VPC Flow Log</option>
                   <option value="Upload">Other</option>
@@ -959,30 +2065,19 @@ export default function MigrationDetail() {
                 className="rounded-lg p-6 text-center cursor-pointer transition-colors"
                 style={{
                   border: `2px dashed ${isDragging ? 'var(--color-ember)' : uploadFile ? 'rgba(34,197,94,0.4)' : 'var(--color-fence)'}`,
-                  background: isDragging
-                    ? 'rgba(249,115,22,0.05)'
-                    : uploadFile
-                      ? 'rgba(34,197,94,0.05)'
-                      : 'var(--color-well)',
+                  background: isDragging ? 'rgba(249,115,22,0.05)' : uploadFile ? 'rgba(34,197,94,0.05)' : 'var(--color-well)',
                 }}
               >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".json,.log,.csv"
-                  onChange={(e) => { const f = e.target.files?.[0]; if (f) loadUploadFile(f); }}
-                  className="hidden"
-                  aria-hidden="true"
-                />
+                <input ref={fileInputRef} type="file" accept=".json,.log,.csv" onChange={(e) => { const f = e.target.files?.[0]; if (f) loadUploadFile(f); }} className="hidden" aria-hidden="true" />
                 {uploadFile ? (
                   <div>
                     <p className="text-sm font-medium" style={{ color: '#16a34a' }}>{uploadFile.name}</p>
-                    <p className="text-xs mt-1" style={{ color: '#475569' }}>Click to replace</p>
+                    <p className="text-xs mt-1" style={{ color: 'var(--color-text-dim)' }}>Click to replace</p>
                   </div>
                 ) : (
                   <div>
-                    <p className="text-sm" style={{ color: '#64748b' }}>Drop file here or click to browse</p>
-                    <p className="text-xs mt-1" style={{ color: '#94a3b8' }}>JSON, CSV, or LOG files (max 10 MB)</p>
+                    <p className="text-sm" style={{ color: 'var(--color-text-dim)' }}>Drop file here or click to browse</p>
+                    <p className="text-xs mt-1" style={{ color: 'var(--color-rail)' }}>JSON, CSV, or LOG files (max 10 MB)</p>
                   </div>
                 )}
               </div>
@@ -995,11 +2090,7 @@ export default function MigrationDetail() {
             </div>
             <div className="modal-footer">
               <button onClick={() => setShowUploadModal(false)} className="btn btn-secondary">Cancel</button>
-              <button
-                onClick={handleUploadSubmit}
-                disabled={!uploadFile || uploadToMigration.isPending}
-                className="btn btn-primary"
-              >
+              <button onClick={handleUploadSubmit} disabled={!uploadFile || uploadToMigration.isPending} className="btn btn-primary">
                 {uploadToMigration.isPending ? <><span className="spinner" />Uploading…</> : 'Upload'}
               </button>
             </div>
@@ -1009,15 +2100,10 @@ export default function MigrationDetail() {
 
       {/* Instance Selection Modal */}
       {showInstanceModal && (
-        <div
-          className="modal-overlay"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Select EC2 Instance"
-        >
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Select EC2 Instance">
           <div className="modal modal-lg" style={{ maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
             <div className="modal-header">
-              <h3 className="text-sm font-semibold" style={{ color: '#0f172a' }}>Select EC2 Instance</h3>
+              <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>Select EC2 Instance</h3>
               <button onClick={() => setShowInstanceModal(false)} className="btn btn-ghost btn-sm" aria-label="Close">
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -1026,18 +2112,14 @@ export default function MigrationDetail() {
             </div>
             <div className="modal-body overflow-y-auto flex-1">
               {loadingInstances ? (
-                <div className="space-y-2">
-                  {[...Array(3)].map((_, i) => <div key={i} className="skel h-14" />)}
-                </div>
+                <div className="space-y-2">{[...Array(3)].map((_, i) => <div key={i} className="skel h-14" />)}</div>
               ) : instanceError ? (
                 <div className="text-center py-4">
                   <p className="text-sm" style={{ color: '#dc2626' }}>{instanceError}</p>
                   <button onClick={handleOpenInstanceModal} className="btn btn-secondary btn-sm mt-3">Retry</button>
                 </div>
               ) : instances.length === 0 ? (
-                <div className="empty-state">
-                  <p>No EC2 instances found. Ensure your AWS connection is configured.</p>
-                </div>
+                <div className="empty-state"><p>No EC2 instances found. Ensure your AWS connection is configured.</p></div>
               ) : (
                 <div className="space-y-2">
                   {instances.map((inst) => (
@@ -1049,26 +2131,11 @@ export default function MigrationDetail() {
                         background: selectedInstance?.id === inst.id ? 'rgba(249,115,22,0.08)' : 'var(--color-well)',
                         border: `1px solid ${selectedInstance?.id === inst.id ? 'rgba(249,115,22,0.3)' : 'var(--color-fence)'}`,
                       }}
-                      onMouseEnter={(e) => {
-                        if (selectedInstance?.id !== inst.id) {
-                          (e.currentTarget as HTMLElement).style.borderColor = 'var(--color-rail)';
-                        }
-                      }}
-                      onMouseLeave={(e) => {
-                        if (selectedInstance?.id !== inst.id) {
-                          (e.currentTarget as HTMLElement).style.borderColor = 'var(--color-fence)';
-                        }
-                      }}
+                      onMouseEnter={(e) => { if (selectedInstance?.id !== inst.id) (e.currentTarget as HTMLElement).style.borderColor = 'var(--color-rail)'; }}
+                      onMouseLeave={(e) => { if (selectedInstance?.id !== inst.id) (e.currentTarget as HTMLElement).style.borderColor = 'var(--color-fence)'; }}
                     >
-                      <p className="text-sm font-medium" style={{ color: '#0f172a' }}>
-                        {inst.name || 'Unnamed Instance'}
-                      </p>
-                      <p
-                        className="text-xs truncate mt-0.5"
-                        style={{ color: '#475569', fontFamily: 'var(--font-mono)' }}
-                      >
-                        {inst.aws_arn}
-                      </p>
+                      <p className="text-sm font-medium" style={{ color: 'var(--color-text-bright)' }}>{inst.name || 'Unnamed Instance'}</p>
+                      <p className="text-xs truncate mt-0.5" style={{ color: 'var(--color-text-dim)', fontFamily: 'var(--font-mono)' }}>{inst.aws_arn}</p>
                     </button>
                   ))}
                 </div>
@@ -1080,19 +2147,13 @@ export default function MigrationDetail() {
 
       {/* Translation Job Confirmation Modal */}
       {showSkillModal && (
-        <div
-          className="modal-overlay"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Confirm Translation Jobs"
-        >
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Confirm Translation Jobs">
           <div className="modal modal-lg" style={{ maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
             <div className="modal-header">
               <div>
-                <h3 className="text-sm font-semibold" style={{ color: '#0f172a' }}>Confirm Translation Jobs</h3>
-                <p className="text-xs mt-0.5" style={{ color: '#64748b' }}>
-                  {selectedIds.size} resource{selectedIds.size !== 1 ? 's' : ''} selected.
-                  CFN stacks run individually; other types batch into one job per type.
+                <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>Confirm Translation Jobs</h3>
+                <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)' }}>
+                  {selectedIds.size} resource{selectedIds.size !== 1 ? 's' : ''} selected. CFN stacks run individually; other types batch into one job per type.
                 </p>
               </div>
             </div>
@@ -1100,27 +2161,19 @@ export default function MigrationDetail() {
               {Array.from(skillGroups.entries()).map(([skillType, groupResources]) => {
                 const isCfn = skillType === 'cfn_terraform';
                 return (
-                  <div
-                    key={skillType}
-                    className="rounded-lg p-4"
-                    style={{ background: 'var(--color-well)', border: '1px solid var(--color-fence)' }}
-                  >
+                  <div key={skillType} className="rounded-lg p-4" style={{ background: 'var(--color-well)', border: '1px solid var(--color-fence)' }}>
                     <div className="flex items-center justify-between mb-3 gap-3">
-                      <h4 className="text-xs font-semibold" style={{ color: '#0f172a' }}>
+                      <h4 className="text-xs font-semibold" style={{ color: 'var(--color-text-bright)' }}>
                         {SKILL_LABELS[skillType] || skillType}
                       </h4>
                       <span className="badge badge-neutral flex-shrink-0">
-                        {isCfn
-                          ? `${groupResources.length} job${groupResources.length !== 1 ? 's' : ''}`
-                          : `${groupResources.length} res → 1 job`}
+                        {isCfn ? `${groupResources.length} job${groupResources.length !== 1 ? 's' : ''}` : `${groupResources.length} res → 1 job`}
                       </span>
                     </div>
                     <ul className="space-y-1.5">
                       {groupResources.map((r) => (
-                        <li key={r.id} className="flex items-center gap-2 text-xs" style={{ color: '#64748b' }}>
-                          <span className={cn(getTypeBadgeClass(r.aws_type), 'flex-shrink-0')}>
-                            {shortType(r.aws_type)}
-                          </span>
+                        <li key={r.id} className="flex items-center gap-2 text-xs" style={{ color: 'var(--color-text-dim)' }}>
+                          <span className={cn(getTypeBadgeClass(r.aws_type), 'flex-shrink-0')}>{shortType(r.aws_type)}</span>
                           <span className="truncate">{r.name || r.aws_arn}</span>
                           {isCfn && <span className="ml-auto flex-shrink-0 opacity-50">→ 1 job</span>}
                         </li>
@@ -1142,17 +2195,12 @@ export default function MigrationDetail() {
 
       {/* Assign Resources Modal */}
       {showAssignModal && (
-        <div
-          className="modal-overlay"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Assign Resources to Migration"
-        >
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Assign Resources to Migration">
           <div className="modal modal-lg" style={{ maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
             <div className="modal-header">
               <div>
-                <h3 className="text-sm font-semibold" style={{ color: '#0f172a' }}>Assign Resources to Migration</h3>
-                <p className="text-xs mt-0.5" style={{ color: '#64748b' }}>
+                <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>Assign Resources to Migration</h3>
+                <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)' }}>
                   {extractedResources.length} resource{extractedResources.length !== 1 ? 's' : ''} extracted. Select which to assign.
                 </p>
               </div>
@@ -1160,24 +2208,21 @@ export default function MigrationDetail() {
             <div className="modal-body overflow-y-auto flex-1 space-y-2">
               <label
                 className="flex items-center gap-2 text-xs font-medium pb-3 cursor-pointer"
-                style={{ color: '#475569', borderBottom: '1px solid var(--color-rule)' }}
+                style={{ color: 'var(--color-text-dim)', borderBottom: '1px solid var(--color-rule)' }}
               >
                 <input
                   type="checkbox"
                   className="cb"
                   checked={assignSelectedIds.size === extractedResources.length && extractedResources.length > 0}
                   onChange={() => {
-                    if (assignSelectedIds.size === extractedResources.length) {
-                      setAssignSelectedIds(new Set());
-                    } else {
-                      setAssignSelectedIds(new Set(extractedResources.map((r) => r.id)));
-                    }
+                    if (assignSelectedIds.size === extractedResources.length) setAssignSelectedIds(new Set());
+                    else setAssignSelectedIds(new Set(extractedResources.map((r) => r.id)));
                   }}
                 />
                 Select All ({extractedResources.length})
               </label>
               {extractedResources.map((r) => (
-                <label key={r.id} className="flex items-center gap-2 text-xs py-1 cursor-pointer" style={{ color: '#475569' }}>
+                <label key={r.id} className="flex items-center gap-2 text-xs py-1 cursor-pointer" style={{ color: 'var(--color-text-dim)' }}>
                   <input
                     type="checkbox"
                     className="cb"
@@ -1191,22 +2236,14 @@ export default function MigrationDetail() {
                     }}
                   />
                   <span className="truncate flex-1">{r.name}</span>
-                  {r.aws_type && (
-                    <span className="opacity-50 flex-shrink-0">{r.aws_type}</span>
-                  )}
+                  {r.aws_type && <span className="opacity-50 flex-shrink-0">{r.aws_type}</span>}
                 </label>
               ))}
             </div>
             <div className="modal-footer">
               <button onClick={() => setShowAssignModal(false)} className="btn btn-secondary">Skip</button>
-              <button
-                onClick={handleAssignResources}
-                disabled={assignSelectedIds.size === 0 || assigning}
-                className="btn btn-primary"
-              >
-                {assigning
-                  ? <><span className="spinner" />Assigning…</>
-                  : `Assign Selected (${assignSelectedIds.size})`}
+              <button onClick={handleAssignResources} disabled={assignSelectedIds.size === 0 || assigning} className="btn btn-primary">
+                {assigning ? <><span className="spinner" />Assigning…</> : `Assign Selected (${assignSelectedIds.size})`}
               </button>
             </div>
           </div>
