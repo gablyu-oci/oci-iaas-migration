@@ -1549,7 +1549,46 @@ function MigrateStep({ migrationId, migration }: {
     );
   }
 
-  // ── CONFIGURE ───────────────────────────────────────────────────────
+  // ── CONFIGURE (or PREVIEW if showPreview is set) ─────────────────────
+  if (showPreview && (!status || status === 'rejected')) {
+    const fileEntries = Object.entries(previewFiles).sort(([a], [b]) => a.localeCompare(b));
+    return (
+      <div className="space-y-5">
+        <div className="rounded-xl p-5" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}>
+          <div className="flex items-start justify-between gap-4 mb-4">
+            <div>
+              <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>Review Terraform Files</h3>
+              <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)' }}>
+                These {fileEntries.length} files will be applied to your OCI tenancy. Review before proceeding.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => setShowPreview(false)} className="btn btn-secondary">Back</button>
+              <button onClick={handleConfirmStart} className="btn btn-primary">Confirm & Run Terraform</button>
+            </div>
+          </div>
+          {error && <div className="alert alert-error mb-4">{error}</div>}
+          <div className="space-y-3">
+            {fileEntries.map(([name, content]) => (
+              <details key={name} className="rounded-lg overflow-hidden" style={{ border: '1px solid var(--color-rule)' }}>
+                <summary className="flex items-center justify-between px-3 py-2.5 cursor-pointer" style={{ background: 'var(--color-raised)' }}>
+                  <span className="flex items-center gap-2">
+                    <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ember)', fontSize: '0.75rem', fontWeight: 600 }}>{name}</span>
+                    <span className="text-xs" style={{ color: 'var(--color-text-dim)' }}>{(content.length / 1024).toFixed(1)} KB</span>
+                  </span>
+                </summary>
+                <pre className="px-3 py-3 overflow-auto text-xs" style={{
+                  maxHeight: '400px', background: '#0d1221', color: '#e2e8f0',
+                  fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', margin: 0, lineHeight: 1.5,
+                }}>{content}</pre>
+              </details>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (!status || status === 'rejected') {
     return (
       <div className="space-y-5">
@@ -1599,54 +1638,6 @@ function MigrateStep({ migrationId, migration }: {
           <button onClick={handlePreview} disabled={!selectedOciConn} className="btn btn-primary mt-4">
             Preview & Start Migration
           </button>
-        </div>
-      </div>
-    );
-  }
-
-  // ── PREVIEW (.tf files before execution) ────────────────────────────
-  if (showPreview && (!status || status === 'rejected')) {
-    const fileEntries = Object.entries(previewFiles).sort(([a], [b]) => a.localeCompare(b));
-    return (
-      <div className="space-y-5">
-        <div className="rounded-xl p-5" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}>
-          <div className="flex items-start justify-between gap-4 mb-4">
-            <div>
-              <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>Review Terraform Files</h3>
-              <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)' }}>
-                These {fileEntries.length} files will be applied to your OCI tenancy. Review before proceeding.
-              </p>
-            </div>
-            <div className="flex gap-2">
-              <button onClick={() => setShowPreview(false)} className="btn btn-secondary">
-                Back
-              </button>
-              <button onClick={handleConfirmStart} className="btn btn-primary">
-                Confirm & Run Terraform
-              </button>
-            </div>
-          </div>
-
-          {error && <div className="alert alert-error mb-4">{error}</div>}
-
-          <div className="space-y-3">
-            {fileEntries.map(([name, content]) => (
-              <details key={name} className="rounded-lg overflow-hidden" style={{ border: '1px solid var(--color-rule)' }}>
-                <summary className="flex items-center justify-between px-3 py-2.5 cursor-pointer" style={{ background: 'var(--color-raised)' }}>
-                  <span className="flex items-center gap-2">
-                    <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ember)', fontSize: '0.75rem', fontWeight: 600 }}>{name}</span>
-                    <span className="text-xs" style={{ color: 'var(--color-text-dim)' }}>{(content.length / 1024).toFixed(1)} KB</span>
-                  </span>
-                </summary>
-                <pre className="px-3 py-3 overflow-auto text-xs" style={{
-                  maxHeight: '400px', background: '#0d1221', color: '#e2e8f0',
-                  fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', margin: 0, lineHeight: 1.5,
-                }}>
-                  {content}
-                </pre>
-              </details>
-            ))}
-          </div>
         </div>
       </div>
     );
