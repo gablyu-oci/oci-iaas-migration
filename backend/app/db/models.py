@@ -115,6 +115,11 @@ class Migration(Base):
     migrate_terraform_plan: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     migrate_terraform_state: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     migrate_logs: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    # Group binding — migration is scoped to one selected app group
+    bound_app_group_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("app_groups.id", use_alter=True), nullable=True
+    )
+    bound_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
 
     tenant: Mapped["Tenant"] = relationship(back_populates="migrations")
     resources: Mapped[list["Resource"]] = relationship(back_populates="migration")
@@ -361,6 +366,9 @@ class Assessment(Base):
     )
     tenant_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("tenants.id"), nullable=False
+    )
+    aws_connection_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("aws_connections.id"), nullable=True
     )
     status: Mapped[str] = mapped_column(String(32), default="pending")
     config: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)

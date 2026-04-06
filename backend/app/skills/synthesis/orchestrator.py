@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import time
+from pathlib import Path
 from typing import Optional
 
 import anthropic
@@ -138,13 +140,25 @@ var.<name> or data source lookups consistent with networking_tf outputs.
 3. Write special_attention_md: Brief list of items needing manual attention — \
 gaps, TODOs, security concerns from the source translations.
 
+4. Write prerequisites_md: A Markdown checklist of manual steps the user MUST \
+complete BEFORE running terraform apply. Include:
+   - Required OCI IAM policies (specific policy statements, e.g. \
+"Allow group MigrationAdmins to manage virtual-network-family in compartment X")
+   - Compartments that must exist before apply
+   - Service limits that may need raising (compute shapes, VCN count, LB count)
+   - SSH key pairs that need generating
+   - DNS or network prerequisites (peering, on-prem connectivity)
+   - Any resources that the OCI Terraform provider cannot manage \
+(e.g. certain IAM configurations, manual DNS delegation)
+   Format each item as a Markdown checkbox: "- [ ] description"
+
 RULES:
 - If a tf section is not needed (no resources of that type), use empty string "".
 - Do NOT invent resources that were not in the input translations.
 - Preserve all resource attribute values from the source translations exactly.
 - Return ONLY a JSON object with these exact keys (string values):
   networking_tf, database_tf, compute_tf, storage_tf, loadbalancer_tf,
-  variables_tf, outputs_tf, special_attention_md
+  variables_tf, outputs_tf, special_attention_md, prerequisites_md
 """
 
 REVIEW_SYSTEM = """\
@@ -155,6 +169,8 @@ Review the following and score issues by severity (CRITICAL, HIGH, MEDIUM, LOW):
 CRITICAL:
 - Resources from the input jobs are missing from the output tf files
 - Duplicate resource declarations (same resource type + name in multiple files)
+- Duplicate OCI resources — same logical resource appearing from multiple skill \
+translations (e.g. same VCN/subnet from both cfn_terraform and network_translation)
 - Variable used but not declared in variables_tf
 - Apply order violations (compute referencing a subnet not defined in networking_tf)
 
@@ -187,9 +203,17 @@ You are an OCI migration architect fixing issues in a synthesized Terraform stac
 You will receive the current synthesis output and a list of CRITICAL and HIGH \
 severity issues. Fix ONLY those issues. Do not change anything that is not broken.
 
+If issues include terraform validate/init/plan errors:
+- Fix all HCL syntax errors (missing braces, invalid block types, bad escapes)
+- Resolve duplicate resource/variable/provider declarations
+- Fix invalid resource attribute names or types for the OCI provider
+- Ensure all referenced variables are declared in variables_tf
+- Ensure all resource cross-references are valid (e.g. subnet_id references)
+- Do NOT remove resources — fix them so they are valid HCL
+
 Return the corrected synthesis as the same JSON object:
   networking_tf, database_tf, compute_tf, storage_tf, loadbalancer_tf,
-  variables_tf, outputs_tf, special_attention_md
+  variables_tf, outputs_tf, special_attention_md, prerequisites_md
 
 Include a "fixes_applied" key listing what you changed (for logging).
 """
@@ -243,7 +267,7 @@ def _build_enhancement_prompt(input_data: dict, current: Optional[dict],
     parts.append(
         "\nReturn ONLY the JSON object with keys: "
         "networking_tf, database_tf, compute_tf, storage_tf, loadbalancer_tf, "
-        "variables_tf, outputs_tf, special_attention_md"
+        "variables_tf, outputs_tf, special_attention_md, prerequisites_md"
     )
     return "".join(parts)
 
@@ -295,6 +319,60 @@ def _decide(review: dict) -> tuple[str, float]:
 # Artifact assembly
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Terraform validation helper
+# ---------------------------------------------------------------------------
+
+def _try_terraform_validate(synthesis: dict) -> dict:
+    """Write synthesized .tf content to a temp dir and run terraform validate.
+
+    Returns {"valid": bool | None, "output": str, "available": bool}.
+    """
+    import subprocess
+    import tempfile
+
+    if not shutil.which("terraform"):
+        return {"valid": None, "output": "terraform not installed", "available": False}
+
+    tf_map = {
+        "networking_tf":     "01-networking.tf",
+        "database_tf":       "02-database.tf",
+        "compute_tf":        "03-compute.tf",
+        "storage_tf":        "04-storage.tf",
+        "loadbalancer_tf":   "05-loadbalancer.tf",
+        "variables_tf":      "variables.tf",
+        "outputs_tf":        "outputs.tf",
+    }
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        wrote = 0
+        for key, fname in tf_map.items():
+            content = synthesis.get(key, "")
+            if content and content.strip():
+                Path(tmpdir, fname).write_text(content)
+                wrote += 1
+
+        if wrote == 0:
+            return {"valid": None, "output": "No .tf content to validate", "available": True}
+
+        init_result = subprocess.run(
+            ["terraform", "init", "-backend=false", "-no-color"],
+            cwd=tmpdir, capture_output=True, text=True, timeout=60,
+        )
+        if init_result.returncode != 0:
+            return {"valid": False, "output": init_result.stderr[:3000], "available": True}
+
+        validate_result = subprocess.run(
+            ["terraform", "validate", "-no-color"],
+            cwd=tmpdir, capture_output=True, text=True, timeout=30,
+        )
+        return {
+            "valid": validate_result.returncode == 0,
+            "output": (validate_result.stdout + validate_result.stderr)[:3000],
+            "available": True,
+        }
+
+
 _TF_FILE_MAP = {
     "networking_tf":     "01-networking.tf",
     "database_tf":       "02-database.tf",
@@ -307,6 +385,7 @@ _TF_FILE_MAP = {
 
 _MD_FILE_MAP = {
     "special_attention_md":  "special-attention.md",
+    "prerequisites_md":      "prerequisites.md",
     # iam_setup_md, migration_runbook_md, synthesis_summary_md removed —
     # runbook is produced by workload_planning skill, not synthesis
 }
@@ -499,6 +578,32 @@ def run(
         progress_callback("review", iteration, confidence, decision)
         _log.info("Synthesis iteration %d: %s (confidence=%.2f)", iteration, decision, confidence)
 
+        # ── Terraform validate ───────────────────────────────────────
+        # Run terraform validate on the synthesized .tf content.
+        # If it fails, inject errors as CRITICAL issues so the fix
+        # phase can address them — even if the LLM review approved.
+        tf_issues: list[dict] = []
+        try:
+            progress_callback("terraform_validate", iteration, confidence, None)
+            tf_result = _try_terraform_validate(synthesis)
+            if tf_result["available"] and tf_result["valid"] is False:
+                _log.warning("Terraform validate failed (iteration %d): %s",
+                             iteration, tf_result["output"][:500])
+                tf_issues.append({
+                    "severity": "CRITICAL",
+                    "description": (
+                        "terraform validate failed. Fix ALL errors below:\n"
+                        + tf_result["output"]
+                    ),
+                })
+                # Override decision — can't approve invalid HCL
+                decision = "NEEDS_FIXES"
+                final_decision = decision
+            elif tf_result["available"] and tf_result["valid"]:
+                _log.info("Terraform validate passed (iteration %d)", iteration)
+        except Exception as exc:
+            _log.warning("Terraform validate error (non-fatal): %s", exc)
+
         if decision in ("APPROVED", "APPROVED_WITH_NOTES"):
             break
 
@@ -509,7 +614,9 @@ def run(
         progress_callback("fix", iteration, confidence, None)
         high_issues = [i for i in review.get("issues", [])
                        if i.get("severity") in ("CRITICAL", "HIGH")]
-        fix_targets = high_issues or review.get("issues", [])
+        fix_targets = high_issues + tf_issues
+        if not fix_targets:
+            fix_targets = review.get("issues", [])
 
         fixed = None
         for attempt in range(3):
@@ -545,7 +652,15 @@ def run(
             **fix_use,
             "cost_usd": fix_cost, "duration_seconds": fix_dur if fixed else 0.0,
         })
-        current_issues = high_issues
+        current_issues = high_issues + tf_issues
+
+    # ── Final terraform validation on approved output ─────────────────
+    try:
+        final_tf = _try_terraform_validate(current_synthesis or {})
+        if final_tf.get("available"):
+            _log.info("Final terraform validate: valid=%s", final_tf["valid"])
+    except Exception:
+        final_tf = {"valid": None, "output": "", "available": False}
 
     artifacts = _build_artifacts(current_synthesis or {}, final_confidence,
                                  final_decision, iteration)
@@ -557,4 +672,5 @@ def run(
         "iterations":   iteration,
         "cost":         total_cost,
         "interactions": interaction_records,
+        "terraform_valid": final_tf.get("valid") if final_tf.get("available") else None,
     }

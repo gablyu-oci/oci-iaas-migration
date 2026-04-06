@@ -185,3 +185,51 @@ export function useDeleteAssessment() {
     },
   });
 }
+
+export function useBindGroup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ migrationId, appGroupId }: { migrationId: string; appGroupId: string }) =>
+      client.post(`/api/migrations/${migrationId}/bind-group`, { app_group_id: appGroupId }).then((r) => r.data),
+    onSuccess: (_data, { migrationId }) => {
+      qc.invalidateQueries({ queryKey: ['migrations', migrationId] });
+      qc.invalidateQueries({ queryKey: ['migrations'] });
+    },
+  });
+}
+
+export function useUnbindGroup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (migrationId: string) =>
+      client.post(`/api/migrations/${migrationId}/unbind-group`).then((r) => r.data),
+    onSuccess: (_data, migrationId) => {
+      qc.invalidateQueries({ queryKey: ['migrations', migrationId] });
+      qc.invalidateQueries({ queryKey: ['migrations'] });
+    },
+  });
+}
+
+export function useUpdateGroupMembers() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ groupId, addResourceIds, removeResourceIds }: { groupId: string; addResourceIds: string[]; removeResourceIds: string[] }) =>
+      client.patch(`/api/app-groups/${groupId}/members`, { add_resource_ids: addResourceIds, remove_resource_ids: removeResourceIds }).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['workloads'] });
+      qc.invalidateQueries({ queryKey: ['assessment-app-groups'] });
+    },
+  });
+}
+
+export function useCreateAppGroup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ assessmentId, name, resourceIds }: { assessmentId: string; name: string; resourceIds: string[] }) =>
+      client.post(`/api/assessments/${assessmentId}/app-groups`, { name, resource_ids: resourceIds }).then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['workloads'] });
+      qc.invalidateQueries({ queryKey: ['assessment-app-groups'] });
+    },
+  });
+}

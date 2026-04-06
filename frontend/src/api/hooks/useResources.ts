@@ -25,6 +25,7 @@ export interface Resource {
 export function useResources(params?: {
   type?: string;
   migration_id?: string;
+  connection_id?: string;
   status?: string;
 }) {
   return useQuery<Resource[]>({

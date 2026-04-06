@@ -7,7 +7,7 @@ import { useTranslationJobs } from '../api/hooks/useTranslationJobs';
 import { formatDate, cn, getSkillRunName } from '../lib/utils';
 import client from '../api/client';
 import { synthesizeMigration, getLatestSynthesis } from '../api/plans';
-import { useAssessments, useRunAssessment, useWorkloads } from '../api/hooks/useAssessments';
+import { useAssessments, useRunAssessment, useWorkloads, useBindGroup, useUnbindGroup, useUpdateGroupMembers, useCreateAppGroup } from '../api/hooks/useAssessments';
 import ReadinessScoreBadge from '../components/ReadinessScoreBadge';
 import WorkloadCard from '../components/WorkloadCard';
 import ResourceMappingTable from '../components/ResourceMappingTable';
@@ -585,9 +585,16 @@ function PlanResults({ results }: { results: { resource_mapping?: Array<Record<s
   const dataMigArtifacts: Record<string, string> = {};
   const runbookArtifacts: Record<string, string> = {};
 
+  const prerequisitesContent: Record<string, string> = {};
+
   for (const [key, content] of Object.entries(artifacts)) {
     if (key.startsWith('synthesis/')) {
-      synthesisArtifacts[key.replace('synthesis/', '')] = content;
+      const fname = key.replace('synthesis/', '');
+      if (fname === 'prerequisites.md' || fname === 'special-attention.md') {
+        prerequisitesContent[fname] = content;
+      } else {
+        synthesisArtifacts[fname] = content;
+      }
     } else if (key.startsWith('data_migration/')) {
       dataMigArtifacts[key.replace('data_migration/', '')] = content;
     } else if (key.startsWith('workload_planning/')) {
@@ -603,6 +610,7 @@ function PlanResults({ results }: { results: { resource_mapping?: Array<Record<s
     ? synthesisArtifacts
     : skillTfArtifacts;
 
+  if (Object.keys(prerequisitesContent).length > 0) tabs.push({ id: 'prerequisites', label: 'Prerequisites' });
   if (Object.keys(terraformArtifacts).length > 0) tabs.push({ id: 'terraform', label: 'Terraform' });
   if (Object.keys(dataMigArtifacts).length > 0) tabs.push({ id: 'data', label: 'Data Migration' });
   if (Object.keys(runbookArtifacts).length > 0) tabs.push({ id: 'runbook', label: 'Runbook & Risks' });
@@ -649,6 +657,26 @@ function PlanResults({ results }: { results: { resource_mapping?: Array<Record<s
         <div className="p-4">
           {currentTab === 'mapping' && (
             <PlanMappingTable mapping={mapping} />
+          )}
+          {currentTab === 'prerequisites' && (
+            <div className="space-y-4">
+              {prerequisitesContent['prerequisites.md'] && (
+                <div>
+                  <h4 className="text-xs font-semibold mb-2" style={{ color: 'var(--color-ember)' }}>Prerequisites Checklist</h4>
+                  <div className="rounded-lg p-4" style={{ background: 'var(--color-well)', border: '1px solid var(--color-rule)', whiteSpace: 'pre-wrap', fontSize: '0.75rem', lineHeight: 1.8, color: 'var(--color-text)' }}>
+                    {prerequisitesContent['prerequisites.md']}
+                  </div>
+                </div>
+              )}
+              {prerequisitesContent['special-attention.md'] && (
+                <div>
+                  <h4 className="text-xs font-semibold mb-2" style={{ color: '#d97706' }}>Special Attention Items</h4>
+                  <div className="rounded-lg p-4" style={{ background: 'var(--color-well)', border: '1px solid var(--color-rule)', whiteSpace: 'pre-wrap', fontSize: '0.75rem', lineHeight: 1.8, color: 'var(--color-text)' }}>
+                    {prerequisitesContent['special-attention.md']}
+                  </div>
+                </div>
+              )}
+            </div>
           )}
           {currentTab === 'terraform' && (
             <ArtifactList artifacts={terraformArtifacts} showDownloadAll downloadPrefix="terraform" />
@@ -922,6 +950,11 @@ function AssessStep({
   loadingAssessments,
   runAssessment,
   onPlanWorkload,
+  boundAppGroupId,
+  boundAppGroupName,
+  onBindGroup,
+  onUnbindGroup,
+  bindLoading,
 }: {
   migrationId: string;
   workloads: Array<{
@@ -954,9 +987,47 @@ function AssessStep({
   loadingAssessments: boolean;
   runAssessment: { mutate: (id: string) => void; isPending: boolean };
   onPlanWorkload: (workloadId: string) => void;
+  boundAppGroupId?: string | null;
+  boundAppGroupName?: string | null;
+  onBindGroup: (groupId: string) => void;
+  onUnbindGroup: () => void;
+  bindLoading: boolean;
 }) {
   const namedWorkloads = (workloads || []).filter((w) => w.name && !w.name.startsWith('ungrouped-'));
-  const ungrouped = (workloads || []).filter((w) => w.name?.startsWith('ungrouped-'));
+  const ungroupedWorkloads = (workloads || []).filter((w) => w.name?.startsWith('ungrouped-'));
+
+  // Collect all ungrouped resources
+  const ungroupedResources = useMemo(() => {
+    const items: Array<{ id: string; aws_type: string; name?: string }> = [];
+    for (const w of ungroupedWorkloads) {
+      for (const r of w.resources) items.push(r);
+    }
+    return items;
+  }, [ungroupedWorkloads]);
+
+  // State for "Add to group" dropdown
+  const [addingToGroupResourceId, setAddingToGroupResourceId] = useState<string | null>(null);
+
+  // State for "Create New Group" inline form
+  const [showCreateGroup, setShowCreateGroup] = useState(false);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [newGroupSelectedIds, setNewGroupSelectedIds] = useState<Set<string>>(new Set());
+
+  const updateGroupMembers = useUpdateGroupMembers();
+  const createAppGroup = useCreateAppGroup();
+
+  const handleAddToGroup = (resourceId: string, groupId: string) => {
+    updateGroupMembers.mutate({ groupId, addResourceIds: [resourceId], removeResourceIds: [] });
+    setAddingToGroupResourceId(null);
+  };
+
+  const handleCreateGroup = () => {
+    if (!latestAssessment || !newGroupName.trim() || newGroupSelectedIds.size === 0) return;
+    createAppGroup.mutate(
+      { assessmentId: latestAssessment.id, name: newGroupName.trim(), resourceIds: Array.from(newGroupSelectedIds) },
+      { onSuccess: () => { setShowCreateGroup(false); setNewGroupName(''); setNewGroupSelectedIds(new Set()); } }
+    );
+  };
 
   return (
     <div className="space-y-5">
@@ -1075,6 +1146,34 @@ function AssessStep({
         </div>
       ) : null}
 
+      {/* Bound group next-step banner */}
+      {boundAppGroupId && latestAssessment?.status === 'complete' && (
+        <div
+          className="rounded-xl p-4 flex items-center justify-between gap-4"
+          style={{ background: 'var(--color-ember-dim)', border: '2px solid var(--color-ember)' }}
+        >
+          <div className="flex items-center gap-3">
+            <svg className="w-5 h-5 flex-shrink-0" style={{ color: 'var(--color-ember)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+            <div>
+              <p className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>
+                Group selected: {boundAppGroupName || boundAppGroupId}
+              </p>
+              <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)' }}>
+                Proceed to the Plan step to generate a migration plan for this group.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => onPlanWorkload(boundAppGroupId)}
+            className="btn btn-primary flex-shrink-0"
+          >
+            Generate Plan →
+          </button>
+        </div>
+      )}
+
       {/* Workload cards grid */}
       <div>
         <h3 className="text-sm font-semibold mb-3" style={{ color: 'var(--color-text-bright)' }}>
@@ -1082,6 +1181,7 @@ function AssessStep({
           {namedWorkloads.length > 0 && (
             <span className="ml-2 font-normal" style={{ color: 'var(--color-text-dim)' }}>
               {namedWorkloads.length} workload{namedWorkloads.length !== 1 ? 's' : ''}
+              {boundAppGroupId && ' — select a group to bind for migration'}
             </span>
           )}
         </h3>
@@ -1092,22 +1192,29 @@ function AssessStep({
           </div>
         ) : namedWorkloads.length > 0 ? (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {namedWorkloads.map((w, i) => (
-              <WorkloadCard
-                key={w.id || i}
-                name={w.name}
-                workloadType={w.workload_type ?? 'web_api'}
-                resourceCount={w.resource_count ?? 0}
-                resources={w.resources}
-                readinessScore={w.readiness_score}
-                sixrStrategy={w.sixr_strategy}
-                totalAwsCost={w.total_aws_cost_usd}
-                totalOciCost={w.total_oci_cost_usd}
-                groupingMethod={w.grouping_method}
-                graphSvg={latestAssessment?.dependency_artifacts?.workload_graphs?.[w.name] || undefined}
-                onClick={() => onPlanWorkload(w.id || w.name)}
-              />
-            ))}
+            {namedWorkloads.map((w, i) => {
+              const groupId = w.id || w.name;
+              const isBound = boundAppGroupId === groupId;
+              return (
+                <WorkloadCard
+                  key={groupId || i}
+                  name={w.name}
+                  workloadType={w.workload_type ?? 'web_api'}
+                  resourceCount={w.resource_count ?? 0}
+                  resources={w.resources}
+                  readinessScore={w.readiness_score}
+                  sixrStrategy={w.sixr_strategy}
+                  totalAwsCost={w.total_aws_cost_usd}
+                  totalOciCost={w.total_oci_cost_usd}
+                  groupingMethod={w.grouping_method}
+                  graphSvg={latestAssessment?.dependency_artifacts?.workload_graphs?.[w.name] || undefined}
+                  isBound={isBound}
+                  selectLoading={bindLoading}
+                  onSelect={() => onBindGroup(groupId)}
+                  onUnbind={() => onUnbindGroup()}
+                />
+              );
+            })}
           </div>
         ) : (
           <div className="panel">
@@ -1117,28 +1224,140 @@ function AssessStep({
           </div>
         )}
 
-        {/* Ungrouped */}
-        {ungrouped.length > 0 && (
-          <details className="panel mt-4" style={{ overflow: 'hidden' }}>
-            <summary className="panel-body flex items-center gap-2 cursor-pointer" style={{ listStyle: 'none' }}>
-              <svg className="w-3.5 h-3.5" style={{ color: 'var(--color-text-dim)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-              </svg>
-              <span className="text-sm font-medium" style={{ color: 'var(--color-text-dim)' }}>
-                {ungrouped.length} ungrouped resource{ungrouped.length !== 1 ? 's' : ''}
-              </span>
-            </summary>
-            <div className="panel-body pt-0 space-y-1.5" style={{ borderTop: '1px solid var(--color-rule)' }}>
-              {ungrouped.map((w) =>
-                w.resources.map((r) => (
-                  <div key={r.id} className="flex items-center gap-2 text-xs" style={{ color: 'var(--color-text-dim)' }}>
-                    <span className="badge badge-neutral" style={{ fontSize: '0.5625rem' }}>{shortType(r.aws_type)}</span>
-                    <span className="truncate">{r.name || r.id}</span>
-                  </div>
-                ))
-              )}
+        {/* Ungrouped Resources */}
+        {ungroupedResources.length > 0 && (
+          <div className="panel mt-4" style={{ overflow: 'hidden' }}>
+            <div className="panel-header">
+              <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>
+                Ungrouped Resources
+                <span className="ml-2 font-normal" style={{ color: 'var(--color-text-dim)' }}>
+                  {ungroupedResources.length} resource{ungroupedResources.length !== 1 ? 's' : ''}
+                </span>
+              </h3>
             </div>
-          </details>
+            <div className="panel-body space-y-2">
+              {ungroupedResources.map((r) => (
+                <div
+                  key={r.id}
+                  className="flex items-center justify-between gap-2 text-xs py-1.5"
+                  style={{ borderBottom: '1px solid var(--color-rule)' }}
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="badge badge-neutral" style={{ fontSize: '0.5625rem' }}>{shortType(r.aws_type)}</span>
+                    <span className="truncate" style={{ color: 'var(--color-text-dim)' }}>{r.name || r.id}</span>
+                  </div>
+                  {namedWorkloads.length > 0 && (
+                    <div className="relative flex-shrink-0">
+                      {addingToGroupResourceId === r.id ? (
+                        <div className="flex items-center gap-1">
+                          <select
+                            className="field-input field-select"
+                            style={{ width: 'auto', fontSize: '0.6875rem', padding: '0.25rem 1.5rem 0.25rem 0.5rem' }}
+                            defaultValue=""
+                            onChange={(e) => {
+                              if (e.target.value) handleAddToGroup(r.id, e.target.value);
+                            }}
+                          >
+                            <option value="" disabled>Add to...</option>
+                            {namedWorkloads.map((w) => (
+                              <option key={w.id || w.name} value={w.id || w.name}>{w.name}</option>
+                            ))}
+                          </select>
+                          <button
+                            onClick={() => setAddingToGroupResourceId(null)}
+                            className="btn btn-ghost btn-sm"
+                            style={{ padding: '0.125rem' }}
+                            aria-label="Cancel"
+                          >
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setAddingToGroupResourceId(r.id)}
+                          className="btn btn-ghost btn-sm"
+                          style={{ fontSize: '0.6875rem', padding: '0.25rem 0.5rem' }}
+                        >
+                          Add to Group
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Create New Group */}
+        {latestAssessment?.status === 'complete' && (
+          <div className="mt-4">
+            {!showCreateGroup ? (
+              <button
+                onClick={() => setShowCreateGroup(true)}
+                className="btn btn-secondary"
+              >
+                + Create New Group
+              </button>
+            ) : (
+              <div
+                className="rounded-xl p-4 space-y-3"
+                style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)' }}
+              >
+                <h4 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>Create New Group</h4>
+                <div>
+                  <label className="field-label">Group Name</label>
+                  <input
+                    type="text"
+                    value={newGroupName}
+                    onChange={(e) => setNewGroupName(e.target.value)}
+                    placeholder="e.g. Payment Service"
+                    className="field-input"
+                    style={{ maxWidth: '20rem' }}
+                  />
+                </div>
+                <div>
+                  <label className="field-label">Select Resources</label>
+                  <div className="space-y-1 max-h-48 overflow-y-auto rounded-lg p-2" style={{ background: 'var(--color-well)', border: '1px solid var(--color-rule)' }}>
+                    {ungroupedResources.length > 0 ? ungroupedResources.map((r) => (
+                      <label key={r.id} className="flex items-center gap-2 text-xs cursor-pointer py-1">
+                        <input
+                          type="checkbox"
+                          className="cb"
+                          checked={newGroupSelectedIds.has(r.id)}
+                          onChange={() => {
+                            setNewGroupSelectedIds((prev) => {
+                              const next = new Set(prev);
+                              next.has(r.id) ? next.delete(r.id) : next.add(r.id);
+                              return next;
+                            });
+                          }}
+                        />
+                        <span className="badge badge-neutral" style={{ fontSize: '0.5625rem' }}>{shortType(r.aws_type)}</span>
+                        <span style={{ color: 'var(--color-text-dim)' }}>{r.name || r.id}</span>
+                      </label>
+                    )) : (
+                      <p className="text-xs py-2" style={{ color: 'var(--color-text-dim)' }}>No ungrouped resources available. All resources are already in groups.</p>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleCreateGroup}
+                    disabled={!newGroupName.trim() || newGroupSelectedIds.size === 0 || createAppGroup.isPending}
+                    className="btn btn-primary"
+                  >
+                    {createAppGroup.isPending ? <><span className="spinner" />Creating…</> : 'Create Group'}
+                  </button>
+                  <button onClick={() => { setShowCreateGroup(false); setNewGroupName(''); setNewGroupSelectedIds(new Set()); }} className="btn btn-secondary">
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         )}
       </div>
 
@@ -1455,6 +1674,7 @@ function MigrateStep({ migrationId, migration }: {
   migrationId: string;
   migration?: { migrate_status?: string | null; migrate_workload_name?: string | null; migrate_started_at?: string | null; migrate_current_step?: string | null; migrate_terraform_plan?: string | null; migrate_logs?: string[] | null; plan_status?: string | null; plan_workload_id?: string | null; plan_workload_name?: string | null } | null;
 }) {
+  const queryClient = useQueryClient();
   const [ociConnections, setOciConnections] = useState<Array<{id: string; name: string; region: string; compartment_id?: string}>>([]);
   const [selectedOciConn, setSelectedOciConn] = useState('');
   const [variableOverrides, setVariableOverrides] = useState<Record<string, string>>({});
@@ -1462,16 +1682,22 @@ function MigrateStep({ migrationId, migration }: {
   const [elapsed, setElapsed] = useState(0);
   const [showPreview, setShowPreview] = useState(false);
   const [previewFiles, setPreviewFiles] = useState<Record<string, string>>({});
+  const [prerequisites, setPrerequisites] = useState<{ prerequisites?: string; specialAttention?: string }>({});
 
   const status = migration?.migrate_status;
   const logs = migration?.migrate_logs || [];
   const tfPlan = migration?.migrate_terraform_plan;
   const currentStep = migration?.migrate_current_step;
 
-  // Load OCI connections
+  // Load OCI connections + pre-select from migration if available
   useEffect(() => {
-    client.get('/api/oci-connections').then(res => setOciConnections(res.data)).catch(() => {});
-  }, []);
+    client.get('/api/oci-connections').then(res => {
+      setOciConnections(res.data);
+      if (!selectedOciConn && migration?.migrate_oci_connection_id) {
+        setSelectedOciConn(String(migration.migrate_oci_connection_id));
+      }
+    }).catch(() => {});
+  }, [migration?.migrate_oci_connection_id]);
 
   // Elapsed timer
   useEffect(() => {
@@ -1484,6 +1710,47 @@ function MigrateStep({ migrationId, migration }: {
   }, [status, migration?.migrate_started_at]);
 
   const fmtElapsed = (s: number) => { const m = Math.floor(s / 60); const sec = s % 60; return m > 0 ? `${m}m ${sec}s` : `${sec}s`; };
+
+  // Load prerequisites from plan artifacts
+  useEffect(() => {
+    const appGroupId = migration?.plan_workload_id;
+    if (!appGroupId) return;
+    client.get(`/api/app-groups/${appGroupId}/plan-results`).then(res => {
+      const wp = res.data?.workload_plans?.[migration?.plan_workload_name || ''];
+      const arts = wp?.artifacts || {};
+      setPrerequisites({
+        prerequisites: arts['synthesis/prerequisites.md'] || '',
+        specialAttention: arts['synthesis/special-attention.md'] || '',
+      });
+    }).catch(() => {});
+  }, [migration?.plan_workload_id, migration?.plan_workload_name]);
+
+  // Auto-show preview when test has completed (pass or fail) and preview isn't loaded yet
+  useEffect(() => {
+    if ((status === 'test_failed' || status === 'test_passed') && !showPreview && Object.keys(previewFiles).length === 0) {
+      // Load artifacts and show preview automatically
+      const appGroupId = migration?.plan_workload_id;
+      if (!appGroupId) return;
+      client.get(`/api/app-groups/${appGroupId}/plan-results`).then(res => {
+        const wp = res.data?.workload_plans?.[migration?.plan_workload_name || ''];
+        const artifacts = wp?.artifacts || {};
+        const tfFiles: Record<string, string> = {};
+        const hasSynthesis = Object.keys(artifacts).some((k: string) => k.startsWith('synthesis/') && k.endsWith('.tf'));
+        for (const [key, content] of Object.entries(artifacts)) {
+          if (typeof content !== 'string') continue;
+          if (hasSynthesis) {
+            if (key.startsWith('synthesis/') && key.endsWith('.tf')) {
+              tfFiles[key.replace('synthesis/', '')] = content;
+            }
+          } else if (key.endsWith('.tf')) {
+            tfFiles[key] = content;
+          }
+        }
+        setPreviewFiles(tfFiles);
+        setShowPreview(true);
+      }).catch(() => {});
+    }
+  }, [status, showPreview, previewFiles, migration?.plan_workload_id, migration?.plan_workload_name]);
 
   const handlePreview = async () => {
     if (!selectedOciConn) { setError('Select an OCI connection'); return; }
@@ -1550,8 +1817,36 @@ function MigrateStep({ migrationId, migration }: {
   }
 
   // ── CONFIGURE (or PREVIEW if showPreview is set) ─────────────────────
-  if (showPreview && (!status || status === 'rejected')) {
+  if (showPreview && (!status || status === 'rejected' || status === 'test_passed' || status === 'test_failed')) {
     const fileEntries = Object.entries(previewFiles).sort(([a], [b]) => a.localeCompare(b));
+    const testPassed = status === 'test_passed';
+    const testFailed = status === 'test_failed';
+
+    const handleTest = async () => {
+      setError(null);
+      try {
+        await client.post(`/api/migrations/${migrationId}/test-plan`, {
+          workload_name: migration?.plan_workload_name || '',
+          oci_connection_id: selectedOciConn,
+          variable_overrides: variableOverrides,
+        });
+        // Immediately refetch so polling picks up the 'testing' status
+        queryClient.invalidateQueries({ queryKey: ['migrations', migrationId] });
+      } catch (err: unknown) {
+        setError((err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || 'Failed to start test');
+      }
+    };
+
+    const handleFixTf = async () => {
+      setError(null);
+      try {
+        await client.post(`/api/migrations/${migrationId}/fix-terraform`);
+        queryClient.invalidateQueries({ queryKey: ['migrations', migrationId] });
+      } catch (err: unknown) {
+        setError((err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || 'Failed to start fix');
+      }
+    };
+
     return (
       <div className="space-y-5">
         <div className="rounded-xl p-5" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}>
@@ -1559,16 +1854,16 @@ function MigrateStep({ migrationId, migration }: {
             <div>
               <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>Review Terraform Files</h3>
               <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)' }}>
-                These {fileEntries.length} files will be applied to your OCI tenancy. Review before proceeding.
+                {fileEntries.length} files to apply. Run "Test on OCI" first to validate credentials and plan.
               </p>
             </div>
-            <div className="flex gap-2">
-              <button onClick={() => setShowPreview(false)} className="btn btn-secondary">Back</button>
-              <button onClick={handleConfirmStart} className="btn btn-primary">Confirm & Run Terraform</button>
-            </div>
+            <button onClick={() => setShowPreview(false)} className="btn btn-secondary">Back</button>
           </div>
+
           {error && <div className="alert alert-error mb-4">{error}</div>}
-          <div className="space-y-3">
+
+          {/* .tf file list */}
+          <div className="space-y-2 mb-5">
             {fileEntries.map(([name, content]) => (
               <details key={name} className="rounded-lg overflow-hidden" style={{ border: '1px solid var(--color-rule)' }}>
                 <summary className="flex items-center justify-between px-3 py-2.5 cursor-pointer" style={{ background: 'var(--color-raised)' }}>
@@ -1584,6 +1879,138 @@ function MigrateStep({ migrationId, migration }: {
               </details>
             ))}
           </div>
+
+          {/* Test output (if test was run) */}
+          {(testPassed || testFailed) && (
+            <div className="mb-5">
+              <div className="flex items-center gap-2 mb-2">
+                {testPassed && <span className="badge badge-success">Test Passed</span>}
+                {testFailed && <span className="badge badge-error">Test Failed</span>}
+              </div>
+              {tfPlan && (
+                <div className="rounded-lg overflow-hidden" style={{ border: '1px solid var(--color-rule)' }}>
+                  <div className="px-3 py-2" style={{ background: 'var(--color-raised)', borderBottom: '1px solid var(--color-rule)' }}>
+                    <span className="text-xs font-semibold" style={{ color: 'var(--color-text-dim)' }}>terraform plan output</span>
+                  </div>
+                  <pre className="p-3 overflow-auto text-xs" style={{
+                    maxHeight: '400px', background: '#0d1221', color: '#e2e8f0',
+                    fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', margin: 0, lineHeight: 1.5,
+                  }}>
+                    {tfPlan.split('\n').map((line, i) => (
+                      <div key={i} style={{
+                        color: line.startsWith('+') || line.includes('will be created') ? '#16a34a'
+                          : line.startsWith('-') || line.includes('will be destroyed') ? '#dc2626'
+                          : line.startsWith('~') ? '#d97706'
+                          : line.includes('Error') || line.includes('error') ? '#dc2626'
+                          : '#94a3b8',
+                      }}>{line}</div>
+                    ))}
+                  </pre>
+                </div>
+              )}
+              {logs.length > 0 && !tfPlan && (
+                <div className="rounded-lg overflow-hidden" style={{ border: '1px solid var(--color-rule)' }}>
+                  <div className="px-3 py-2" style={{ background: 'var(--color-raised)', borderBottom: '1px solid var(--color-rule)' }}>
+                    <span className="text-xs font-semibold" style={{ color: 'var(--color-text-dim)' }}>Test output</span>
+                  </div>
+                  <div className="p-3 overflow-auto" style={{ maxHeight: '300px', background: '#0d1221', fontFamily: 'var(--font-mono)', fontSize: '0.6875rem', lineHeight: 1.6 }}>
+                    {logs.map((line, i) => (
+                      <div key={i} style={{ color: line.includes('FAILED') || line.includes('Error') ? '#dc2626' : line.includes('OK') || line.includes('PASSED') ? '#16a34a' : '#94a3b8' }}>{line}</div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Action buttons */}
+          <div className="flex items-center gap-3" style={{ borderTop: '1px solid var(--color-rule)', paddingTop: '1rem' }}>
+            <button onClick={handleTest} className="btn btn-secondary">
+              <svg className="w-3.5 h-3.5 mr-1.5 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              {testPassed || testFailed ? 'Re-test on OCI' : 'Test on OCI'}
+            </button>
+            {testFailed && (
+              <button onClick={handleFixTf} className="btn btn-secondary" style={{ borderColor: 'var(--color-ember)', color: 'var(--color-ember)' }}>
+                <svg className="w-3.5 h-3.5 mr-1.5 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
+                </svg>
+                Fix .tf
+              </button>
+            )}
+            <span className="text-xs" style={{ color: 'var(--color-rail)' }}>
+              {testFailed ? 'Fix sends errors to AI to correct the .tf files' : 'Runs terraform init + plan without creating any resources'}
+            </span>
+            <div style={{ flex: 1 }} />
+            <button
+              onClick={handleConfirmStart}
+              disabled={!testPassed}
+              className="btn btn-primary"
+              title={!testPassed ? 'Run "Test on OCI" first' : ''}
+            >
+              Approve & Apply
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Handle testing state (show terminal while test runs)
+  if (status === 'testing') {
+    return (
+      <div className="space-y-5">
+        <div className="rounded-xl p-5" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}>
+          <div className="flex items-center gap-3 mb-3">
+            <span className="spinner flex-shrink-0" />
+            <div>
+              <p className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>Testing Terraform on OCI</p>
+              <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)' }}>
+                Running terraform init + plan (no resources will be created)
+              </p>
+            </div>
+          </div>
+        </div>
+        <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--color-rule)' }}>
+          <div className="px-4 py-2.5" style={{ background: 'var(--color-raised)', borderBottom: '1px solid var(--color-rule)' }}>
+            <span className="text-xs font-semibold" style={{ color: 'var(--color-text-dim)' }}>Terminal</span>
+          </div>
+          <div className="p-3 overflow-auto" style={{ maxHeight: '400px', background: '#0d1221', fontFamily: 'var(--font-mono)', fontSize: '0.6875rem', lineHeight: 1.6 }}>
+            {logs.length === 0 ? <p style={{ color: 'var(--color-rail)' }}>Initializing…</p> : logs.map((line, i) => (
+              <div key={i} style={{ color: line.includes('FAILED') || line.includes('Error') ? '#dc2626' : line.includes('OK') || line.includes('PASSED') ? '#16a34a' : '#94a3b8' }}>{line}</div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Handle fixing state (LLM is correcting .tf files)
+  if (status === 'fixing') {
+    return (
+      <div className="space-y-5">
+        <div className="rounded-xl p-5" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}>
+          <div className="flex items-center gap-3 mb-3">
+            <span className="spinner flex-shrink-0" />
+            <div>
+              <p className="text-sm font-semibold" style={{ color: 'var(--color-ember)' }}>Fixing .tf Files</p>
+              <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)' }}>
+                AI is analyzing terraform errors and correcting the .tf files
+              </p>
+            </div>
+          </div>
+        </div>
+        <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--color-rule)' }}>
+          <div className="px-4 py-2.5" style={{ background: 'var(--color-raised)', borderBottom: '1px solid var(--color-rule)' }}>
+            <span className="text-xs font-semibold" style={{ color: 'var(--color-text-dim)' }}>Terminal</span>
+          </div>
+          <div className="p-3 overflow-auto" style={{ maxHeight: '400px', background: '#0d1221', fontFamily: 'var(--font-mono)', fontSize: '0.6875rem', lineHeight: 1.6 }}>
+            {logs.length === 0 ? <p style={{ color: 'var(--color-rail)' }}>Sending errors to AI…</p> : logs.map((line, i) => (
+              <div key={i} style={{ color: line.includes('FAILED') || line.includes('Error') || line.includes('error') ? '#dc2626' : line.includes('fix') || line.includes('Fix') || line.includes('rewrote') ? '#d97706' : line.includes('OK') || line.includes('complete') ? '#16a34a' : '#94a3b8' }}>{line}</div>
+            ))}
+          </div>
         </div>
       </div>
     );
@@ -1597,6 +2024,26 @@ function MigrateStep({ migrationId, migration }: {
           <p className="text-xs mb-4" style={{ color: 'var(--color-text-dim)' }}>
             Apply the generated Terraform to create resources in OCI for workload: <strong>{migration.plan_workload_name}</strong>
           </p>
+
+          {/* Prerequisites checklist */}
+          {(prerequisites.prerequisites || prerequisites.specialAttention) && (
+            <div className="mb-4 rounded-lg p-4" style={{ background: 'var(--color-well)', border: '1px solid var(--color-rule)' }}>
+              <h4 className="text-xs font-semibold mb-2" style={{ color: 'var(--color-ember)' }}>Prerequisites — Review before testing</h4>
+              {prerequisites.prerequisites && (
+                <div className="text-xs mb-3" style={{ color: 'var(--color-text)', whiteSpace: 'pre-wrap', lineHeight: 1.8 }}>
+                  {prerequisites.prerequisites}
+                </div>
+              )}
+              {prerequisites.specialAttention && (
+                <>
+                  <h4 className="text-xs font-semibold mb-2" style={{ color: '#d97706' }}>Special Attention</h4>
+                  <div className="text-xs" style={{ color: 'var(--color-text)', whiteSpace: 'pre-wrap', lineHeight: 1.8 }}>
+                    {prerequisites.specialAttention}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
 
           <div className="space-y-4">
             <div>
@@ -1839,7 +2286,9 @@ export default function MigrationDetail() {
   const queryClient = useQueryClient();
 
   const { data: migration, isLoading: loadingMigration, error: migrationError } = useMigration(id || '');
-  const { data: resources, isLoading: loadingResources, error: resourcesError } = useResources({ migration_id: id });
+  const { data: resources, isLoading: loadingResources, error: resourcesError } = useResources(
+    migration?.aws_connection_id ? { connection_id: migration.aws_connection_id } : { migration_id: id }
+  );
 
   const [skillRunErrors, setSkillRunErrors] = useState<string[]>([]);
   const [skillRunning, setSkillRunning] = useState(false);
@@ -1848,6 +2297,8 @@ export default function MigrationDetail() {
 
   const { data: assessments, isLoading: loadingAssessments } = useAssessments(id || '');
   const runAssessment = useRunAssessment();
+  const bindGroup = useBindGroup();
+  const unbindGroup = useUnbindGroup();
   const latestAssessment = assessments?.length ? assessments[0] : null;
 
   const { data: workloads, isLoading: loadingWorkloads } = useWorkloads(
@@ -2050,9 +2501,9 @@ export default function MigrationDetail() {
     setExtracting(true);
     setExtractError(null);
     try {
-      const response = await client.post(`/api/migrations/${id}/extract`);
+      await client.post(`/api/migrations/${id}/extract`);
       await queryClient.invalidateQueries({ queryKey: ['resources'] });
-      await openAssignModal(response.data.resource_ids ?? []);
+      await queryClient.invalidateQueries({ queryKey: ['migrations', id] });
     } catch (err: unknown) {
       setExtractError(err instanceof Error ? err.message : 'Failed to extract resources');
     } finally {
@@ -2065,9 +2516,9 @@ export default function MigrationDetail() {
     setExtractingInstance(true);
     setExtractError(null);
     try {
-      const response = await client.post(`/api/migrations/${id}/extract/instance?resource_id=${selectedInstance.id}`);
+      await client.post(`/api/migrations/${id}/extract/instance?resource_id=${selectedInstance.id}`);
       await queryClient.invalidateQueries({ queryKey: ['resources'] });
-      await openAssignModal(response.data.resource_ids ?? []);
+      await queryClient.invalidateQueries({ queryKey: ['migrations', id] });
     } catch (err: unknown) {
       setExtractError(err instanceof Error ? err.message : 'Failed to extract resources');
     } finally {
@@ -2562,6 +3013,15 @@ export default function MigrationDetail() {
               onPlanWorkload={(wid) => {
                 setSearchParams({ step: 'plan', workload: wid }, { replace: true });
               }}
+              boundAppGroupId={migration?.bound_app_group_id}
+              boundAppGroupName={migration?.bound_app_group_name}
+              onBindGroup={(groupId) => {
+                if (id) bindGroup.mutate({ migrationId: id, appGroupId: groupId });
+              }}
+              onUnbindGroup={() => {
+                if (id) unbindGroup.mutate(id);
+              }}
+              bindLoading={bindGroup.isPending || unbindGroup.isPending}
             />
           )}
 
@@ -2571,7 +3031,7 @@ export default function MigrationDetail() {
               workloads={workloads}
               latestAssessment={latestAssessment ? { id: latestAssessment.id, status: latestAssessment.status } : null}
               migrationSkillRuns={migrationSkillRuns}
-              selectedWorkloadId={planSelectedWorkload || migration?.plan_workload_id || null}
+              selectedWorkloadId={planSelectedWorkload || migration?.bound_app_group_id || migration?.plan_workload_id || null}
               planStatus={migration?.plan_status}
               planStartedAt={migration?.plan_started_at}
               planMaxIterations={migration?.plan_max_iterations}
@@ -2745,62 +3205,7 @@ export default function MigrationDetail() {
         </div>
       )}
 
-      {/* Assign Resources Modal */}
-      {showAssignModal && (
-        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Assign Resources to Migration">
-          <div className="modal modal-lg" style={{ maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
-            <div className="modal-header">
-              <div>
-                <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>Assign Resources to Migration</h3>
-                <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)' }}>
-                  {extractedResources.length} resource{extractedResources.length !== 1 ? 's' : ''} extracted. Select which to assign.
-                </p>
-              </div>
-            </div>
-            <div className="modal-body overflow-y-auto flex-1 space-y-2">
-              <label
-                className="flex items-center gap-2 text-xs font-medium pb-3 cursor-pointer"
-                style={{ color: 'var(--color-text-dim)', borderBottom: '1px solid var(--color-rule)' }}
-              >
-                <input
-                  type="checkbox"
-                  className="cb"
-                  checked={assignSelectedIds.size === extractedResources.length && extractedResources.length > 0}
-                  onChange={() => {
-                    if (assignSelectedIds.size === extractedResources.length) setAssignSelectedIds(new Set());
-                    else setAssignSelectedIds(new Set(extractedResources.map((r) => r.id)));
-                  }}
-                />
-                Select All ({extractedResources.length})
-              </label>
-              {extractedResources.map((r) => (
-                <label key={r.id} className="flex items-center gap-2 text-xs py-1 cursor-pointer" style={{ color: 'var(--color-text-dim)' }}>
-                  <input
-                    type="checkbox"
-                    className="cb"
-                    checked={assignSelectedIds.has(r.id)}
-                    onChange={() => {
-                      setAssignSelectedIds((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(r.id)) next.delete(r.id); else next.add(r.id);
-                        return next;
-                      });
-                    }}
-                  />
-                  <span className="truncate flex-1">{r.name}</span>
-                  {r.aws_type && <span className="opacity-50 flex-shrink-0">{r.aws_type}</span>}
-                </label>
-              ))}
-            </div>
-            <div className="modal-footer">
-              <button onClick={() => setShowAssignModal(false)} className="btn btn-secondary">Skip</button>
-              <button onClick={handleAssignResources} disabled={assignSelectedIds.size === 0 || assigning} className="btn btn-primary">
-                {assigning ? <><span className="spinner" />Assigning…</> : `Assign Selected (${assignSelectedIds.size})`}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Assign modal removed — assessment auto-discovers all connection resources */}
     </div>
   );
 }

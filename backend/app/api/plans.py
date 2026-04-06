@@ -13,7 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db.base import get_db
+from datetime import datetime, timezone
+
 from app.db.models import (
+    AppGroup,
+    AppGroupMember,
     Migration,
     MigrationPlan,
     PlanPhase,
@@ -915,3 +919,165 @@ async def get_phase_workloads(
         raise HTTPException(status_code=404, detail="Phase not found")
 
     return [_workload_to_out(w) for w in (phase.workloads or [])]
+
+
+# ---------------------------------------------------------------------------
+# Group binding / editing endpoints
+# ---------------------------------------------------------------------------
+
+
+class BindGroupBody(BaseModel):
+    app_group_id: str
+
+
+class UpdateGroupMembersBody(BaseModel):
+    add_resource_ids: list[str] = []
+    remove_resource_ids: list[str] = []
+
+
+class CreateGroupBody(BaseModel):
+    name: str
+    resource_ids: list[str] = []
+
+
+@router.post("/migrations/{mig_id}/bind-group", status_code=200)
+async def bind_group_to_migration(
+    mig_id: str,
+    body: BindGroupBody,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Bind an AppGroup to a migration (one group per migration)."""
+    mig = (await db.execute(
+        select(Migration).where(Migration.id == uuid.UUID(mig_id), Migration.tenant_id == tenant.id)
+    )).scalar_one_or_none()
+    if not mig:
+        raise HTTPException(status_code=404, detail="Migration not found")
+
+    group = (await db.execute(
+        select(AppGroup).where(AppGroup.id == uuid.UUID(body.app_group_id), AppGroup.tenant_id == tenant.id)
+    )).scalar_one_or_none()
+    if not group:
+        raise HTTPException(status_code=404, detail="App group not found")
+
+    mig.bound_app_group_id = group.id
+    mig.bound_at = datetime.utcnow()
+    await db.commit()
+
+    return {
+        "migration_id": str(mig.id),
+        "bound_app_group_id": str(group.id),
+        "bound_app_group_name": group.name,
+        "bound_at": mig.bound_at.isoformat(),
+    }
+
+
+@router.post("/migrations/{mig_id}/unbind-group", status_code=200)
+async def unbind_group_from_migration(
+    mig_id: str,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Unbind the current AppGroup from a migration."""
+    mig = (await db.execute(
+        select(Migration).where(Migration.id == uuid.UUID(mig_id), Migration.tenant_id == tenant.id)
+    )).scalar_one_or_none()
+    if not mig:
+        raise HTTPException(status_code=404, detail="Migration not found")
+
+    mig.bound_app_group_id = None
+    mig.bound_at = None
+    await db.commit()
+
+    return {"migration_id": str(mig.id), "bound_app_group_id": None}
+
+
+@router.patch("/app-groups/{group_id}/members", status_code=200)
+async def update_group_members(
+    group_id: str,
+    body: UpdateGroupMembersBody,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Add or remove resources from an app group."""
+    group = (await db.execute(
+        select(AppGroup).where(AppGroup.id == uuid.UUID(group_id), AppGroup.tenant_id == tenant.id)
+    )).scalar_one_or_none()
+    if not group:
+        raise HTTPException(status_code=404, detail="App group not found")
+
+    # Remove members
+    for rid_str in body.remove_resource_ids:
+        rid = uuid.UUID(rid_str)
+        member = (await db.execute(
+            select(AppGroupMember).where(
+                AppGroupMember.app_group_id == group.id,
+                AppGroupMember.resource_id == rid,
+            )
+        )).scalar_one_or_none()
+        if member:
+            await db.delete(member)
+
+    # Add members
+    for rid_str in body.add_resource_ids:
+        rid = uuid.UUID(rid_str)
+        existing = (await db.execute(
+            select(AppGroupMember).where(
+                AppGroupMember.app_group_id == group.id,
+                AppGroupMember.resource_id == rid,
+            )
+        )).scalar_one_or_none()
+        if not existing:
+            db.add(AppGroupMember(app_group_id=group.id, resource_id=rid))
+
+    await db.commit()
+
+    # Return updated member count
+    members_result = await db.execute(
+        select(AppGroupMember).where(AppGroupMember.app_group_id == group.id)
+    )
+    member_count = len(members_result.scalars().all())
+
+    return {"group_id": str(group.id), "member_count": member_count}
+
+
+@router.post("/assessments/{assessment_id}/app-groups", status_code=201)
+async def create_custom_app_group(
+    assessment_id: str,
+    body: CreateGroupBody,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a custom (manual) app group within an assessment."""
+    from app.db.models import Assessment
+
+    assessment = (await db.execute(
+        select(Assessment).where(
+            Assessment.id == uuid.UUID(assessment_id),
+            Assessment.tenant_id == tenant.id,
+        )
+    )).scalar_one_or_none()
+    if not assessment:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+
+    group_id = uuid.uuid4()
+    group = AppGroup(
+        id=group_id,
+        assessment_id=assessment.id,
+        tenant_id=tenant.id,
+        name=body.name,
+        grouping_method="manual",
+    )
+    db.add(group)
+
+    for rid_str in body.resource_ids:
+        db.add(AppGroupMember(app_group_id=group_id, resource_id=uuid.UUID(rid_str)))
+
+    await db.commit()
+
+    return {
+        "id": str(group_id),
+        "name": body.name,
+        "grouping_method": "manual",
+        "resource_count": len(body.resource_ids),
+    }

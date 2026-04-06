@@ -1,12 +1,14 @@
-"""Network dependency mapper using VPC Flow Logs and CloudTrail."""
+"""Network dependency mapper using VPC Flow Logs, CloudTrail, and CloudFormation templates."""
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections import defaultdict
 from typing import Any
 
 import boto3
+import yaml
 from botocore.exceptions import ClientError, BotoCoreError
 from datetime import datetime, timedelta, timezone
 
@@ -387,6 +389,319 @@ def _discover_from_cloudtrail(
     return result
 
 
+# ---------------------------------------------------------------------------
+# CloudFormation template structural dependency extraction
+# ---------------------------------------------------------------------------
+
+
+def _walk_refs(obj: Any) -> list[str]:
+    """Recursively walk a CFN template value and extract all Ref / GetAtt targets."""
+    refs: list[str] = []
+    if isinstance(obj, dict):
+        if "Ref" in obj:
+            val = obj["Ref"]
+            if isinstance(val, str) and not val.startswith("AWS::"):
+                refs.append(val)
+        if "Fn::GetAtt" in obj:
+            val = obj["Fn::GetAtt"]
+            if isinstance(val, list) and len(val) >= 1:
+                refs.append(str(val[0]))
+            elif isinstance(val, str) and "." in val:
+                refs.append(val.split(".")[0])
+        for v in obj.values():
+            refs.extend(_walk_refs(v))
+    elif isinstance(obj, list):
+        for item in obj:
+            refs.extend(_walk_refs(item))
+    return refs
+
+
+def _discover_from_cfn_templates(
+    credentials: dict,
+    region: str,
+    resources: list[dict],
+) -> list[dict]:
+    """Derive structural dependency edges from CloudFormation templates.
+
+    For each CFN stack resource, parse the template and extract Ref / GetAtt /
+    DependsOn references between logical resources. Then map logical names to
+    physical resource IDs (via list_stack_resources) and finally to our
+    discovered resource DB UUIDs.
+    """
+    session = boto3.Session(
+        aws_access_key_id=credentials.get("aws_access_key_id"),
+        aws_secret_access_key=credentials.get("aws_secret_access_key"),
+        aws_session_token=credentials.get("aws_session_token"),
+        region_name=region,
+    )
+    cfn_client = session.client("cloudformation")
+
+    # Find CFN stack resources in our discovered resources
+    cfn_stacks = [
+        r for r in resources
+        if (r.get("aws_type") or "").endswith("CloudFormation::Stack")
+    ]
+    if not cfn_stacks:
+        return []
+
+    # Build map: physical_id -> our DB resource UUID
+    # Physical IDs can be instance IDs, SG IDs, subnet IDs, ARNs, etc.
+    physical_to_db_id: dict[str, str] = {}
+    for r in resources:
+        db_id = str(r.get("id", ""))
+        if not db_id:
+            continue
+        raw = r.get("raw_config") or {}
+        # Index by common physical ID fields
+        for key in (
+            "instance_id", "InstanceId",
+            "group_id", "GroupId",
+            "vpc_id", "VpcId",
+            "subnet_id", "SubnetId",
+            "volume_id", "VolumeId",
+            "interface_id", "NetworkInterfaceId",
+            "igw_id", "InternetGatewayId",
+            "nat_gateway_id", "NatGatewayId",
+            "route_table_id", "RouteTableId",
+            "network_acl_id", "NetworkAclId",
+            "allocation_id", "AllocationId",
+            "launch_template_id", "LaunchTemplateId",
+            "asg_name", "AutoScalingGroupName",
+        ):
+            val = raw.get(key)
+            if val:
+                physical_to_db_id[str(val)] = db_id
+        # Index by ARN
+        arn = raw.get("arn") or r.get("aws_arn") or ""
+        if arn:
+            physical_to_db_id[str(arn)] = db_id
+        # Index by name for ALBs/TGs
+        name = raw.get("name") or r.get("name") or ""
+        if name:
+            physical_to_db_id[name] = db_id
+
+    all_edges: list[dict] = []
+
+    for stack_res in cfn_stacks:
+        raw = stack_res.get("raw_config") or {}
+        stack_name = raw.get("stack_name") or stack_res.get("name") or ""
+        template_str = raw.get("template") or ""
+        if not stack_name or not template_str:
+            continue
+
+        # Parse template
+        try:
+            if template_str.strip().startswith("{"):
+                template = json.loads(template_str)
+            else:
+                template = yaml.safe_load(template_str)
+        except Exception as exc:
+            logger.warning("Failed to parse CFN template for %s: %s", stack_name, exc)
+            continue
+
+        cfn_resources = template.get("Resources", {})
+        if not cfn_resources:
+            continue
+
+        # Step 1: Extract logical dependency graph from template
+        # logical_name -> set of logical names it depends on
+        logical_deps: dict[str, set[str]] = defaultdict(set)
+        for logical_name, res_def in cfn_resources.items():
+            if not isinstance(res_def, dict):
+                continue
+            # Explicit DependsOn
+            depends_on = res_def.get("DependsOn", [])
+            if isinstance(depends_on, str):
+                depends_on = [depends_on]
+            for dep in depends_on:
+                logical_deps[logical_name].add(dep)
+            # Implicit refs from Properties
+            props = res_def.get("Properties", {})
+            for ref_target in _walk_refs(props):
+                if ref_target in cfn_resources and ref_target != logical_name:
+                    logical_deps[logical_name].add(ref_target)
+
+        # Step 2: Map logical names -> physical IDs via list_stack_resources
+        logical_to_physical: dict[str, str] = {}
+        try:
+            paginator = cfn_client.get_paginator("list_stack_resources")
+            for page in paginator.paginate(StackName=stack_name):
+                for sr in page.get("StackResourceSummaries", []):
+                    logical_to_physical[sr["LogicalResourceId"]] = sr.get("PhysicalResourceId", "")
+        except (ClientError, BotoCoreError) as exc:
+            logger.warning("list_stack_resources failed for %s: %s", stack_name, exc)
+            continue
+
+        logger.info(
+            "CFN stack '%s': %d resources, %d dependency links",
+            stack_name, len(logical_to_physical),
+            sum(len(deps) for deps in logical_deps.values()),
+        )
+
+        # Step 3: Map physical IDs to our DB resource UUIDs and create edges
+        for logical_name, dep_targets in logical_deps.items():
+            src_physical = logical_to_physical.get(logical_name, "")
+            src_db_id = physical_to_db_id.get(src_physical)
+
+            for dep_logical in dep_targets:
+                tgt_physical = logical_to_physical.get(dep_logical, "")
+                tgt_db_id = physical_to_db_id.get(tgt_physical)
+
+                if src_db_id and tgt_db_id and src_db_id != tgt_db_id:
+                    all_edges.append({
+                        "source_ip": "",
+                        "target_ip": "",
+                        "port": 0,
+                        "protocol": "cfn-structural",
+                        "byte_count": 0.0,
+                        "flow_count": 1,
+                        "source_resource_id": src_db_id,
+                        "target_resource_id": tgt_db_id,
+                    })
+
+    logger.info("Derived %d structural edges from CFN templates", len(all_edges))
+    return all_edges
+
+
+def _discover_structural_edges(resources: list[dict]) -> list[dict]:
+    """Extract structural dependency edges from raw_config fields.
+
+    These represent "is-in" / "attached-to" / "uses" relationships that are
+    config facts, not network traffic. They're essential for determining which
+    resources a workload actually depends on.
+    """
+    # Build lookup maps: physical_id -> resource dict
+    by_id: dict[str, dict] = {}          # resource DB id -> resource
+    by_vpc: dict[str, list[dict]] = {}   # vpc physical id -> resources
+    by_subnet: dict[str, list[dict]] = {}
+    by_sg: dict[str, list[dict]] = {}
+    by_instance: dict[str, list[dict]] = {}
+
+    for r in resources:
+        rid = r.get("id", "")
+        if rid:
+            by_id[str(rid)] = r
+        rc = r.get("raw_config") or {}
+        atype = r.get("aws_type", "")
+
+        # Index by physical IDs for reverse lookups
+        for vk in ("vpc_id", "VpcId"):
+            v = rc.get(vk, "")
+            if v and atype == "AWS::EC2::VPC":
+                by_vpc.setdefault(v, []).append(r)
+        for sk in ("subnet_id", "SubnetId"):
+            v = rc.get(sk, "")
+            if v and atype == "AWS::EC2::Subnet":
+                by_subnet.setdefault(v, []).append(r)
+        for gk in ("group_id", "GroupId"):
+            v = rc.get(gk, "")
+            if v and atype == "AWS::EC2::SecurityGroup":
+                by_sg.setdefault(v, []).append(r)
+        for ik in ("instance_id", "InstanceId"):
+            v = rc.get(ik, "")
+            if v and atype == "AWS::EC2::Instance":
+                by_instance.setdefault(v, []).append(r)
+
+    def _edge(src: dict, tgt: dict) -> dict:
+        return {
+            "source_ip": "",
+            "target_ip": "",
+            "port": 0,
+            "protocol": "structural",
+            "byte_count": 0.0,
+            "flow_count": 0,
+            "source_resource_id": str(src.get("id", "")),
+            "target_resource_id": str(tgt.get("id", "")),
+        }
+
+    edges: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add(src: dict, tgt: dict) -> None:
+        key = (str(src.get("id", "")), str(tgt.get("id", "")))
+        if key[0] and key[1] and key[0] != key[1] and key not in seen:
+            seen.add(key)
+            edges.append(_edge(src, tgt))
+
+    for r in resources:
+        rc = r.get("raw_config") or {}
+        atype = r.get("aws_type", "")
+
+        # Instance → Subnet, VPC, SecurityGroups
+        if atype == "AWS::EC2::Instance":
+            for sk in ("subnet_id", "SubnetId"):
+                sid = rc.get(sk, "")
+                if sid:
+                    for tgt in by_subnet.get(sid, []):
+                        _add(r, tgt)
+            for vk in ("vpc_id", "VpcId"):
+                vid = rc.get(vk, "")
+                if vid:
+                    for tgt in by_vpc.get(vid, []):
+                        _add(r, tgt)
+            for sg_id in rc.get("security_groups", rc.get("SecurityGroups", [])):
+                if isinstance(sg_id, str):
+                    for tgt in by_sg.get(sg_id, []):
+                        _add(r, tgt)
+
+        # Subnet → VPC
+        elif atype == "AWS::EC2::Subnet":
+            for vk in ("vpc_id", "VpcId"):
+                vid = rc.get(vk, "")
+                if vid:
+                    for tgt in by_vpc.get(vid, []):
+                        _add(r, tgt)
+
+        # SecurityGroup → VPC
+        elif atype == "AWS::EC2::SecurityGroup":
+            for vk in ("vpc_id", "VpcId"):
+                vid = rc.get(vk, "")
+                if vid:
+                    for tgt in by_vpc.get(vid, []):
+                        _add(r, tgt)
+
+        # Volume → Instance (via attachments)
+        elif atype == "AWS::EC2::Volume":
+            for att in rc.get("attachments", rc.get("Attachments", [])):
+                if isinstance(att, dict):
+                    iid = att.get("instance_id", att.get("InstanceId", ""))
+                    if iid:
+                        for tgt in by_instance.get(iid, []):
+                            _add(r, tgt)
+
+        # NetworkInterface → Subnet, VPC
+        elif atype == "AWS::EC2::NetworkInterface":
+            for sk in ("subnet_id", "SubnetId"):
+                sid = rc.get(sk, "")
+                if sid:
+                    for tgt in by_subnet.get(sid, []):
+                        _add(r, tgt)
+            for vk in ("vpc_id", "VpcId"):
+                vid = rc.get(vk, "")
+                if vid:
+                    for tgt in by_vpc.get(vid, []):
+                        _add(r, tgt)
+
+        # RDS → VPC
+        elif atype == "AWS::RDS::DBInstance":
+            for vk in ("vpc_id", "VpcId"):
+                vid = rc.get(vk, "")
+                if vid:
+                    for tgt in by_vpc.get(vid, []):
+                        _add(r, tgt)
+
+        # LoadBalancer → VPC
+        elif "LoadBalancer" in atype:
+            for vk in ("vpc_id", "VpcId"):
+                vid = rc.get(vk, "")
+                if vid:
+                    for tgt in by_vpc.get(vid, []):
+                        _add(r, tgt)
+
+    logger.info("Derived %d structural edges from raw_config", len(edges))
+    return edges
+
+
 def discover_dependencies(
     credentials: dict,
     region: str,
@@ -418,10 +733,13 @@ def discover_dependencies(
     if not log_groups:
         logger.warning(
             "No CloudWatch flow log groups found for VPCs %s; "
-            "falling back to CloudTrail event history.",
+            "falling back to CloudTrail + CFN structural analysis.",
             vpc_ids,
         )
-        return _discover_from_cloudtrail(credentials, region, resources)
+        edges = _discover_from_cloudtrail(credentials, region, resources)
+        edges.extend(_discover_from_cfn_templates(credentials, region, resources))
+        edges.extend(_discover_structural_edges(resources))
+        return edges
 
     logger.info("Found %d flow log group(s): %s", len(log_groups), log_groups)
 
@@ -496,5 +814,13 @@ def discover_dependencies(
     # Supplement with CloudTrail API-level edges
     ct_edges = _discover_from_cloudtrail(credentials, region, resources)
     edges.extend(ct_edges)
+
+    # Supplement with CloudFormation structural edges
+    cfn_edges = _discover_from_cfn_templates(credentials, region, resources)
+    edges.extend(cfn_edges)
+
+    # Supplement with raw_config structural edges (instance→subnet, subnet→VPC, etc.)
+    struct_edges = _discover_structural_edges(resources)
+    edges.extend(struct_edges)
 
     return edges

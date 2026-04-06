@@ -12,6 +12,10 @@ export interface WorkloadCardProps {
   groupingMethod?: string | null;
   graphSvg?: string | null;
   onClick?: () => void;
+  isBound?: boolean;
+  onSelect?: () => void;
+  onUnbind?: () => void;
+  selectLoading?: boolean;
 }
 
 const WORKLOAD_CONFIG: Record<string, { label: string; color: string; bg: string; border: string; icon: JSX.Element }> = {
@@ -144,6 +148,10 @@ export default function WorkloadCard({
   totalOciCost,
   graphSvg,
   onClick,
+  isBound,
+  onSelect,
+  onUnbind,
+  selectLoading,
 }: WorkloadCardProps) {
   const [showGraph, setShowGraph] = useState(false);
   const config = getConfig(workloadType);
@@ -151,7 +159,11 @@ export default function WorkloadCard({
   return (
     <div
       className="panel"
-      style={{ overflow: 'hidden' }}
+      style={{
+        overflow: 'hidden',
+        border: isBound ? '2px solid var(--color-ember)' : undefined,
+        boxShadow: isBound ? '0 0 0 1px var(--color-ember), var(--shadow-card)' : undefined,
+      }}
     >
       {/* Color bar */}
       <div style={{ height: '3px', background: config.color }} />
@@ -299,8 +311,21 @@ export default function WorkloadCard({
         </details>
       </div>
 
+      {/* Bound badge */}
+      {isBound && (
+        <div
+          className="flex items-center gap-2 px-4 py-2"
+          style={{ background: 'var(--color-ember-dim)', borderTop: '1px solid var(--color-rule)' }}
+        >
+          <svg className="w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--color-ember)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+          </svg>
+          <span className="text-xs font-semibold" style={{ color: 'var(--color-ember)' }}>Selected for Migration</span>
+        </div>
+      )}
+
       {/* Action bar */}
-      {(graphSvg || onClick) && (
+      {(graphSvg || onClick || onSelect || onUnbind) && (
         <div
           className="flex items-center"
           style={{ borderTop: '1px solid var(--color-rule)' }}
@@ -315,7 +340,7 @@ export default function WorkloadCard({
                 cursor: 'pointer',
                 color: 'var(--color-text-dim)',
                 fontFamily: 'inherit',
-                borderRight: onClick ? '1px solid var(--color-rule)' : undefined,
+                borderRight: (onClick || onSelect || onUnbind) ? '1px solid var(--color-rule)' : undefined,
               }}
               onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-well)'; e.currentTarget.style.color = 'var(--color-text-bright)'; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--color-text-dim)'; }}
@@ -344,6 +369,43 @@ export default function WorkloadCard({
               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
               </svg>
+            </button>
+          )}
+          {isBound && onUnbind && (
+            <button
+              onClick={onUnbind}
+              disabled={selectLoading}
+              className="flex-1 flex items-center justify-center gap-2 py-2.5 text-xs font-medium transition-colors"
+              style={{
+                background: 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                color: 'var(--color-text-dim)',
+                fontFamily: 'inherit',
+                borderRight: '1px solid var(--color-rule)',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-well)'; e.currentTarget.style.color = '#dc2626'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--color-text-dim)'; }}
+            >
+              {selectLoading ? <span className="spinner" /> : 'Unbind'}
+            </button>
+          )}
+          {!isBound && onSelect && (
+            <button
+              onClick={onSelect}
+              disabled={selectLoading}
+              className="flex-1 flex items-center justify-center gap-2 py-2.5 text-xs font-semibold transition-colors"
+              style={{
+                background: 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                color: 'var(--color-ember)',
+                fontFamily: 'inherit',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-ember-dim)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+            >
+              {selectLoading ? <><span className="spinner" />Selecting...</> : 'Select for Migration'}
             </button>
           )}
         </div>
@@ -398,10 +460,82 @@ export default function WorkloadCard({
                 </svg>
               </button>
             </div>
-            {/* SVG content */}
+            {/* Zoom controls */}
             <div
+              className="flex items-center gap-3 px-4 py-2"
+              style={{ borderBottom: '1px solid var(--color-rule)' }}
+            >
+              <button
+                onClick={() => {
+                  const el = document.getElementById('graph-svg-container');
+                  const svg = el?.querySelector('svg');
+                  const slider = document.getElementById('graph-zoom-slider') as HTMLInputElement;
+                  if (!svg || !slider) return;
+                  const newVal = Math.max(10, Number(slider.value) - 20);
+                  slider.value = String(newVal);
+                  svg.style.width = newVal + '%';
+                  svg.style.height = 'auto';
+                }}
+                className="flex items-center justify-center rounded"
+                style={{ width: '1.75rem', height: '1.75rem', background: 'var(--color-well)', border: '1px solid var(--color-rule)', cursor: 'pointer', color: 'var(--color-text-dim)', fontSize: '16px', fontWeight: 'bold' }}
+              >−</button>
+              <input
+                id="graph-zoom-slider"
+                type="range"
+                min="10"
+                max="200"
+                defaultValue="100"
+                style={{ flex: 1, accentColor: '#60a5fa' }}
+                onChange={(e) => {
+                  const el = document.getElementById('graph-svg-container');
+                  const svg = el?.querySelector('svg');
+                  if (!svg) return;
+                  svg.style.width = e.target.value + '%';
+                  svg.style.height = 'auto';
+                }}
+              />
+              <button
+                onClick={() => {
+                  const el = document.getElementById('graph-svg-container');
+                  const svg = el?.querySelector('svg');
+                  const slider = document.getElementById('graph-zoom-slider') as HTMLInputElement;
+                  if (!svg || !slider) return;
+                  const newVal = Math.min(200, Number(slider.value) + 20);
+                  slider.value = String(newVal);
+                  svg.style.width = newVal + '%';
+                  svg.style.height = 'auto';
+                }}
+                className="flex items-center justify-center rounded"
+                style={{ width: '1.75rem', height: '1.75rem', background: 'var(--color-well)', border: '1px solid var(--color-rule)', cursor: 'pointer', color: 'var(--color-text-dim)', fontSize: '16px', fontWeight: 'bold' }}
+              >+</button>
+              <button
+                onClick={() => {
+                  const el = document.getElementById('graph-svg-container');
+                  const svg = el?.querySelector('svg');
+                  const slider = document.getElementById('graph-zoom-slider') as HTMLInputElement;
+                  if (!svg || !slider) return;
+                  slider.value = '100';
+                  svg.style.width = '100%';
+                  svg.style.height = 'auto';
+                }}
+                className="text-xs px-2 py-1 rounded"
+                style={{ background: 'var(--color-well)', border: '1px solid var(--color-rule)', cursor: 'pointer', color: 'var(--color-text-dim)' }}
+              >Fit</button>
+            </div>
+            {/* SVG content — fit to window, scrollable */}
+            <div
+              id="graph-svg-container"
               className="overflow-auto p-4"
-              style={{ maxHeight: 'calc(90vh - 60px)' }}
+              style={{ maxHeight: 'calc(90vh - 110px)' }}
+              ref={(el) => {
+                if (!el) return;
+                const svg = el.querySelector('svg');
+                if (svg) {
+                  svg.style.width = '100%';
+                  svg.style.height = 'auto';
+                  svg.style.maxWidth = 'none';
+                }
+              }}
               dangerouslySetInnerHTML={{ __html: graphSvg! }}
             />
           </div>

@@ -79,10 +79,14 @@ class MigrationOut(BaseModel):
     plan_max_iterations: Optional[int] = None
     migrate_status: Optional[str] = None
     migrate_workload_name: Optional[str] = None
+    migrate_oci_connection_id: Optional[str] = None
     migrate_started_at: Optional[str] = None
     migrate_current_step: Optional[str] = None
     migrate_terraform_plan: Optional[str] = None
     migrate_logs: Optional[list] = None
+    bound_app_group_id: Optional[str] = None
+    bound_app_group_name: Optional[str] = None
+    bound_at: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -124,7 +128,7 @@ def _to_str(val):
     return str(val)
 
 
-def _mig_to_out(mig) -> MigrationOut:
+def _mig_to_out(mig, bound_group_name: str | None = None) -> MigrationOut:
     """Convert a Migration ORM object to MigrationOut."""
     return MigrationOut(
         id=str(mig.id), name=mig.name,
@@ -144,6 +148,9 @@ def _mig_to_out(mig) -> MigrationOut:
         migrate_current_step=mig.migrate_current_step,
         migrate_terraform_plan=mig.migrate_terraform_plan,
         migrate_logs=mig.migrate_logs,
+        bound_app_group_id=_to_str(mig.bound_app_group_id),
+        bound_app_group_name=bound_group_name,
+        bound_at=_to_str(mig.bound_at),
     )
 
 
@@ -291,6 +298,8 @@ async def get_migration(
     tenant: Tenant = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
 ):
+    from app.db.models import AppGroup
+
     result = await db.execute(
         select(Migration).where(
             Migration.id == uuid.UUID(mig_id),
@@ -300,7 +309,17 @@ async def get_migration(
     mig = result.scalar_one_or_none()
     if not mig:
         raise HTTPException(status_code=404, detail="Migration not found")
-    return _mig_to_out(mig)
+
+    # Resolve bound group name
+    bound_group_name = None
+    if mig.bound_app_group_id:
+        grp = (await db.execute(
+            select(AppGroup).where(AppGroup.id == mig.bound_app_group_id)
+        )).scalar_one_or_none()
+        if grp:
+            bound_group_name = grp.name
+
+    return _mig_to_out(mig, bound_group_name=bound_group_name)
 
 
 @router.delete("/migrations/{mig_id}", status_code=204)
@@ -1216,6 +1235,7 @@ async def upload_file(
 async def list_resources(
     type: Optional[str] = None,
     migration_id: Optional[str] = None,
+    connection_id: Optional[str] = None,
     status_filter: Optional[str] = None,
     tenant: Tenant = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
@@ -1224,10 +1244,15 @@ async def list_resources(
     query = select(Resource).where(Resource.tenant_id == tenant.id)
     if type:
         query = query.where(Resource.aws_type == type)
+    if connection_id:
+        query = query.where(Resource.aws_connection_id == uuid.UUID(connection_id))
     if migration_id:
         query = query.where(Resource.migration_id == uuid.UUID(migration_id))
     if status_filter:
         query = query.where(Resource.status == status_filter)
+    else:
+        # Exclude stale resources by default
+        query = query.where(Resource.status != "stale")
 
     result = await db.execute(query)
     rows = result.scalars().all()

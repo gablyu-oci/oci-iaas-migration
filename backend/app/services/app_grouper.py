@@ -1,14 +1,20 @@
 """Application grouping engine -- groups resources into logical applications.
 
-This module is purely algorithmic (no external API calls). It assigns
-resources to application groups using a three-pass strategy:
+Includes an optional LLM review pass that uses Claude to refine grouping
+results based on resource context, dependency edges, and CloudTrail data.
+
+The grouping pipeline:
 
   1. Tag-based grouping   -- resources that share a known application tag value
   2. Network-based grouping -- ungrouped resources that share VPC + subnet
   3. Traffic-based merging  -- merge groups with heavy cross-group traffic
+  4. Attachment / CFN matching -- EBS volumes, CFN stacks
+  5. LLM review (optional) -- Claude reviews groups + ungrouped resources and
+     suggests merges, moves, and new groups based on full context
 """
 from __future__ import annotations
 
+import json
 import logging
 from collections import defaultdict
 from itertools import combinations
@@ -315,9 +321,298 @@ def classify_workload_type(resources: list[dict]) -> str:
 # Public API
 # ---------------------------------------------------------------------------
 
+_LLM_REVIEW_PROMPT = '''You are a cloud infrastructure architect reviewing automated resource grouping results.
+
+## Current Groups
+{groups_json}
+
+## Ungrouped Resources
+{ungrouped_json}
+
+## Dependency Edges (CloudTrail + VPC Flow Logs)
+{edges_json}
+
+## Task
+Review the grouping above and suggest adjustments. Consider:
+- Resources that clearly belong together (same VPC, same stack, same application) but are in different groups or ungrouped
+- Ungrouped networking resources (subnets, route tables, NACLs, internet gateways, NAT gateways, EIPs) that support a grouped application
+- Load balancers, target groups, listeners, and launch templates that serve grouped compute resources
+- Security groups referenced by grouped instances or load balancers
+- Resources with the same aws:cloudformation:stack-name tag should be in the same group
+
+Respond with valid JSON only:
+{{
+  "moves": [
+    {{"resource_id": "<id>", "from_group": "<name or ungrouped>", "to_group": "<name>", "reason": "..."}}
+  ],
+  "merge_groups": [
+    {{"source": "<group to merge from>", "target": "<group to merge into>", "reason": "..."}}
+  ],
+  "new_groups": [
+    {{"name": "<name>", "resource_ids": ["<id>", ...], "reason": "..."}}
+  ]
+}}
+
+If no changes needed, return {{"moves": [], "merge_groups": [], "new_groups": []}}'''
+
+
+def _llm_review_groups(
+    groups: dict[str, list[str]],
+    resource_by_id: dict[str, dict],
+    dependency_edges: list[dict],
+    anthropic_client: Any,
+) -> dict[str, list[str]]:
+    """Pass 5: Use Claude to review and refine the grouping results.
+
+    Sends the current groups, ungrouped singletons, resource context, and
+    dependency edges to the LLM for review. Applies suggested moves/merges.
+    """
+    # Build summaries for the prompt
+    named_groups: dict[str, list[dict]] = {}
+    ungrouped: list[dict] = []
+
+    for gname, rids in groups.items():
+        summaries = []
+        for rid in rids:
+            r = resource_by_id.get(rid, {})
+            raw = r.get("raw_config") or {}
+            tags = raw.get("Tags", [])
+            tag_map = {t["Key"]: t["Value"] for t in tags if isinstance(t, dict) and "Key" in t}
+            summaries.append({
+                "resource_id": rid,
+                "aws_type": r.get("aws_type", ""),
+                "name": r.get("name", ""),
+                "vpc_id": raw.get("vpc_id") or raw.get("VpcId", ""),
+                "subnet_id": raw.get("subnet_id") or raw.get("SubnetId", ""),
+                "cfn_stack": tag_map.get("aws:cloudformation:stack-name", ""),
+            })
+        if gname.startswith("ungrouped-"):
+            ungrouped.extend(summaries)
+        else:
+            named_groups[gname] = summaries
+
+    # Summarise edges
+    edge_summaries = []
+    for e in dependency_edges[:200]:  # cap to avoid huge prompts
+        edge_summaries.append({
+            "source": e.get("source_resource_id", ""),
+            "target": e.get("target_resource_id", ""),
+            "protocol": e.get("protocol", ""),
+            "flow_count": e.get("flow_count", 0),
+        })
+
+    prompt = _LLM_REVIEW_PROMPT.format(
+        groups_json=json.dumps(named_groups, indent=2, default=str),
+        ungrouped_json=json.dumps(ungrouped, indent=2, default=str),
+        edges_json=json.dumps(edge_summaries, indent=2, default=str),
+    )
+
+    try:
+        response = anthropic_client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=4096,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        raw_text = ""
+        for block in response.content:
+            if hasattr(block, "text"):
+                raw_text += block.text
+
+        if not raw_text.strip():
+            logger.warning("Empty LLM response for grouping review")
+            return groups
+
+        # Strip markdown fences
+        cleaned = raw_text.strip()
+        if cleaned.startswith("```"):
+            lines = cleaned.split("\n")
+            lines = [l for l in lines if not l.strip().startswith("```")]
+            cleaned = "\n".join(lines)
+
+        suggestions = json.loads(cleaned)
+
+        changes_made = 0
+
+        # Apply merges first
+        for merge in suggestions.get("merge_groups", []):
+            src = merge.get("source", "")
+            tgt = merge.get("target", "")
+            if src in groups and tgt in groups and src != tgt:
+                groups[tgt].extend(groups.pop(src))
+                changes_made += 1
+                logger.info("LLM merge: '%s' → '%s' (%s)", src, tgt, merge.get("reason", ""))
+
+        # Apply moves
+        for move in suggestions.get("moves", []):
+            rid = move.get("resource_id", "")
+            to_group = move.get("to_group", "")
+            if not rid or not to_group:
+                continue
+            # Remove from current group
+            for gname, rids in groups.items():
+                if rid in rids:
+                    rids.remove(rid)
+                    break
+            # Add to target (create if needed)
+            if to_group not in groups:
+                groups[to_group] = []
+            if rid not in groups[to_group]:
+                groups[to_group].append(rid)
+                changes_made += 1
+                logger.info("LLM move: %s → '%s' (%s)", rid, to_group, move.get("reason", ""))
+
+        # Create new groups
+        for new in suggestions.get("new_groups", []):
+            gname = new.get("name", "")
+            rids = new.get("resource_ids", [])
+            if not gname or not rids:
+                continue
+            # Remove these resources from any existing group
+            for existing_rids in groups.values():
+                for rid in rids:
+                    if rid in existing_rids:
+                        existing_rids.remove(rid)
+            groups[gname] = rids
+            changes_made += 1
+            logger.info("LLM new group: '%s' with %d resources (%s)", gname, len(rids), new.get("reason", ""))
+
+        # Clean up empty groups
+        groups = {k: v for k, v in groups.items() if v}
+
+        logger.info("LLM grouping review applied %d changes", changes_made)
+
+    except json.JSONDecodeError as exc:
+        logger.warning("Failed to parse LLM grouping review response: %s", exc)
+    except Exception as exc:
+        logger.warning("LLM grouping review failed: %s", exc)
+
+    return groups
+
+
+# Resource types that represent top-level workload entries (starting points for BFS)
+_PRIMARY_TYPES = {
+    "AWS::EC2::Instance",
+    "AWS::RDS::DBInstance",
+    "AWS::CloudFormation::Stack",
+    "AWS::ElasticLoadBalancingV2::LoadBalancer",
+    "AWS::AutoScaling::AutoScalingGroup",
+    "AWS::Lambda::Function",
+    "AWS::EC2::LaunchTemplate",
+}
+
+
+def _validate_group_membership(
+    groups: dict[str, list[str]],
+    resource_by_id: dict[str, dict],
+    dependency_edges: list[dict],
+) -> dict[str, list[str]]:
+    """Validate and correct group membership using dependency graph reachability.
+
+    For each group:
+    1. Identify primary resources (instances, stacks, LBs, etc.)
+    2. BFS from primaries following DIRECTIONAL dependency edges (source→target)
+    3. Add reachable resources that are missing from the group
+    4. Remove non-primary resources that are NOT reachable
+
+    Edges are directional: source "depends on" / "uses" target.
+    E.g., instance→subnet means the instance uses that subnet.
+    We follow source→target (forward) to find what primaries depend on,
+    and target→source (reverse) to find what depends on primaries (e.g.,
+    volume attached to instance).
+
+    We do NOT follow reverse edges from infrastructure resources (VPC, subnet)
+    back to all their users — that would pull in unrelated resources that
+    happen to share the same VPC.
+    """
+    if not dependency_edges:
+        logger.info("No dependency edges available, skipping group validation")
+        return groups
+
+    # Build directed adjacency lists
+    # forward: source → {targets}  (resource depends on these)
+    # reverse: target → {sources}  (these depend on the resource)
+    forward: dict[str, set[str]] = defaultdict(set)
+    reverse: dict[str, set[str]] = defaultdict(set)
+    for edge in dependency_edges:
+        src = edge.get("source_resource_id", "")
+        tgt = edge.get("target_resource_id", "")
+        if src and tgt:
+            forward[src].add(tgt)
+            reverse[tgt].add(src)
+
+    # Resource types that are shared infrastructure — don't follow reverse
+    # edges FROM these types (would pull in all users of the same VPC/subnet)
+    _INFRA_TYPES = {
+        "AWS::EC2::VPC",
+        "AWS::EC2::Subnet",
+        "AWS::EC2::RouteTable",
+        "AWS::EC2::NetworkAcl",
+        "AWS::EC2::InternetGateway",
+        "AWS::EC2::NatGateway",
+    }
+
+    all_known_ids = set(resource_by_id.keys())
+
+    validated: dict[str, list[str]] = {}
+    for group_name, resource_ids in groups.items():
+        # Find primaries in this group
+        primaries = set()
+        for rid in resource_ids:
+            r = resource_by_id.get(rid)
+            if r and r.get("aws_type", "") in _PRIMARY_TYPES:
+                primaries.add(rid)
+
+        if not primaries:
+            validated[group_name] = resource_ids
+            continue
+
+        # BFS from primaries
+        reachable: set[str] = set()
+        queue = list(primaries)
+        visited: set[str] = set(primaries)
+
+        while queue:
+            current = queue.pop(0)
+            reachable.add(current)
+            current_type = resource_by_id.get(current, {}).get("aws_type", "")
+
+            # Follow forward edges: what does this resource depend on?
+            for neighbor in forward.get(current, set()):
+                if neighbor not in visited and neighbor in all_known_ids:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+
+            # Follow reverse edges: what depends on this resource?
+            # But NOT for shared infra types (would pull in the whole VPC)
+            if current_type not in _INFRA_TYPES:
+                for neighbor in reverse.get(current, set()):
+                    if neighbor not in visited and neighbor in all_known_ids:
+                        visited.add(neighbor)
+                        queue.append(neighbor)
+
+        original = set(resource_ids)
+        added = reachable - original
+        removed = original - reachable - primaries
+
+        if added:
+            added_names = [resource_by_id[r].get("name", r)[:40] for r in added if r in resource_by_id]
+            logger.info("Group '%s': adding %d reachable resources: %s",
+                        group_name, len(added), added_names[:5])
+        if removed:
+            removed_names = [resource_by_id[r].get("name", r)[:40] for r in removed if r in resource_by_id]
+            logger.info("Group '%s': removing %d unreachable resources: %s",
+                        group_name, len(removed), removed_names[:5])
+
+        validated[group_name] = sorted(reachable & all_known_ids)
+
+    return validated
+
+
 def compute_app_groups(
     resources: list[dict],
     dependency_edges: list[dict],
+    anthropic_client: Any = None,
 ) -> list[dict]:
     """Compute application groups from a flat list of resources.
 
@@ -438,7 +733,26 @@ def compute_app_groups(
     if ungrouped_counter:
         logger.info("Created %d singleton groups for ungrouped resources", ungrouped_counter)
 
-    # --- 5. Build result list, sorted by resource_count descending ---
+    # --- 5. LLM review pass (if client available) ---
+    if anthropic_client is not None:
+        logger.info("Running LLM grouping review pass")
+        all_groups = _llm_review_groups(
+            all_groups, resource_by_id, dependency_edges, anthropic_client,
+        )
+        # Update strategy_map for any new groups created by LLM
+        for gname in all_groups:
+            if gname not in strategy_map:
+                strategy_map[gname] = "llm-refined"
+    else:
+        logger.info("Skipping LLM grouping review (no client provided)")
+
+    # --- 6. Dependency-based group validation ---
+    # Walk the dependency graph from each group's primary resources to determine
+    # what is actually used. Add missing reachable resources, remove unreachable ones.
+    # Shared resources (VPC, subnet) can appear in multiple groups.
+    all_groups = _validate_group_membership(all_groups, resource_by_id, dependency_edges)
+
+    # --- 7. Build result list, sorted by resource_count descending ---
     results: list[dict] = []
     for name, resource_ids in all_groups.items():
         group_resources = [resource_by_id[rid] for rid in resource_ids if rid in resource_by_id]

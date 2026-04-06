@@ -123,11 +123,11 @@ class _MessagesResource:
 
         t = threading.Thread(target=_thread, daemon=True)
         t.start()
-        t.join(timeout=600)  # 10-minute ceiling per LLM call
+        t.join(timeout=900)  # 15-minute ceiling per LLM call
 
         if t.is_alive():
             # Thread still running after timeout — don't wait forever
-            raise TimeoutError("Agent SDK query timed out after 600s")
+            raise TimeoutError("Agent SDK query timed out after 900s")
         if holder[1] is not None:
             raise holder[1]
         if holder[0] is None:

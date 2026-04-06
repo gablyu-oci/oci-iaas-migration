@@ -37,12 +37,25 @@ _SERVICE_STYLES: dict[str, tuple[str, str, str]] = {
     "SecretsManager":      ("#a9a9a9", "#000000", "box"),
 }
 
-# Edge type -> (color, style, penwidth)
-_EDGE_STYLES: dict[str, tuple[str, str, str]] = {
-    "network":    ("#ff4500", "solid", "2.0"),
-    "cloudtrail": ("#ffa500", "solid", "1.5"),
-    "attachment": ("#228b22", "dashed", "1.5"),
-    "stack":      ("#808080", "dotted", "1.0"),
+# Edge type -> (color, style, penwidth, label)
+_EDGE_STYLES: dict[str, tuple[str, str, str, str]] = {
+    "network":        ("#ff4500", "solid",  "2.0", ""),
+    "cloudtrail":     ("#ffa500", "solid",  "1.5", "api call"),
+    "structural":     ("#64748b", "solid",  "1.2", ""),
+    "cfn-structural": ("#64748b", "solid",  "1.2", ""),
+    "attachment":     ("#228b22", "dashed", "1.5", "attached"),
+    "stack":          ("#808080", "dotted", "1.0", "contains"),
+}
+
+# Priority for dedup: when multiple edge types exist between same pair,
+# keep the most concrete relationship. Higher = preferred.
+_TYPE_PRIORITY: dict[str, int] = {
+    "structural": 5,       # hard config fact (instance.subnet_id)
+    "cfn-structural": 4,   # from CFN template parsing
+    "attachment": 3,       # volume attached to instance
+    "network": 2,          # observed traffic
+    "cloudtrail": 1,       # API-level dependency
+    "stack": 0,
 }
 
 
@@ -103,6 +116,7 @@ def render_workload_graph(
         pad="0.5",
         nodesep="0.8",
         ranksep="1.2",
+        splines="true",
     )
     dot.attr("node",
         fontname="Helvetica",
@@ -127,12 +141,19 @@ def render_workload_graph(
         resource_map[rid] = r
 
         aws_type = r.get("aws_type", "")
-        name = r.get("name", "") or rid[:8]
+        raw = r.get("raw_config") or {}
+        # Try multiple sources for a human-readable name
+        name = (r.get("name", "")
+                or raw.get("subnet_id", "") or raw.get("SubnetId", "")
+                or raw.get("vpc_id", "") or raw.get("VpcId", "")
+                or raw.get("group_id", "") or raw.get("GroupId", "")
+                or raw.get("instance_id", "") or raw.get("InstanceId", "")
+                or raw.get("volume_id", "") or raw.get("VolumeId", "")
+                or rid[:8])
         fill, font, shape = _match_service(aws_type)
-        service = _short_service(aws_type)
         short = _short_type(aws_type)
 
-        label = f"{service}\\n{name}" if name != rid[:8] else f"{service}\\n{short}"
+        label = f"{short}\\n{name}" if name != rid[:8] else short
 
         dot.node(
             rid,
@@ -143,19 +164,62 @@ def render_workload_graph(
             color=fill,
         )
 
-    # Dependency edges (network / cloudtrail)
-    for edge in edges:
+    # Filter out redundant transitive structural edges.
+    # If A→B and B→C both exist as structural edges, remove A→C (transitive).
+    # Keep all network/cloudtrail edges (those represent actual traffic calls).
+    filtered_edges = list(edges)
+    structural_pairs: set[tuple[str, str]] = set()
+    for e in edges:
+        proto = e.get("edge_type", e.get("protocol", ""))
+        if proto in ("structural", "cfn-structural"):
+            src = str(e.get("source_resource_id", ""))
+            tgt = str(e.get("target_resource_id", ""))
+            if src in resource_ids and tgt in resource_ids and src != tgt:
+                structural_pairs.add((src, tgt))
+
+    # Build adjacency for structural edges only
+    struct_children: dict[str, set[str]] = {}
+    for s, t in structural_pairs:
+        struct_children.setdefault(s, set()).add(t)
+
+    # Find transitive: A→C is redundant if A→B and B→C exist
+    redundant: set[tuple[str, str]] = set()
+    for src, targets in struct_children.items():
+        for mid in targets:
+            for grandchild in struct_children.get(mid, set()):
+                if grandchild in targets:
+                    redundant.add((src, grandchild))
+
+    if redundant:
+        filtered_edges = [
+            e for e in edges
+            if (str(e.get("source_resource_id", "")), str(e.get("target_resource_id", ""))) not in redundant
+            or e.get("edge_type", e.get("protocol", "")) not in ("structural", "cfn-structural")
+        ]
+
+    # Deduplicate edges between the same pair (keep most concrete relationship)
+    best_edge: dict[tuple[str, str], dict] = {}
+    for edge in filtered_edges:
         src = str(edge.get("source_resource_id", ""))
         tgt = str(edge.get("target_resource_id", ""))
-        if src not in resource_ids or tgt not in resource_ids:
+        if src not in resource_ids or tgt not in resource_ids or src == tgt:
             continue
-        if src == tgt:
-            continue
+        key = (src, tgt)
+        etype = edge.get("edge_type", edge.get("protocol", "structural"))
+        if key not in best_edge or _TYPE_PRIORITY.get(etype, 0) > _TYPE_PRIORITY.get(
+            best_edge[key].get("edge_type", best_edge[key].get("protocol", "")), 0
+        ):
+            best_edge[key] = edge
+
+    # Render deduplicated edges
+    for edge in best_edge.values():
+        src = str(edge.get("source_resource_id", ""))
+        tgt = str(edge.get("target_resource_id", ""))
 
         edge_type = edge.get("edge_type", edge.get("protocol", "network"))
-        color, style, pw = _EDGE_STYLES.get(edge_type, _EDGE_STYLES["network"])
+        color, style, pw, type_label = _EDGE_STYLES.get(edge_type, _EDGE_STYLES["structural"])
 
-        # Build label
+        # Build label: traffic data for network edges, type label for others
         parts = []
         byte_count = edge.get("byte_count")
         if byte_count and byte_count > 0:
@@ -170,21 +234,25 @@ def render_workload_graph(
         if flow_count and flow_count > 1:
             parts.append(f"({int(flow_count)})")
 
-        label = edge_type
         if parts:
-            label += " " + " ".join(parts)
+            label = " ".join(parts)
+        else:
+            label = type_label  # "attached", "api call", "member of", or "" for structural
 
         dot.edge(src, tgt, label=label, color=color, style=style, penwidth=pw)
 
-    # Structural edges (attachment, stack membership)
+    # Attachment edges — only render if not already covered by dependency edges
     for edge in (attachment_edges or []):
         src = str(edge.get("source", ""))
         tgt = str(edge.get("target", ""))
         if src not in resource_ids or tgt not in resource_ids:
             continue
+        key = (src, tgt)
+        if key in best_edge or (tgt, src) in best_edge:
+            continue  # Already rendered
         etype = edge.get("type", "attachment")
-        color, style, pw = _EDGE_STYLES.get(etype, _EDGE_STYLES["attachment"])
-        dot.edge(src, tgt, label=etype, color=color, style=style, penwidth=pw)
+        color, style, pw, type_label = _EDGE_STYLES.get(etype, _EDGE_STYLES["attachment"])
+        dot.edge(src, tgt, label=type_label, color=color, style=style, penwidth=pw)
 
     try:
         svg = dot.pipe(format="svg").decode("utf-8")
@@ -257,6 +325,29 @@ def build_workload_graphs(
                                 "source": rid,
                                 "target": target_rid,
                                 "type": "attachment",
+                            })
+
+            # CFN stack -> member resources ("contains")
+            if "CloudFormation::Stack" in aws_type:
+                stack_name = r.get("name", "") or raw.get("stack_name", "")
+                if stack_name:
+                    for member in resources:
+                        mrid = str(member.get("id", ""))
+                        if mrid == rid:
+                            continue
+                        mraw = member.get("raw_config") or {}
+                        # Check cfn_stack_name (from discovery tagging) or AWS tags
+                        member_stack = mraw.get("cfn_stack_name", "")
+                        if not member_stack:
+                            for tag in mraw.get("Tags", []):
+                                if tag.get("Key") == "aws:cloudformation:stack-name":
+                                    member_stack = tag.get("Value", "")
+                                    break
+                        if member_stack == stack_name:
+                            attachment_edges.append({
+                                "source": rid,
+                                "target": mrid,
+                                "type": "stack",
                             })
 
         svg = render_workload_graph(

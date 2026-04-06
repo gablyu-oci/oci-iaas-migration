@@ -16,6 +16,9 @@ export interface Migration {
   plan_workload_name?: string | null;
   plan_started_at?: string | null;
   plan_max_iterations?: number | null;
+  bound_app_group_id?: string | null;
+  bound_app_group_name?: string | null;
+  bound_at?: string | null;
   migrate_status?: string | null;
   migrate_workload_name?: string | null;
   migrate_started_at?: string | null;
@@ -49,7 +52,7 @@ export function useMigration(id: string) {
       const d = query.state.data;
       if (d?.discovery_status === 'discovering') return 3000;
       if (d?.plan_status === 'running') return 3000;
-      if (d?.migrate_status && !['completed', 'failed', 'rolled_back', 'rejected'].includes(d.migrate_status)) return 3000;
+      if (d?.migrate_status && !['completed', 'failed', 'rolled_back', 'rejected', 'test_passed', 'test_failed'].includes(d.migrate_status)) return 3000;
       return false;
     },
   });

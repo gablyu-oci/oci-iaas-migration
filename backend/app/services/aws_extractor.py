@@ -82,6 +82,44 @@ def extract_cfn_stacks(credentials: dict, region: str) -> list[dict[str, Any]]:
     return results
 
 
+def extract_cfn_stack_resources(credentials: dict, region: str) -> dict[str, str]:
+    """Build a map of physical resource ARN/ID → CFN stack name.
+
+    For every active CFN stack, lists its managed resources so that downstream
+    discovery can tag individual resources (EC2, VPC, RDS, etc.) as CFN-managed
+    and avoid translating them twice.
+
+    Returns: { physical_resource_id_or_arn: stack_name }
+    """
+    session = _build_session(credentials, region)
+    cfn = session.client("cloudformation")
+
+    membership: dict[str, str] = {}
+    active_statuses = [
+        "CREATE_COMPLETE", "UPDATE_COMPLETE", "UPDATE_ROLLBACK_COMPLETE",
+        "ROLLBACK_COMPLETE", "IMPORT_COMPLETE",
+    ]
+
+    try:
+        paginator = cfn.get_paginator("list_stacks")
+        for page in paginator.paginate(StackStatusFilter=active_statuses):
+            for summary in page.get("StackSummaries", []):
+                stack_name = summary["StackName"]
+                try:
+                    res_paginator = cfn.get_paginator("list_stack_resources")
+                    for res_page in res_paginator.paginate(StackName=stack_name):
+                        for res in res_page.get("StackResourceSummaries", []):
+                            phys_id = res.get("PhysicalResourceId", "")
+                            if phys_id:
+                                membership[phys_id] = stack_name
+                except ClientError:
+                    pass
+    except ClientError:
+        pass
+
+    return membership
+
+
 def extract_iam_policies(credentials: dict, region: str) -> list[dict[str, Any]]:
     """
     Extract customer-managed IAM policies and their latest version document.
@@ -230,6 +268,7 @@ def extract_vpcs(
                 "name": name,
                 "arn": f"arn:aws:ec2:{region}::vpc/{vpc['VpcId']}",
                 "subnets": subnets,
+                "Tags": vpc.get("Tags", []),
             })
         return results
     except (ClientError, BotoCoreError) as e:
@@ -264,6 +303,7 @@ def extract_security_groups(
                 "ingress_rules": sg.get("IpPermissions", []),
                 "egress_rules": sg.get("IpPermissionsEgress", []),
                 "arn": f"arn:aws:ec2:{region}::security-group/{sg['GroupId']}",
+                "Tags": sg.get("Tags", []),
             })
         return results
     except (ClientError, BotoCoreError) as e:
@@ -380,12 +420,21 @@ def extract_load_balancers(
                 lb_vpc = lb.get("VpcId", "")
                 if vpc_id and lb_vpc != vpc_id:
                     continue
+                # Fetch tags for this LB
+                lb_tags: list[dict] = []
+                try:
+                    tag_resp = elbv2.describe_tags(ResourceArns=[lb["LoadBalancerArn"]])
+                    for td in tag_resp.get("TagDescriptions", []):
+                        lb_tags = td.get("Tags", [])
+                except (ClientError, BotoCoreError):
+                    pass
                 results.append({
                     "name": lb.get("LoadBalancerName", ""),
                     "dns_name": lb.get("DNSName", ""),
                     "type": lb.get("Type", ""),
                     "vpc_id": lb_vpc,
                     "arn": lb.get("LoadBalancerArn", ""),
+                    "Tags": lb_tags,
                 })
         return results
     except (ClientError, BotoCoreError) as e:
@@ -413,6 +462,10 @@ def extract_auto_scaling_groups(
                 ids = [i["InstanceId"] for i in asg.get("Instances", [])]
                 if instance_id and instance_id not in ids:
                     continue
+                tags = [
+                    {"Key": t.get("Key", ""), "Value": t.get("Value", "")}
+                    for t in asg.get("Tags", [])
+                ]
                 results.append({
                     "asg_name": asg["AutoScalingGroupName"],
                     "min_size": asg.get("MinSize", 0),
@@ -420,6 +473,7 @@ def extract_auto_scaling_groups(
                     "desired_capacity": asg.get("DesiredCapacity", 0),
                     "instance_ids": ids,
                     "arn": asg.get("AutoScalingGroupARN", ""),
+                    "Tags": tags,
                 })
         return results
     except (ClientError, BotoCoreError) as e:
@@ -575,4 +629,463 @@ def extract_lambda_functions(
         return results
     except (ClientError, BotoCoreError) as e:
         print(f"Lambda extraction error: {e}")
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Additional networking & compute extractors
+# ---------------------------------------------------------------------------
+
+
+def extract_subnets(
+    credentials: dict, region: str, vpc_id: str | None = None
+) -> list[dict[str, Any]]:
+    """Extract subnets as standalone resources.
+
+    Each dict contains: subnet_id, vpc_id, cidr_block, availability_zone,
+    map_public_ip_on_launch, name, arn.
+    """
+    try:
+        session = _build_session(credentials, region)
+        ec2 = session.client("ec2")
+
+        kwargs: dict[str, Any] = {}
+        if vpc_id:
+            kwargs["Filters"] = [{"Name": "vpc-id", "Values": [vpc_id]}]
+
+        results: list[dict[str, Any]] = []
+        paginator = ec2.get_paginator("describe_subnets")
+        for page in paginator.paginate(**kwargs):
+            for s in page.get("Subnets", []):
+                name = ""
+                for tag in s.get("Tags", []):
+                    if tag["Key"] == "Name":
+                        name = tag["Value"]
+                        break
+                account_id = s.get("OwnerId", "")
+                results.append({
+                    "subnet_id": s["SubnetId"],
+                    "vpc_id": s.get("VpcId", ""),
+                    "cidr_block": s.get("CidrBlock", ""),
+                    "availability_zone": s.get("AvailabilityZone", ""),
+                    "map_public_ip_on_launch": s.get("MapPublicIpOnLaunch", False),
+                    "available_ip_count": s.get("AvailableIpAddressCount", 0),
+                    "name": name,
+                    "arn": s.get("SubnetArn", f"arn:aws:ec2:{region}:{account_id}:subnet/{s['SubnetId']}"),
+                    "Tags": s.get("Tags", []),
+                })
+        return results
+    except (ClientError, BotoCoreError) as e:
+        print(f"Subnet extraction error: {e}")
+        return []
+
+
+def extract_internet_gateways(
+    credentials: dict, region: str, vpc_id: str | None = None
+) -> list[dict[str, Any]]:
+    """Extract Internet Gateways.
+
+    Each dict contains: igw_id, attachments (list of vpc_ids), name, arn.
+    """
+    try:
+        session = _build_session(credentials, region)
+        ec2 = session.client("ec2")
+
+        kwargs: dict[str, Any] = {}
+        if vpc_id:
+            kwargs["Filters"] = [{"Name": "attachment.vpc-id", "Values": [vpc_id]}]
+
+        resp = ec2.describe_internet_gateways(**kwargs)
+        results: list[dict[str, Any]] = []
+        for igw in resp.get("InternetGateways", []):
+            name = ""
+            for tag in igw.get("Tags", []):
+                if tag["Key"] == "Name":
+                    name = tag["Value"]
+                    break
+            attachments = [
+                {"vpc_id": a.get("VpcId", ""), "state": a.get("State", "")}
+                for a in igw.get("Attachments", [])
+            ]
+            account_id = igw.get("OwnerId", "")
+            results.append({
+                "igw_id": igw["InternetGatewayId"],
+                "attachments": attachments,
+                "name": name,
+                "arn": f"arn:aws:ec2:{region}:{account_id}:internet-gateway/{igw['InternetGatewayId']}",
+                "Tags": igw.get("Tags", []),
+            })
+        return results
+    except (ClientError, BotoCoreError) as e:
+        print(f"Internet Gateway extraction error: {e}")
+        return []
+
+
+def extract_nat_gateways(
+    credentials: dict, region: str, vpc_id: str | None = None
+) -> list[dict[str, Any]]:
+    """Extract NAT Gateways.
+
+    Each dict contains: nat_gateway_id, vpc_id, subnet_id, state,
+    public_ip, private_ip, name, arn.
+    """
+    try:
+        session = _build_session(credentials, region)
+        ec2 = session.client("ec2")
+
+        kwargs: dict[str, Any] = {}
+        if vpc_id:
+            kwargs["Filter"] = [{"Name": "vpc-id", "Values": [vpc_id]}]
+
+        results: list[dict[str, Any]] = []
+        paginator = ec2.get_paginator("describe_nat_gateways")
+        for page in paginator.paginate(**kwargs):
+            for ngw in page.get("NatGateways", []):
+                if ngw.get("State", "") == "deleted":
+                    continue
+                name = ""
+                for tag in ngw.get("Tags", []):
+                    if tag["Key"] == "Name":
+                        name = tag["Value"]
+                        break
+                addresses = ngw.get("NatGatewayAddresses", [])
+                public_ip = addresses[0].get("PublicIp", "") if addresses else ""
+                private_ip = addresses[0].get("PrivateIp", "") if addresses else ""
+                allocation_id = addresses[0].get("AllocationId", "") if addresses else ""
+                results.append({
+                    "nat_gateway_id": ngw["NatGatewayId"],
+                    "vpc_id": ngw.get("VpcId", ""),
+                    "subnet_id": ngw.get("SubnetId", ""),
+                    "state": ngw.get("State", ""),
+                    "connectivity_type": ngw.get("ConnectivityType", "public"),
+                    "public_ip": public_ip,
+                    "private_ip": private_ip,
+                    "allocation_id": allocation_id,
+                    "name": name,
+                    "arn": f"arn:aws:ec2:{region}::natgateway/{ngw['NatGatewayId']}",
+                    "Tags": ngw.get("Tags", []),
+                })
+        return results
+    except (ClientError, BotoCoreError) as e:
+        print(f"NAT Gateway extraction error: {e}")
+        return []
+
+
+def extract_route_tables(
+    credentials: dict, region: str, vpc_id: str | None = None
+) -> list[dict[str, Any]]:
+    """Extract Route Tables with their routes and subnet associations.
+
+    Each dict contains: route_table_id, vpc_id, routes (list),
+    associations (list), name, arn.
+    """
+    try:
+        session = _build_session(credentials, region)
+        ec2 = session.client("ec2")
+
+        kwargs: dict[str, Any] = {}
+        if vpc_id:
+            kwargs["Filters"] = [{"Name": "vpc-id", "Values": [vpc_id]}]
+
+        resp = ec2.describe_route_tables(**kwargs)
+        results: list[dict[str, Any]] = []
+        for rt in resp.get("RouteTables", []):
+            name = ""
+            for tag in rt.get("Tags", []):
+                if tag["Key"] == "Name":
+                    name = tag["Value"]
+                    break
+            routes = [
+                {
+                    "destination": r.get("DestinationCidrBlock", r.get("DestinationIpv6CidrBlock", "")),
+                    "target": (
+                        r.get("GatewayId", "")
+                        or r.get("NatGatewayId", "")
+                        or r.get("InstanceId", "")
+                        or r.get("TransitGatewayId", "")
+                        or r.get("VpcPeeringConnectionId", "")
+                        or "local"
+                    ),
+                    "state": r.get("State", ""),
+                    "origin": r.get("Origin", ""),
+                }
+                for r in rt.get("Routes", [])
+            ]
+            associations = [
+                {
+                    "association_id": a.get("RouteTableAssociationId", ""),
+                    "subnet_id": a.get("SubnetId", ""),
+                    "main": a.get("Main", False),
+                }
+                for a in rt.get("Associations", [])
+            ]
+            account_id = rt.get("OwnerId", "")
+            results.append({
+                "route_table_id": rt["RouteTableId"],
+                "vpc_id": rt.get("VpcId", ""),
+                "routes": routes,
+                "associations": associations,
+                "name": name,
+                "arn": f"arn:aws:ec2:{region}:{account_id}:route-table/{rt['RouteTableId']}",
+                "Tags": rt.get("Tags", []),
+            })
+        return results
+    except (ClientError, BotoCoreError) as e:
+        print(f"Route table extraction error: {e}")
+        return []
+
+
+def extract_network_acls(
+    credentials: dict, region: str, vpc_id: str | None = None
+) -> list[dict[str, Any]]:
+    """Extract Network ACLs with their entries and subnet associations.
+
+    Each dict contains: network_acl_id, vpc_id, is_default, entries (list),
+    associations (list of subnet_ids), name, arn.
+    """
+    try:
+        session = _build_session(credentials, region)
+        ec2 = session.client("ec2")
+
+        kwargs: dict[str, Any] = {}
+        if vpc_id:
+            kwargs["Filters"] = [{"Name": "vpc-id", "Values": [vpc_id]}]
+
+        resp = ec2.describe_network_acls(**kwargs)
+        results: list[dict[str, Any]] = []
+        for nacl in resp.get("NetworkAcls", []):
+            name = ""
+            for tag in nacl.get("Tags", []):
+                if tag["Key"] == "Name":
+                    name = tag["Value"]
+                    break
+            entries = [
+                {
+                    "rule_number": e.get("RuleNumber", 0),
+                    "protocol": e.get("Protocol", ""),
+                    "rule_action": e.get("RuleAction", ""),
+                    "egress": e.get("Egress", False),
+                    "cidr_block": e.get("CidrBlock", ""),
+                    "port_range_from": e.get("PortRange", {}).get("From"),
+                    "port_range_to": e.get("PortRange", {}).get("To"),
+                }
+                for e in nacl.get("Entries", [])
+            ]
+            associations = [
+                {
+                    "association_id": a.get("NetworkAclAssociationId", ""),
+                    "subnet_id": a.get("SubnetId", ""),
+                }
+                for a in nacl.get("Associations", [])
+            ]
+            account_id = nacl.get("OwnerId", "")
+            results.append({
+                "network_acl_id": nacl["NetworkAclId"],
+                "vpc_id": nacl.get("VpcId", ""),
+                "is_default": nacl.get("IsDefault", False),
+                "entries": entries,
+                "associations": associations,
+                "name": name,
+                "arn": f"arn:aws:ec2:{region}:{account_id}:network-acl/{nacl['NetworkAclId']}",
+                "Tags": nacl.get("Tags", []),
+            })
+        return results
+    except (ClientError, BotoCoreError) as e:
+        print(f"Network ACL extraction error: {e}")
+        return []
+
+
+def extract_elastic_ips(
+    credentials: dict, region: str
+) -> list[dict[str, Any]]:
+    """Extract Elastic IP addresses.
+
+    Each dict contains: allocation_id, public_ip, association_id,
+    instance_id, network_interface_id, domain, name, arn.
+    """
+    try:
+        session = _build_session(credentials, region)
+        ec2 = session.client("ec2")
+
+        resp = ec2.describe_addresses()
+        results: list[dict[str, Any]] = []
+        for eip in resp.get("Addresses", []):
+            name = ""
+            for tag in eip.get("Tags", []):
+                if tag["Key"] == "Name":
+                    name = tag["Value"]
+                    break
+            allocation_id = eip.get("AllocationId", "")
+            results.append({
+                "allocation_id": allocation_id,
+                "public_ip": eip.get("PublicIp", ""),
+                "association_id": eip.get("AssociationId", ""),
+                "instance_id": eip.get("InstanceId", ""),
+                "network_interface_id": eip.get("NetworkInterfaceId", ""),
+                "domain": eip.get("Domain", ""),
+                "name": name,
+                "arn": f"arn:aws:ec2:{region}::eip/{allocation_id}",
+                "Tags": eip.get("Tags", []),
+            })
+        return results
+    except (ClientError, BotoCoreError) as e:
+        print(f"Elastic IP extraction error: {e}")
+        return []
+
+
+def extract_target_groups(
+    credentials: dict, region: str
+) -> list[dict[str, Any]]:
+    """Extract ELBv2 Target Groups.
+
+    Each dict contains: target_group_name, target_group_arn, port, protocol,
+    vpc_id, target_type, health_check, load_balancer_arns.
+    """
+    try:
+        session = _build_session(credentials, region)
+        elbv2 = session.client("elbv2")
+
+        results: list[dict[str, Any]] = []
+        paginator = elbv2.get_paginator("describe_target_groups")
+        for page in paginator.paginate():
+            for tg in page.get("TargetGroups", []):
+                tg_tags: list[dict] = []
+                try:
+                    tag_resp = elbv2.describe_tags(ResourceArns=[tg["TargetGroupArn"]])
+                    for td in tag_resp.get("TagDescriptions", []):
+                        tg_tags = td.get("Tags", [])
+                except (ClientError, BotoCoreError):
+                    pass
+                results.append({
+                    "target_group_name": tg.get("TargetGroupName", ""),
+                    "port": tg.get("Port"),
+                    "protocol": tg.get("Protocol", ""),
+                    "vpc_id": tg.get("VpcId", ""),
+                    "target_type": tg.get("TargetType", ""),
+                    "health_check": {
+                        "protocol": tg.get("HealthCheckProtocol", ""),
+                        "port": tg.get("HealthCheckPort", ""),
+                        "path": tg.get("HealthCheckPath", ""),
+                        "interval_seconds": tg.get("HealthCheckIntervalSeconds"),
+                        "timeout_seconds": tg.get("HealthCheckTimeoutSeconds"),
+                        "healthy_threshold": tg.get("HealthyThresholdCount"),
+                        "unhealthy_threshold": tg.get("UnhealthyThresholdCount"),
+                    },
+                    "load_balancer_arns": tg.get("LoadBalancerArns", []),
+                    "name": tg.get("TargetGroupName", ""),
+                    "arn": tg.get("TargetGroupArn", ""),
+                    "Tags": tg_tags,
+                })
+        return results
+    except (ClientError, BotoCoreError) as e:
+        print(f"Target Group extraction error: {e}")
+        return []
+
+
+def extract_listeners(
+    credentials: dict, region: str
+) -> list[dict[str, Any]]:
+    """Extract ELBv2 Listeners for all load balancers.
+
+    Each dict contains: listener_arn, load_balancer_arn, port, protocol,
+    default_actions.
+    """
+    try:
+        session = _build_session(credentials, region)
+        elbv2 = session.client("elbv2")
+
+        # First get all load balancers, then their listeners
+        lb_arns: list[str] = []
+        lb_paginator = elbv2.get_paginator("describe_load_balancers")
+        for page in lb_paginator.paginate():
+            for lb in page.get("LoadBalancers", []):
+                lb_arns.append(lb["LoadBalancerArn"])
+
+        results: list[dict[str, Any]] = []
+        for lb_arn in lb_arns:
+            try:
+                resp = elbv2.describe_listeners(LoadBalancerArn=lb_arn)
+                for listener in resp.get("Listeners", []):
+                    actions = [
+                        {
+                            "type": a.get("Type", ""),
+                            "target_group_arn": a.get("TargetGroupArn", ""),
+                        }
+                        for a in listener.get("DefaultActions", [])
+                    ]
+                    lb_name = lb_arn.split("/")[-2] if "/" in lb_arn else lb_arn
+                    results.append({
+                        "load_balancer_arn": lb_arn,
+                        "port": listener.get("Port"),
+                        "protocol": listener.get("Protocol", ""),
+                        "default_actions": actions,
+                        "name": f"{lb_name}:{listener.get('Port', '')}",
+                        "arn": listener.get("ListenerArn", ""),
+                    })
+            except (ClientError, BotoCoreError):
+                continue
+        return results
+    except (ClientError, BotoCoreError) as e:
+        print(f"Listener extraction error: {e}")
+        return []
+
+
+def extract_launch_templates(
+    credentials: dict, region: str
+) -> list[dict[str, Any]]:
+    """Extract EC2 Launch Templates with their latest version data.
+
+    Each dict contains: launch_template_id, launch_template_name,
+    latest_version, image_id, instance_type, key_name,
+    security_group_ids, user_data_present, arn.
+    """
+    try:
+        session = _build_session(credentials, region)
+        ec2 = session.client("ec2")
+
+        results: list[dict[str, Any]] = []
+        paginator = ec2.get_paginator("describe_launch_templates")
+        for page in paginator.paginate():
+            for lt in page.get("LaunchTemplates", []):
+                lt_id = lt["LaunchTemplateId"]
+                lt_name = lt.get("LaunchTemplateName", "")
+
+                # Get latest version details
+                lt_data: dict[str, Any] = {}
+                try:
+                    ver_resp = ec2.describe_launch_template_versions(
+                        LaunchTemplateId=lt_id,
+                        Versions=["$Latest"],
+                    )
+                    versions = ver_resp.get("LaunchTemplateVersions", [])
+                    if versions:
+                        lt_data = versions[0].get("LaunchTemplateData", {})
+                except (ClientError, BotoCoreError):
+                    pass
+
+                sg_ids = lt_data.get("SecurityGroupIds", [])
+                if not sg_ids:
+                    sg_ids = [
+                        sg.get("GroupId", "")
+                        for sg in lt_data.get("SecurityGroups", [])
+                        if isinstance(sg, dict)
+                    ]
+
+                account_id = lt.get("CreatedBy", "").split(":")[4] if ":" in lt.get("CreatedBy", "") else ""
+                results.append({
+                    "launch_template_id": lt_id,
+                    "launch_template_name": lt_name,
+                    "latest_version": lt.get("LatestVersionNumber", 1),
+                    "image_id": lt_data.get("ImageId", ""),
+                    "instance_type": lt_data.get("InstanceType", ""),
+                    "key_name": lt_data.get("KeyName", ""),
+                    "security_group_ids": sg_ids,
+                    "user_data_present": bool(lt_data.get("UserData")),
+                    "name": lt_name,
+                    "arn": f"arn:aws:ec2:{region}:{account_id}:launch-template/{lt_id}",
+                    "Tags": lt.get("Tags", []),
+                })
+        return results
+    except (ClientError, BotoCoreError) as e:
+        print(f"Launch Template extraction error: {e}")
         return []

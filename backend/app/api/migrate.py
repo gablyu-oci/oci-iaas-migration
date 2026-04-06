@@ -194,6 +194,107 @@ async def rollback_migration(
     return {"status": "rolling_back"}
 
 
+@router.post("/migrations/{mig_id}/test-plan", status_code=202)
+async def test_terraform_plan(
+    mig_id: str,
+    body: ExecuteRequest,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Run terraform init + plan only (no apply). For testing before migration."""
+    import multiprocessing
+    from app.services.migration_executor import test_plan
+
+    mig_result = await db.execute(
+        select(Migration).where(
+            Migration.id == uuid.UUID(mig_id),
+            Migration.tenant_id == tenant.id,
+        )
+    )
+    mig = mig_result.scalar_one_or_none()
+    if not mig:
+        raise HTTPException(status_code=404, detail="Migration not found")
+
+    # Fall back to previously stored values for re-tests after fix
+    oci_id = body.oci_connection_id or str(mig.migrate_oci_connection_id or "")
+    wname = body.workload_name or (mig.migrate_workload_name or "")
+    if not oci_id:
+        raise HTTPException(status_code=400, detail="No OCI connection selected")
+    if not wname:
+        raise HTTPException(status_code=400, detail="No workload name")
+
+    await db.execute(
+        text("""UPDATE migrations SET
+            migrate_status = 'testing',
+            migrate_workload_name = :wname,
+            migrate_oci_connection_id = :oci_id,
+            migrate_started_at = NOW(),
+            migrate_current_step = 'init',
+            migrate_terraform_plan = NULL,
+            migrate_logs = '[]'::jsonb
+        WHERE id = :id"""),
+        {"id": str(mig.id), "wname": wname, "oci_id": oci_id},
+    )
+    await db.commit()
+
+    ctx = multiprocessing.get_context("spawn")
+    p = ctx.Process(
+        target=test_plan,
+        args=(str(mig.id), wname, oci_id, body.variable_overrides),
+        daemon=True,
+    )
+    p.start()
+
+    return {"status": "testing", "migration_id": str(mig.id)}
+
+
+@router.post("/migrations/{mig_id}/fix-terraform", status_code=202)
+async def fix_terraform_files(
+    mig_id: str,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Send terraform errors to LLM to fix .tf files. User-triggered after test failure."""
+    import multiprocessing
+    from app.services.migration_executor import fix_terraform
+
+    mig_result = await db.execute(
+        select(Migration).where(
+            Migration.id == uuid.UUID(mig_id),
+            Migration.tenant_id == tenant.id,
+        )
+    )
+    mig = mig_result.scalar_one_or_none()
+    if not mig:
+        raise HTTPException(status_code=404, detail="Migration not found")
+
+    if mig.migrate_status != "test_failed":
+        raise HTTPException(status_code=400, detail="Can only fix after a failed test")
+
+    workload_name = mig.migrate_workload_name
+    if not workload_name:
+        raise HTTPException(status_code=400, detail="No workload name on migration")
+
+    await db.execute(
+        text("""UPDATE migrations SET
+            migrate_status = 'fixing',
+            migrate_current_step = 'llm_fix'
+        WHERE id = :id"""),
+        {"id": str(mig.id)},
+    )
+    await db.commit()
+
+    ctx = multiprocessing.get_context("spawn")
+    p = ctx.Process(
+        target=fix_terraform,
+        args=(str(mig.id), workload_name),
+        daemon=True,
+    )
+    p.start()
+
+    return {"status": "fixing", "migration_id": str(mig.id)}
+
+
 @router.get("/migrations/{mig_id}/terraform-state")
 async def get_terraform_state(
     mig_id: str,

@@ -164,13 +164,30 @@ def run_assessment(assessment_id: str) -> None:
             logger.error("Migration %s not found", str(assessment.migration_id))
             return
 
-        resources = list(
-            session.execute(
-                select(Resource).where(Resource.migration_id == migration.id)
-            ).scalars().all()
-        )
+        # Load resources scoped to the AWS connection (not migration), excluding stale
+        if migration.aws_connection_id:
+            resources = list(
+                session.execute(
+                    select(Resource).where(
+                        Resource.aws_connection_id == migration.aws_connection_id,
+                        Resource.tenant_id == assessment.tenant_id,
+                        Resource.status != "stale",
+                    )
+                ).scalars().all()
+            )
+        else:
+            # Fallback: legacy migration-scoped resources
+            resources = list(
+                session.execute(
+                    select(Resource).where(Resource.migration_id == migration.id)
+                ).scalars().all()
+            )
 
         tenant_id = assessment.tenant_id
+
+        # Store connection_id on assessment for future reference
+        if migration.aws_connection_id and not assessment.aws_connection_id:
+            assessment.aws_connection_id = migration.aws_connection_id
 
         # Mark running
         assessment.status = "running"
@@ -357,7 +374,16 @@ def run_assessment(assessment_id: str) -> None:
         # ================================================================
         _update_step(session, assessment_id, "grouping")
         try:
-            app_groups_result = compute_app_groups(resource_dicts, dependency_edges)
+            # Get anthropic client for LLM grouping review
+            grouping_client = None
+            try:
+                from app.gateway.model_gateway import get_anthropic_client
+                grouping_client = get_anthropic_client()
+            except Exception:
+                logger.info("No anthropic client available, skipping LLM grouping review")
+            app_groups_result = compute_app_groups(
+                resource_dicts, dependency_edges, anthropic_client=grouping_client,
+            )
         except Exception as exc:
             logger.warning("App grouping failed: %s", exc)
 
@@ -528,9 +554,9 @@ def run_assessment(assessment_id: str) -> None:
                 metrics=metrics if metrics else None,
                 current_instance_type=_extract_instance_type(r),
                 current_monthly_cost_usd=aws_cost,
-                recommended_oci_shape=rightsizing.get("recommended_oci_shape"),
-                recommended_oci_ocpus=float(rightsizing.get("ocpus", 0)),
-                recommended_oci_memory_gb=float(rightsizing.get("memory_gb", 0)),
+                recommended_oci_shape=rightsizing.get("recommended_oci_shape", "VM.Standard.E5.Flex"),
+                recommended_oci_ocpus=float(rightsizing.get("ocpus", 2)),
+                recommended_oci_memory_gb=float(rightsizing.get("memory_gb", 8)),
                 projected_oci_monthly_cost_usd=oci_cost,
                 rightsizing_confidence=_confidence_to_float(
                     rightsizing.get("confidence", "low")

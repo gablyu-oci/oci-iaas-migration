@@ -27,6 +27,7 @@ from app.db.models import (
     AppGroup,
     AppGroupMember,
     Assessment,
+    Migration,
     MigrationPlan,
     PlanPhase,
     Resource,
@@ -307,23 +308,45 @@ def _run_pipeline(
     from app.gateway.model_gateway import get_anthropic_client
 
     pipeline_start = time.time()
-    ag_id = UUID(app_group_id)
     assess_id = UUID(assessment_id)
     t_id = UUID(tenant_id)
+    mig_id = UUID(migration_id)
 
-    # Load app group and members
-    ag = session.execute(
-        select(AppGroup).where(AppGroup.id == ag_id)
+    # Load the migration to check for a bound app group
+    migration = session.execute(
+        select(Migration).where(Migration.id == mig_id)
     ).scalar_one()
 
-    members = session.execute(
-        select(AppGroupMember).where(AppGroupMember.app_group_id == ag_id)
-    ).scalars().all()
+    # Determine the effective app group id: prefer migration.bound_app_group_id,
+    # fall back to the explicitly passed app_group_id parameter.
+    effective_ag_id = migration.bound_app_group_id or (UUID(app_group_id) if app_group_id else None)
 
-    resource_ids = [m.resource_id for m in members]
-    resources_orm = session.execute(
-        select(Resource).where(Resource.id.in_(resource_ids))
-    ).scalars().all()
+    if effective_ag_id:
+        # Load resources via AppGroupMember -> Resource for the bound group
+        ag = session.execute(
+            select(AppGroup).where(AppGroup.id == effective_ag_id)
+        ).scalar_one()
+
+        members = session.execute(
+            select(AppGroupMember).where(AppGroupMember.app_group_id == effective_ag_id)
+        ).scalars().all()
+
+        resource_ids = [m.resource_id for m in members]
+        resources_orm = session.execute(
+            select(Resource).where(Resource.id.in_(resource_ids), Resource.status != "stale")
+        ).scalars().all()
+    else:
+        # Fallback: load resources from the migration's resources relationship
+        resources_orm = session.execute(
+            select(Resource).where(Resource.migration_id == mig_id)
+        ).scalars().all()
+        resource_ids = [r.id for r in resources_orm]
+
+        # Create a synthetic app group name from the migration
+        class _FakeAG:
+            name: str
+        ag = _FakeAG()
+        ag.name = migration.name
 
     resources = [
         {
@@ -360,7 +383,7 @@ def _run_pipeline(
     from sqlalchemy import text as _t
     session.execute(
         _t("UPDATE migrations SET plan_status = 'running', plan_workload_id = :wid, plan_workload_name = :wname, plan_started_at = NOW(), plan_max_iterations = :iters WHERE id = :mid"),
-        {"wid": str(ag_id), "wname": ag.name, "mid": migration_id, "iters": max_iterations},
+        {"wid": str(effective_ag_id) if effective_ag_id else None, "wname": ag.name, "mid": migration_id, "iters": max_iterations},
     )
     session.commit()
 
@@ -394,11 +417,25 @@ def _run_pipeline(
     logger.info("Resource mapping: %d entries", len(resource_mapping))
 
     # ── Step 2: Determine which skills to run ──────────────────────────
+    # CFN dedup: resources managed by a CloudFormation stack are tagged
+    # with cfn_stack_name in raw_config during discovery. Skip them from
+    # individual skill translation (ec2, network, etc.) since the stack
+    # itself gets translated via cfn_terraform.
     skill_resources: dict[str, list[dict]] = {}
+    cfn_skipped = 0
     for r in resources:
         skill = _skill_for_type(r.get("aws_type", ""))
-        if skill:
-            skill_resources.setdefault(skill, []).append(r)
+        if not skill:
+            continue
+        raw = r.get("raw_config") or {}
+        if skill != "cfn_terraform" and raw.get("cfn_stack_name"):
+            cfn_skipped += 1
+            continue  # Skip — already covered by CFN stack translation
+        skill_resources.setdefault(skill, []).append(r)
+
+    if cfn_skipped:
+        logger.info("Skipped %d resources already covered by CloudFormation stack translation", cfn_skipped)
+        _progress("resource_mapping", f"Skipped {cfn_skipped} CFN-managed resources (covered by stack translation)")
 
     has_databases = "database_translation" in skill_resources
     # Check if data migration planning is needed:
