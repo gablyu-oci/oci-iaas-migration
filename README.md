@@ -1,12 +1,24 @@
-# OCI Migration Tool
+# OCI Migration Tool — Oracle GenAI edition
 
-An AI-powered platform for migrating AWS workloads to Oracle Cloud Infrastructure (OCI). It connects to your AWS account, discovers resources, builds a dependency-ordered migration plan, and uses Claude to generate Terraform configurations for OCI.
+An AI-powered platform for migrating AWS workloads to Oracle Cloud Infrastructure (OCI). It connects to your AWS account, discovers resources, builds a dependency-ordered migration plan, and uses **Oracle Generative AI** to generate Terraform configurations for OCI.
+
+This is a fork of the original Claude-powered tool; all LLM calls are now routed through OCI Generative AI's OpenAI-compatible inference endpoint.
+
+---
+
+## What changed in this fork
+
+- **Provider:** Claude (Anthropic) → Oracle Generative AI
+- **Client library:** `anthropic` → `openai` (pointed at the OCI inference endpoint)
+- **Auth:** `ANTHROPIC_API_KEY` / Claude Code OAuth → `OCI_GENAI_API_KEY` + project OCID
+- **Models:** `claude-opus-4-6` / `claude-sonnet-4-6` → `google.gemini-2.5-pro` (configurable — any OCI GenAI chat model works)
+- **Gateway:** `app.gateway.oci_genai_client.OCIGenAIClient` exposes the same `messages.create()` / `messages.stream()` surface the orchestrators were written against, so skill orchestrators did not need rewriting
 
 ---
 
 ## What it does
 
-1. **Discover** — extract AWS resources region-wide or scoped to a specific EC2 instance (picks up only the instance's subnet, security group, EBS volumes, and ENIs — not the entire VPC)
+1. **Discover** — extract AWS resources region-wide or scoped to a specific EC2 instance
 2. **Plan** — auto-generate a phased migration plan that groups resources by type and dependency order
 3. **Translate** — run AI translation jobs per workload; each job runs an Enhancement → Review → Fix loop and produces ready-to-apply Terraform
 4. **Download** — get `.tf` files, migration guides, and runbooks as artifacts
@@ -24,19 +36,6 @@ An AI-powered platform for migrating AWS workloads to Oracle Cloud Infrastructur
 | `iam_translation` | IAM policies/roles → OCI IAM policy statements |
 | `dependency_discovery` | VPC flow logs → service dependency graph + runbook |
 
-### Migration plan phases
-
-Resources are grouped into phases in dependency order:
-
-1. Networking Foundation (VPC, subnets, security groups, ENIs)
-2. Data Layer (RDS)
-3. Application Layer (EC2, Auto Scaling)
-4. Storage (EBS volumes)
-5. Traffic Management (ALB/NLB)
-6. Serverless (Lambda)
-7. Infrastructure as Code (CloudFormation stacks)
-8. Identity & Access (IAM policies/roles)
-
 ---
 
 ## Prerequisites
@@ -45,7 +44,7 @@ Resources are grouped into phases in dependency order:
 - Node.js 18+
 - PostgreSQL 14+
 - Redis (optional — jobs run in-process without it)
-- Anthropic API key **or** Claude Code CLI authenticated with your account
+- **OCI Generative AI API key and project OCID** (Ashburn region by default; change `OCI_GENAI_BASE_URL` for other regions)
 
 ---
 
@@ -78,11 +77,24 @@ Or create `backend/.env` directly:
 ```env
 DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/oci_migration
 REDIS_URL=redis://localhost:6379
-ANTHROPIC_API_KEY=              # set this, OR use ANTHROPIC_AUTH_TOKEN below
-ANTHROPIC_AUTH_TOKEN=           # Claude Code OAuth token (fallback if API key is blank)
+
+OCI_GENAI_API_KEY=sk-...
+OCI_GENAI_BASE_URL=https://inference.generativeai.us-ashburn-1.oci.oraclecloud.com/openai/v1
+OCI_GENAI_PROJECT=ocid1.generativeaiproject.oc1.iad...
+OCI_GENAI_WRITER_MODEL=google.gemini-2.5-pro
+OCI_GENAI_REVIEWER_MODEL=google.gemini-2.5-pro
+
 JWT_SECRET=                     # generate with: openssl rand -hex 32
 JWT_EXPIRE_MINUTES=1440
 ```
+
+Getting your OCI GenAI API key:
+
+1. OCI Console → Generative AI → **Create project**
+2. Copy the project OCID (starts with `ocid1.generativeaiproject.oc1...`) into `OCI_GENAI_PROJECT`
+3. Generative AI → **API keys** → Create — the value starts with `sk-` and goes into `OCI_GENAI_API_KEY`
+
+See the [OCI Generative AI documentation](https://docs.oracle.com/en-us/iaas/Content/generative-ai/home.htm) for supported regions, models, and quotas.
 
 Run database migrations:
 
@@ -103,8 +115,6 @@ Start the API server:
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 ```
-
-> **Note:** If using Claude Code OAuth (no `ANTHROPIC_API_KEY`), start the server from a regular terminal — not from inside a Claude Code session.
 
 ### 3. Frontend
 
@@ -194,11 +204,14 @@ Then open http://localhost:5173 locally.
 ## Project layout
 
 ```
-oci-migration-tool/
+oci-iaas-migration-genai/
 ├── backend/
 │   ├── app/
 │   │   ├── api/          # FastAPI route handlers
 │   │   ├── db/           # SQLAlchemy models and migrations
+│   │   ├── gateway/      # OCI GenAI client + model routing
+│   │   │   ├── model_gateway.py     # get_anthropic_client() now returns OCIGenAIClient
+│   │   │   └── oci_genai_client.py  # OpenAI SDK wrapper with Anthropic-shaped surface
 │   │   ├── services/     # AWS extractor, migration orchestrator, job runner
 │   │   └── skills/       # Translation skill orchestrators (one dir per skill)
 │   └── alembic/          # DB migration scripts
@@ -209,3 +222,40 @@ oci-migration-tool/
 ├── scripts/              # DB seeding utilities
 └── design-docs/          # Architecture diagrams and planning notes
 ```
+
+---
+
+## How the Oracle GenAI adapter works
+
+`OCIGenAIClient` keeps the Anthropic SDK surface the orchestrators were written against:
+
+```python
+client = get_anthropic_client()  # now returns OCIGenAIClient under the hood
+
+response = client.messages.create(
+    model="google.gemini-2.5-pro",
+    max_tokens=32768,
+    system=[{"type": "text", "text": "..."}],
+    messages=[{"role": "user", "content": "..."}],
+)
+
+response.content[0].text       # same attribute path
+response.usage.input_tokens    # mapped from OpenAI prompt_tokens
+response.stop_reason           # "max_tokens" / "end_turn" — mapped from finish_reason
+```
+
+Internally the adapter uses the OpenAI Python SDK pointed at the OCI inference endpoint:
+
+```python
+from openai import OpenAI
+OpenAI(
+    api_key=OCI_GENAI_API_KEY,
+    base_url="https://inference.generativeai.us-ashburn-1.oci.oraclecloud.com/openai/v1",
+    project=OCI_GENAI_PROJECT,
+).chat.completions.create(model="google.gemini-2.5-pro", messages=...)
+```
+
+Notes / limitations:
+- OCI GenAI does not expose prompt caching via the OpenAI-compatible endpoint, so `cache_read_input_tokens` / `cache_creation_input_tokens` always report 0.
+- `cache_control` annotations on system blocks are accepted but ignored.
+- Streaming is aggregated server-side before return (orchestrators only read `stream.get_final_message()`, so this is invisible).

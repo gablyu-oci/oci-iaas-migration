@@ -7,14 +7,13 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-import anthropic as _anthropic
-
 SKILLS_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(SKILLS_ROOT / "shared"))
 
 from agent_logger import AgentType, ReviewDecision, ConfidenceCalculator, calculate_cost
 
-REVIEW_MODEL = "claude-opus-4-6"
+from app.gateway.model_gateway import get_model
+_SKILL = "dependency_discovery"
 
 REVIEW_SYSTEM = """\
 You are an expert AWS infrastructure migration analyst reviewing a dependency discovery graph.
@@ -131,7 +130,7 @@ def _call_review(
 
     start = time.perf_counter()
     response = client.messages.create(
-        model=REVIEW_MODEL,
+        model=get_model(_SKILL, "review"),
         max_tokens=2048,
         system=REVIEW_SYSTEM,
         messages=[{
@@ -214,7 +213,7 @@ def _call_runbook(
 
     start = time.perf_counter()
     response = client.messages.create(
-        model=REVIEW_MODEL,
+        model=get_model(_SKILL, "review"),
         max_tokens=8192,
         system=RUNBOOK_SYSTEM,
         messages=[{"role": "user", "content": context}],
@@ -280,7 +279,7 @@ def _call_anomaly(
 
     start = time.perf_counter()
     response = client.messages.create(
-        model=REVIEW_MODEL,
+        model=get_model(_SKILL, "review"),
         max_tokens=6144,
         system=ANOMALY_SYSTEM,
         messages=[{"role": "user", "content": context}],
@@ -461,7 +460,7 @@ def _build_orchestration_summary(
         f"**Output:** {node_count} nodes, {edge_count} edges, {step_count} migration phases",
         "",
         "### [1] REVIEW Agent",
-        f"**Model:** {REVIEW_MODEL}",
+        f"**Model:** {get_model(_SKILL, 'review')}",
         f"**Decision:** {final_decision}",
         f"**Confidence:** {final_confidence:.0%}",
         f"**Input tokens:** {review_usage.get('tokens_input', 0):,}",
@@ -472,7 +471,7 @@ def _build_orchestration_summary(
         f"**Duration:** {review_usage.get('duration_seconds', 0):.1f}s",
         "",
         "### [2] RUNBOOK Agent",
-        f"**Model:** {REVIEW_MODEL}",
+        f"**Model:** {get_model(_SKILL, 'review')}",
         "**Output:** migration-runbook.md",
         f"**Input tokens:** {runbook_usage.get('tokens_input', 0):,}",
         f"**Output tokens:** {runbook_usage.get('tokens_output', 0):,}",
@@ -482,7 +481,7 @@ def _build_orchestration_summary(
         f"**Duration:** {runbook_usage.get('duration_seconds', 0):.1f}s",
         "",
         "### [3] ANOMALY Agent",
-        f"**Model:** {REVIEW_MODEL}",
+        f"**Model:** {get_model(_SKILL, 'review')}",
         "**Output:** anomaly-analysis.md",
         f"**Input tokens:** {anomaly_usage.get('tokens_input', 0):,}",
         f"**Output tokens:** {anomaly_usage.get('tokens_output', 0):,}",
@@ -653,7 +652,7 @@ def run(
         final_decision = final_decision_enum.value
 
         review_cost = calculate_cost(
-            REVIEW_MODEL,
+            get_model(_SKILL, "review"),
             tokens_input=review_usage["tokens_input"],
             tokens_output=review_usage["tokens_output"],
             tokens_cache_read=review_usage["tokens_cache_read"],
@@ -674,7 +673,7 @@ def run(
         )
 
         runbook_cost = calculate_cost(
-            REVIEW_MODEL,
+            get_model(_SKILL, "review"),
             tokens_input=runbook_usage["tokens_input"],
             tokens_output=runbook_usage["tokens_output"],
             tokens_cache_read=runbook_usage["tokens_cache_read"],
@@ -694,7 +693,7 @@ def run(
         )
 
         anomaly_cost = calculate_cost(
-            REVIEW_MODEL,
+            get_model(_SKILL, "review"),
             tokens_input=anomaly_usage["tokens_input"],
             tokens_output=anomaly_usage["tokens_output"],
             tokens_cache_read=anomaly_usage["tokens_cache_read"],
@@ -755,7 +754,7 @@ def run(
         interactions = [
             {
                 "agent_type": AgentType.REVIEW.value,
-                "model": REVIEW_MODEL,
+                "model": get_model(_SKILL, "review"),
                 "iteration": 1,
                 "tokens_input": review_usage["tokens_input"],
                 "tokens_output": review_usage["tokens_output"],
@@ -769,7 +768,7 @@ def run(
             },
             {
                 "agent_type": "runbook",
-                "model": REVIEW_MODEL,
+                "model": get_model(_SKILL, "review"),
                 "iteration": 1,
                 "tokens_input": runbook_usage["tokens_input"],
                 "tokens_output": runbook_usage["tokens_output"],
@@ -782,7 +781,7 @@ def run(
             },
             {
                 "agent_type": "anomaly",
-                "model": REVIEW_MODEL,
+                "model": get_model(_SKILL, "review"),
                 "iteration": 1,
                 "tokens_input": anomaly_usage["tokens_input"],
                 "tokens_output": anomaly_usage["tokens_output"],
@@ -912,7 +911,7 @@ def run_graph_only(
         final_decision = ConfidenceCalculator.make_decision(final_confidence, issues).value
 
         review_cost = calculate_cost(
-            REVIEW_MODEL,
+            get_model(_SKILL, "review"),
             tokens_input=review_usage["tokens_input"],
             tokens_output=review_usage["tokens_output"],
             tokens_cache_read=review_usage["tokens_cache_read"],

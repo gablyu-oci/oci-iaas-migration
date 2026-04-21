@@ -828,8 +828,9 @@ def fix_terraform(migration_id: str, workload_name: str) -> None:
             "for EVERY .tf file (include unchanged files too)."
         )
 
+        from app.gateway.model_gateway import get_model
         resp = client.messages.create(
-            model="claude-sonnet-4-6",
+            model=get_model("migration_execution", "generate"),
             max_tokens=32768,
             system=[{"type": "text", "text": _TF_FIX_SYSTEM}],
             messages=[

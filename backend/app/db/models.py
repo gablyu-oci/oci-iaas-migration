@@ -525,6 +525,21 @@ class TCOReport(Base):
 # ---------------------------------------------------------------------------
 # DependencyEdge
 # ---------------------------------------------------------------------------
+class SystemSetting(Base):
+    """Simple key/value bag for runtime-configurable settings.
+
+    Used today for the writer/reviewer OCI GenAI model IDs. Changes made
+    through the settings API are both written here (to survive restarts)
+    and pushed into ``app.config.settings`` in memory so the next
+    ``get_model()`` call picks them up without a reload.
+    """
+    __tablename__ = "system_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+
 class DependencyEdge(Base):
     __tablename__ = "dependency_edges"
 

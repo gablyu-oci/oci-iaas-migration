@@ -1,0 +1,69 @@
+# AWS IAM action → OCI verb/statement fragment.
+#
+# OCI uses verb-based permissions, not action-based. Verb hierarchy
+# (least → most permissive):
+#   inspect  list metadata only          (Describe*, List*, Get* metadata)
+#   read     view + download content     (Get* content, Download*)
+#   use      limited modifications       (Start, Stop, Reboot, limited update)
+#   manage   full control                (Create, Update, Delete, everything)
+#
+# Consumed by:
+#   • app.skills.iam_translation (table injected into system prompt)
+#
+# This is intentionally a subset — the complete mapping lives in
+# app/skills/iam_translation/workflows/action-verb-mappings.md, which adds
+# per-service discussion the LLM needs beyond the table rows.
+
+actions:
+  # EC2
+  ec2:RunInstances:        {oci_verb: manage, oci_resource: instances,    oci_service: compute}
+  ec2:DescribeInstances:   {oci_verb: inspect, oci_resource: instances,   oci_service: compute}
+  ec2:StopInstances:       {oci_verb: use,    oci_resource: instances,    oci_service: compute}
+  ec2:StartInstances:      {oci_verb: use,    oci_resource: instances,    oci_service: compute}
+  ec2:TerminateInstances:  {oci_verb: manage, oci_resource: instances,    oci_service: compute}
+  ec2:RebootInstances:     {oci_verb: use,    oci_resource: instances,    oci_service: compute}
+
+  # S3 → Object Storage
+  s3:GetObject:            {oci_verb: read,    oci_resource: objects,     oci_service: object-storage}
+  s3:PutObject:            {oci_verb: manage,  oci_resource: objects,     oci_service: object-storage}
+  s3:DeleteObject:         {oci_verb: manage,  oci_resource: objects,     oci_service: object-storage}
+  s3:ListBucket:           {oci_verb: inspect, oci_resource: buckets,     oci_service: object-storage}
+  s3:CreateBucket:         {oci_verb: manage,  oci_resource: buckets,     oci_service: object-storage}
+  s3:DeleteBucket:         {oci_verb: manage,  oci_resource: buckets,     oci_service: object-storage}
+
+  # RDS → Database
+  rds:CreateDBInstance:    {oci_verb: manage,  oci_resource: db-systems,  oci_service: database}
+  rds:DescribeDBInstances: {oci_verb: inspect, oci_resource: db-systems,  oci_service: database}
+  rds:DeleteDBInstance:    {oci_verb: manage,  oci_resource: db-systems,  oci_service: database}
+  rds:ModifyDBInstance:    {oci_verb: manage,  oci_resource: db-systems,  oci_service: database}
+
+  # Lambda → Functions
+  lambda:InvokeFunction:   {oci_verb: use,     oci_resource: functions,   oci_service: functions}
+  lambda:CreateFunction:   {oci_verb: manage,  oci_resource: functions,   oci_service: functions}
+  lambda:DeleteFunction:   {oci_verb: manage,  oci_resource: functions,   oci_service: functions}
+  lambda:GetFunction:      {oci_verb: inspect, oci_resource: functions,   oci_service: functions}
+
+  # IAM → Identity (tricky — AWS roles/policies don't map 1:1 to OCI concepts)
+  iam:CreateRole:          {oci_verb: manage,  oci_resource: dynamic-groups, oci_service: identity,
+                            notes: "AWS roles map to OCI dynamic groups"}
+  iam:AttachRolePolicy:    {oci_verb: manage,  oci_resource: policies,    oci_service: identity}
+  iam:PassRole:            {oci_verb: use,     oci_resource: dynamic-groups, oci_service: identity,
+                            notes: "OCI doesn't have PassRole — authorization is via dynamic group matching"}
+
+  # DynamoDB → NoSQL
+  dynamodb:PutItem:        {oci_verb: manage,  oci_resource: tables,      oci_service: nosql}
+  dynamodb:GetItem:        {oci_verb: read,    oci_resource: tables,      oci_service: nosql}
+  dynamodb:Query:          {oci_verb: read,    oci_resource: tables,      oci_service: nosql}
+  dynamodb:Scan:           {oci_verb: read,    oci_resource: tables,      oci_service: nosql}
+
+  # SQS → Queue
+  sqs:SendMessage:         {oci_verb: use,     oci_resource: queues,      oci_service: queue}
+  sqs:ReceiveMessage:      {oci_verb: use,     oci_resource: queues,      oci_service: queue}
+
+  # SNS → Notifications
+  sns:Publish:             {oci_verb: use,     oci_resource: topics,      oci_service: notifications}
+  sns:Subscribe:           {oci_verb: use,     oci_resource: topics,      oci_service: notifications}
+
+  # CloudFront → WAA (partial coverage)
+  cloudfront:GetDistribution:    {oci_verb: inspect, oci_resource: web-app-accelerations, oci_service: waa}
+  cloudfront:UpdateDistribution: {oci_verb: manage,  oci_resource: web-app-accelerations, oci_service: waa}

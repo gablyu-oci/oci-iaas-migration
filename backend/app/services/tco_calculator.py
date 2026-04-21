@@ -9,17 +9,16 @@ from __future__ import annotations
 
 from typing import Any
 
-# ---------------------------------------------------------------------------
-# Storage and networking cost assumptions (monthly, per GB)
-# ---------------------------------------------------------------------------
-AWS_EBS_COST_PER_GB: float = 0.10       # gp3 baseline
-OCI_BLOCK_COST_PER_GB: float = 0.0255   # balanced performance
-AWS_NETWORK_COST_PER_GB: float = 0.09   # standard data-out
-OCI_NETWORK_COST_PER_GB: float = 0.0085 # OCI outbound
+from app import mappings
 
-# OCI commitment discount tiers (off pay-as-you-go)
-OCI_ANNUAL_FLEX_DISCOUNT: float = 0.33   # 33 % off with annual commitment
-OCI_MONTHLY_FLEX_DISCOUNT: float = 0.17  # 17 % off with monthly commitment
+# Storage / network / discount rates now live in
+# backend/data/mappings/pricing.yaml — see app.mappings.
+AWS_EBS_COST_PER_GB: float = mappings.aws_ebs_per_gb()
+OCI_BLOCK_COST_PER_GB: float = mappings.oci_block_per_gb()
+AWS_NETWORK_COST_PER_GB: float = mappings.aws_egress_per_gb()
+OCI_NETWORK_COST_PER_GB: float = mappings.oci_egress_per_gb()
+OCI_ANNUAL_FLEX_DISCOUNT: float = mappings.oci_annual_flex_discount()
+OCI_MONTHLY_FLEX_DISCOUNT: float = mappings.oci_monthly_flex_discount()
 
 # ---------------------------------------------------------------------------
 # Resource-type to cost category mapping

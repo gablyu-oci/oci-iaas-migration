@@ -1,0 +1,26 @@
+# Storage, network, and discount rates used by the TCO calculator.
+#
+# All monthly figures are USD, us-east-1 for AWS and Ashburn for OCI.
+# Per-GB rates are monthly unless noted; per-hour rates are, well, hourly.
+#
+# Consumed by:
+#   • app.services.tco_calculator
+#
+# TODO: replace these hand-maintained constants with live C4 lookups when
+# the c4_mcp integration lands — C4 will keep rates fresh automatically.
+# For now the numbers are approximations good enough for order-of-magnitude
+# comparisons. Flag: do not present these as authoritative costs to customers.
+
+storage:
+  aws_ebs_per_gb_month:         0.10    # gp3 baseline
+  oci_block_per_gb_month:       0.0255  # balanced performance (vpus_per_gb=10)
+
+network:
+  aws_egress_per_gb:            0.09    # standard data-out, us-east-1
+  oci_egress_per_gb:            0.0085  # OCI outbound (first 10 TB free, then this)
+
+# OCI commitment tiers off pay-as-you-go. Annual flex = annual universal credits,
+# monthly flex = monthly universal credits.
+oci_commitment_discounts:
+  annual_flex:                  0.33    # 33% off
+  monthly_flex:                 0.17    # 17% off

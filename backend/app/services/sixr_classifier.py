@@ -114,8 +114,9 @@ async def classify_workloads(
     prompt_text = CLASSIFICATION_PROMPT.format(groups_json=groups_json)
 
     try:
+        from app.gateway.model_gateway import get_model
         response = anthropic_client.messages.create(
-            model="claude-sonnet-4-6",
+            model=get_model("sixr_classification", "classify"),
             max_tokens=4096,
             messages=[{"role": "user", "content": prompt_text}],
         )

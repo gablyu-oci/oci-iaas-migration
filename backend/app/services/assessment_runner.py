@@ -402,9 +402,17 @@ def run_assessment(assessment_id: str) -> None:
             )
             session.add(ag)
             for rid_str in group_data.get("resource_ids", []):
+                try:
+                    rid_uuid = UUID(rid_str)
+                except (ValueError, TypeError):
+                    logger.warning(
+                        "Skipping app group member with bad resource_id %r in group %s",
+                        rid_str, group_data.get("name"),
+                    )
+                    continue
                 member = AppGroupMember(
                     app_group_id=ag_id,
-                    resource_id=UUID(rid_str),
+                    resource_id=rid_uuid,
                 )
                 session.add(member)
         session.commit()

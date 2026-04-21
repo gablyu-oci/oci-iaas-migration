@@ -10,7 +10,7 @@ sse-starlette
 python-jose[cryptography]
 passlib[bcrypt]
 boto3
-anthropic>=0.40.0
+openai>=1.40.0
 networkx>=3.0
 pyyaml
 python-dotenv

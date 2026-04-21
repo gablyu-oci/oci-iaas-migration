@@ -21,7 +21,6 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
 
-import anthropic
 
 # ── Path setup ────────────────────────────────────────────────────────────────
 SKILLS_ROOT = Path(__file__).parent.parent.resolve()
@@ -36,7 +35,7 @@ _log = logging.getLogger(__name__)
 
 # ── JSON extraction (shared by all orchestrators) ────────────────────────────
 
-def _parse_json_response(response: anthropic.types.Message) -> dict:
+def _parse_json_response(response: Any) -> dict:
     """Robustly extract a JSON object from an API response."""
     if response.stop_reason == "max_tokens":
         raise json.JSONDecodeError(
@@ -82,7 +81,7 @@ def _parse_json_response(response: anthropic.types.Message) -> dict:
 
 # ── Token extraction ─────────────────────────────────────────────────────────
 
-def extract_usage(response: anthropic.types.Message) -> dict:
+def extract_usage(response: Any) -> dict:
     """Extract all token fields from a real API response. Never estimated."""
     u = response.usage
     return {
@@ -218,14 +217,27 @@ class BaseTranslationOrchestrator:
       - get_fix_system_blocks() -> list[dict]           (to add cache_control)
     """
 
-    # Class-level constants -- override in subclasses
-    ENHANCEMENT_MODEL: str = "claude-opus-4-6"
-    REVIEW_MODEL: str      = "claude-sonnet-4-6"
-    FIX_MODEL: str         = "claude-sonnet-4-6"
-
     SKILL_TYPE: str     = "unknown"
     PROJECT_TYPE: str   = "unknown"
     REPORT_FILENAME: str = "translation.md"
+
+    # Models are resolved via model_gateway.get_model() — do NOT override
+    # ENHANCEMENT_MODEL/REVIEW_MODEL/FIX_MODEL in subclasses. Set SKILL_TYPE
+    # and add the pair to MODEL_ROUTING in app/gateway/model_gateway.py.
+    @property
+    def ENHANCEMENT_MODEL(self) -> str:
+        from app.gateway.model_gateway import get_model
+        return get_model(self.SKILL_TYPE, "enhancement")
+
+    @property
+    def REVIEW_MODEL(self) -> str:
+        from app.gateway.model_gateway import get_model
+        return get_model(self.SKILL_TYPE, "review")
+
+    @property
+    def FIX_MODEL(self) -> str:
+        from app.gateway.model_gateway import get_model
+        return get_model(self.SKILL_TYPE, "fix")
 
     # System prompts -- override in subclasses
     ENHANCEMENT_SYSTEM: str = ""
@@ -278,20 +290,98 @@ class BaseTranslationOrchestrator:
 
     # ── Overridable hooks ────────────────────────────────────────────────────
 
+    def _canonical_mapping_block(self) -> dict | None:
+        """Append the YAML-sourced AWS→OCI mapping table scoped to this skill.
+
+        Returned as a separate system block so subclass overrides can decide
+        whether to cache it. The LLM sees the authoritative table alongside
+        any prose rules the subclass passes in — single source of truth.
+        """
+        from app import mappings
+        rows = mappings.resources_for_skill(self.SKILL_TYPE)
+        if not rows:
+            return None
+        return {
+            "type": "text",
+            "text": (
+                "## Canonical AWS → OCI Resource Table "
+                f"(source: data/mappings/resources.yaml, skill={self.SKILL_TYPE})\n\n"
+                "Use these mappings. If a resource type is missing, flag it as a gap.\n\n"
+                + mappings.render_resource_table_md(skill=self.SKILL_TYPE)
+            ),
+        }
+
+    def _workflow_rules_block(self) -> dict | None:
+        """Load skill-specific prose rules from ``workflows/*.md`` if present.
+
+        Convention: any ``.md`` file next to the orchestrator in a sibling
+        ``workflows/`` directory is concatenated into a single system block.
+        This is where per-skill ordering constraints, edge cases, and examples
+        live — the stuff that doesn't fit in a mapping row. Silent no-op if
+        the directory is empty or missing, so skills opt in by dropping a
+        file there.
+
+        Derives the path from the orchestrator's own module rather than
+        ``SKILL_TYPE`` so routing keys (e.g. ``data_migration_planning``) can
+        differ from the on-disk skill directory name.
+        """
+        import sys as _sys
+        module = _sys.modules.get(self.__class__.__module__)
+        module_file = getattr(module, "__file__", None)
+        if not module_file:
+            return None
+        skill_dir = Path(module_file).resolve().parent / "workflows"
+        if not skill_dir.exists():
+            return None
+        md_files = sorted(skill_dir.glob("*.md"))
+        if not md_files:
+            return None
+        parts: list[str] = []
+        for p in md_files:
+            body = p.read_text(encoding="utf-8").strip()
+            if body:
+                parts.append(f"### `{p.name}`\n\n{body}")
+        if not parts:
+            return None
+        return {
+            "type": "text",
+            "text": (
+                "## Translation Rules (prose — ordering, edge cases, examples)\n\n"
+                f"Loaded from `app/skills/{self.SKILL_TYPE}/workflows/*.md`. "
+                "The canonical mapping table below overrides anything here on "
+                "conflict — this prose exists for context the table can't carry.\n\n"
+                + "\n\n".join(parts)
+            ),
+        }
+
     def get_enhancement_system_blocks(self) -> list[dict]:
         """Return system message blocks for enhancement agent.
         Override to add cache_control or extra system blocks."""
-        return [{"type": "text", "text": self.ENHANCEMENT_SYSTEM}]
+        blocks = [{"type": "text", "text": self.ENHANCEMENT_SYSTEM}]
+        prose = self._workflow_rules_block()
+        if prose:
+            blocks.append(prose)
+        table = self._canonical_mapping_block()
+        if table:
+            blocks.append(table)
+        return blocks
 
     def get_fix_system_blocks(self) -> list[dict]:
         """Return system message blocks for fix agent.
         Override to add cache_control or extra system blocks."""
-        return [{"type": "text", "text": self.FIX_SYSTEM}]
+        blocks = [{"type": "text", "text": self.FIX_SYSTEM}]
+        prose = self._workflow_rules_block()
+        if prose:
+            blocks.append(prose)
+        table = self._canonical_mapping_block()
+        if table:
+            blocks.append(table)
+        return blocks
 
     # ── Agent calls ──────────────────────────────────────────────────────────
 
     def _call_enhancement(
-        self, client: anthropic.Anthropic,
+        self, client: Any,
         input_content: str, input_data: dict,
         current_translation: dict | None, issues: list,
     ) -> tuple[dict, dict]:
@@ -326,7 +416,7 @@ class BaseTranslationOrchestrator:
         return translation, usage
 
     def _call_review(
-        self, client: anthropic.Anthropic,
+        self, client: Any,
         input_content: str, input_data: dict, translation: dict,
     ) -> tuple[dict, dict]:
         """Call review agent. Returns (review_dict, usage_dict)."""
@@ -357,7 +447,7 @@ class BaseTranslationOrchestrator:
         return review, usage
 
     def _call_fix(
-        self, client: anthropic.Anthropic,
+        self, client: Any,
         input_content: str, input_data: dict,
         translation: dict, issues: list,
     ) -> tuple[dict, dict]:

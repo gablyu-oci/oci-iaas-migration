@@ -24,9 +24,8 @@ import logging
 import shutil
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 
-import anthropic
 
 _log = logging.getLogger(__name__)
 
@@ -37,7 +36,7 @@ _log = logging.getLogger(__name__)
 _JSON_PREFILL = "{"
 
 
-def _parse_json(response: anthropic.types.Message, prefilled: bool = False) -> dict:
+def _parse_json(response: Any, prefilled: bool = False) -> dict:
     if response.stop_reason == "max_tokens":
         raise json.JSONDecodeError("Truncated response", "", 0)
     raw = response.content[0].text.strip()
@@ -88,7 +87,7 @@ def _parse_json(response: anthropic.types.Message, prefilled: bool = False) -> d
     raise json.JSONDecodeError("No JSON object found", raw, 0)
 
 
-def _usage(response: anthropic.types.Message) -> dict:
+def _usage(response: Any) -> dict:
     u = response.usage
     return {
         "tokens_input":       u.input_tokens,
@@ -218,9 +217,9 @@ Return the corrected synthesis as the same JSON object:
 Include a "fixes_applied" key listing what you changed (for logging).
 """
 
-ENHANCEMENT_MODEL = "claude-opus-4-6"
-REVIEW_MODEL = "claude-sonnet-4-6"
-FIX_MODEL = "claude-opus-4-6"
+from app.gateway.model_gateway import get_model
+
+_SKILL = "synthesis"
 
 
 # ---------------------------------------------------------------------------
@@ -487,8 +486,9 @@ def run(
         for attempt in range(3):
             try:
                 t0 = time.perf_counter()
+                enh_model = get_model(_SKILL, "enhancement")
                 with anthropic_client.messages.stream(
-                    model=ENHANCEMENT_MODEL,
+                    model=enh_model,
                     max_tokens=32768,
                     system=[{"type": "text", "text": ENHANCEMENT_SYSTEM}],
                     messages=[
@@ -524,10 +524,10 @@ def run(
             raise RuntimeError("Enhancement returned no result")
 
         enh_use = _usage(enh_resp)
-        enh_cost = _cost(ENHANCEMENT_MODEL, **enh_use)
+        enh_cost = _cost(enh_model, **enh_use)
         total_cost += enh_cost
         interaction_records.append({
-            "agent_type": "enhancement", "model": ENHANCEMENT_MODEL,
+            "agent_type": "enhancement", "model": enh_model,
             "iteration": iteration,
             **enh_use,
             "cost_usd": enh_cost, "duration_seconds": enh_dur,
@@ -540,8 +540,9 @@ def run(
         for attempt in range(3):
             try:
                 t0 = time.perf_counter()
+                rev_model = get_model(_SKILL, "review")
                 rev_resp = anthropic_client.messages.create(
-                    model=REVIEW_MODEL,
+                    model=rev_model,
                     max_tokens=4096,
                     system=[{"type": "text", "text": REVIEW_SYSTEM}],
                     messages=[
@@ -564,10 +565,10 @@ def run(
         final_confidence = confidence
 
         rev_use = _usage(rev_resp)
-        rev_cost = _cost(REVIEW_MODEL, **rev_use)
+        rev_cost = _cost(rev_model, **rev_use)
         total_cost += rev_cost
         interaction_records.append({
-            "agent_type": "review", "model": REVIEW_MODEL,
+            "agent_type": "review", "model": rev_model,
             "iteration": iteration,
             **rev_use,
             "cost_usd": rev_cost, "duration_seconds": rev_dur,
@@ -622,8 +623,9 @@ def run(
         for attempt in range(3):
             try:
                 t0 = time.perf_counter()
+                fix_model = get_model(_SKILL, "fix")
                 with anthropic_client.messages.stream(
-                    model=FIX_MODEL,
+                    model=fix_model,
                     max_tokens=32768,
                     system=[{"type": "text", "text": FIX_SYSTEM}],
                     messages=[
@@ -644,10 +646,10 @@ def run(
             current_synthesis = fixed
 
         fix_use = _usage(fix_resp) if fixed else {"tokens_input": 0, "tokens_output": 0, "tokens_cache_read": 0, "tokens_cache_write": 0}
-        fix_cost = _cost(FIX_MODEL, **fix_use) if fixed else 0.0
+        fix_cost = _cost(fix_model, **fix_use) if fixed else 0.0
         total_cost += fix_cost
         interaction_records.append({
-            "agent_type": "fix", "model": FIX_MODEL,
+            "agent_type": "fix", "model": fix_model,
             "iteration": iteration,
             **fix_use,
             "cost_usd": fix_cost, "duration_seconds": fix_dur if fixed else 0.0,

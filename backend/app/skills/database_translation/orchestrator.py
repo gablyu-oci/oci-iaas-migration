@@ -147,22 +147,32 @@ class DatabaseTranslationOrchestrator(BaseTranslationOrchestrator):
     # ── Cache-control overrides (database uses ephemeral caching) ────────────
 
     def get_enhancement_system_blocks(self) -> list[dict]:
-        return [
-            {
-                "type": "text",
-                "text": self.ENHANCEMENT_SYSTEM,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ]
+        blocks = [{
+            "type": "text",
+            "text": self.ENHANCEMENT_SYSTEM,
+            "cache_control": {"type": "ephemeral"},
+        }]
+        prose = self._workflow_rules_block()
+        if prose:
+            blocks.append(prose)
+        table = self._canonical_mapping_block()
+        if table:
+            blocks.append(table)
+        return blocks
 
     def get_fix_system_blocks(self) -> list[dict]:
-        return [
-            {
-                "type": "text",
-                "text": self.FIX_SYSTEM,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ]
+        blocks = [{
+            "type": "text",
+            "text": self.FIX_SYSTEM,
+            "cache_control": {"type": "ephemeral"},
+        }]
+        prose = self._workflow_rules_block()
+        if prose:
+            blocks.append(prose)
+        table = self._canonical_mapping_block()
+        if table:
+            blocks.append(table)
+        return blocks
 
     # ── Gap analysis ─────────────────────────────────────────────────────────
 
@@ -446,10 +456,5 @@ class DatabaseTranslationOrchestrator(BaseTranslationOrchestrator):
 # ── Module-level exports (backward compatibility) ─────────────────────────────
 
 _orchestrator = DatabaseTranslationOrchestrator()
-ENHANCEMENT_MODEL = _orchestrator.ENHANCEMENT_MODEL
-REVIEW_MODEL = _orchestrator.REVIEW_MODEL
-FIX_MODEL = _orchestrator.FIX_MODEL
-
-
 def run(input_content, progress_callback, anthropic_client, max_iterations=3):
     return _orchestrator.run(input_content, progress_callback, anthropic_client, max_iterations)

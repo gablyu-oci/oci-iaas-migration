@@ -90,14 +90,27 @@ def _sum_tokens(*args: Optional[int]) -> Optional[int]:
     return sum(vals) if vals else None
 
 
-# Pricing per million tokens (as of 2026-03)
+# Pricing per million tokens for Oracle Generative AI models.
+# OCI GenAI does not expose prompt caching through the OpenAI-compatible
+# endpoint, so cache_read / cache_write are left at 0 — usage reporting
+# will always show zero cached tokens.
 _MODEL_PRICING = {
-    "claude-opus-4-6":    {"input":  5.0, "output": 25.0,  "cache_read": 0.50,  "cache_write": 6.25},
-    "claude-sonnet-4-6":  {"input":  3.0, "output": 15.0,  "cache_read": 0.30,  "cache_write": 3.75},
-    "claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.0, "cache_read": 0.08, "cache_write": 1.0},
+    "google.gemini-2.5-pro":        {"input": 1.25, "output": 10.0, "cache_read": 0.0, "cache_write": 0.0},
+    "google.gemini-2.5-flash":      {"input": 0.30, "output": 2.50, "cache_read": 0.0, "cache_write": 0.0},
+    "meta.llama-3.3-70b-instruct":  {"input": 0.65, "output": 0.65, "cache_read": 0.0, "cache_write": 0.0},
+    "meta.llama-3.1-405b-instruct": {"input": 5.32, "output": 16.0, "cache_read": 0.0, "cache_write": 0.0},
+    "cohere.command-r-plus-08-2024":{"input": 2.50, "output": 10.0, "cache_read": 0.0, "cache_write": 0.0},
+    "cohere.command-r-08-2024":     {"input": 0.15, "output": 0.60, "cache_read": 0.0, "cache_write": 0.0},
+    "openai.gpt-4":                 {"input": 30.0, "output": 60.0, "cache_read": 0.0, "cache_write": 0.0},
+    "openai.gpt-4o":                {"input": 2.50, "output": 10.0, "cache_read": 0.0, "cache_write": 0.0},
+    "openai.gpt-4o-mini":           {"input": 0.15, "output": 0.60, "cache_read": 0.0, "cache_write": 0.0},
+    "openai.gpt-4.1":               {"input": 2.00, "output": 8.00, "cache_read": 0.0, "cache_write": 0.0},
+    "openai.gpt-4.1-mini":          {"input": 0.40, "output": 1.60, "cache_read": 0.0, "cache_write": 0.0},
+    "openai.o1":                    {"input": 15.0, "output": 60.0, "cache_read": 0.0, "cache_write": 0.0},
+    "openai.o3-mini":               {"input": 1.10, "output": 4.40, "cache_read": 0.0, "cache_write": 0.0},
+    "xai.grok-3":                   {"input": 3.00, "output": 15.0, "cache_read": 0.0, "cache_write": 0.0},
+    "xai.grok-4":                   {"input": 5.00, "output": 15.0, "cache_read": 0.0, "cache_write": 0.0},
 }
-_MODEL_PRICING["claude-opus-4-5"]   = _MODEL_PRICING["claude-opus-4-6"]
-_MODEL_PRICING["claude-sonnet-4-5"] = _MODEL_PRICING["claude-sonnet-4-6"]
 
 
 def calculate_cost(

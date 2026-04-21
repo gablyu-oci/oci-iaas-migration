@@ -409,10 +409,5 @@ class StorageTranslationOrchestrator(BaseTranslationOrchestrator):
 # ── Module-level exports ──────────────────────────────────────────────────────
 
 _orchestrator = StorageTranslationOrchestrator()
-ENHANCEMENT_MODEL = _orchestrator.ENHANCEMENT_MODEL
-REVIEW_MODEL      = _orchestrator.REVIEW_MODEL
-FIX_MODEL         = _orchestrator.FIX_MODEL
-
-
 def run(input_content, progress_callback, anthropic_client, max_iterations=3):
     return _orchestrator.run(input_content, progress_callback, anthropic_client, max_iterations)

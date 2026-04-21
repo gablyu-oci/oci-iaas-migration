@@ -113,7 +113,7 @@ def graph(ctx: click.Context, include_network: bool) -> None:
 @cli.command()
 @click.option("--limit", default=20, help="Number of top dependencies to show")
 @click.option("--ai", is_flag=True,
-              help="Enable AI-powered summarization (requires ANTHROPIC_API_KEY)")
+              help="Enable AI-powered summarization (requires LLM_API_KEY)")
 @click.pass_context
 def report(ctx: click.Context, limit: int, ai: bool) -> None:
     """Print migration sequencing report."""
@@ -147,7 +147,7 @@ def report(ctx: click.Context, limit: int, ai: bool) -> None:
             from .analysis.llm import is_available, summarize_dependencies
 
             if not is_available():
-                click.echo("\nANTHROPIC_API_KEY not set. Skipping AI summary.")
+                click.echo("\nLLM_API_KEY not set. Skipping AI summary.")
             else:
                 network_deps = (
                     db.get_all_network_deps() if db.get_network_dep_count() > 0 else None
@@ -166,13 +166,13 @@ def report(ctx: click.Context, limit: int, ai: bool) -> None:
 @cli.command()
 @click.pass_context
 def anomalies(ctx: click.Context) -> None:
-    """AI-powered anomaly detection in dependency patterns (requires ANTHROPIC_API_KEY)."""
+    """AI-powered anomaly detection in dependency patterns (requires LLM_API_KEY)."""
     from .analysis.classifier import classify_all
     from .analysis.llm import detect_anomalies, is_available
     from .graph.builder import build_graph, enrich_graph_with_network_deps
 
     if not is_available():
-        click.echo("ANTHROPIC_API_KEY not set. This command requires AI capabilities.")
+        click.echo("LLM_API_KEY not set. This command requires AI capabilities.")
         return
 
     db = Database(ctx.obj["db_path"])
@@ -203,13 +203,13 @@ def anomalies(ctx: click.Context) -> None:
               help="Output file (default: stdout)")
 @click.pass_context
 def runbook(ctx: click.Context, output_path: str | None) -> None:
-    """AI-generated migration runbook with cutover steps (requires ANTHROPIC_API_KEY)."""
+    """AI-generated migration runbook with cutover steps (requires LLM_API_KEY)."""
     from .analysis.classifier import classify_all, compute_migration_order
     from .analysis.llm import generate_runbook, is_available
     from .graph.builder import build_graph, enrich_graph_with_network_deps
 
     if not is_available():
-        click.echo("ANTHROPIC_API_KEY not set. This command requires AI capabilities.")
+        click.echo("LLM_API_KEY not set. This command requires AI capabilities.")
         return
 
     db = Database(ctx.obj["db_path"])

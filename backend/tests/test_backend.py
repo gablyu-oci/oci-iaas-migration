@@ -315,19 +315,36 @@ def test_jwt_invalid():
 # ── Unit: Model Gateway ───────────────────────────────────────────────────────
 
 def test_model_routing():
+    """Every (skill, agent) pair resolves to one of the two configured role models."""
+    from app.gateway.model_gateway import get_model, MODEL_ROUTING
+    from app.config import settings
+
+    writer = settings.OCI_GENAI_WRITER_MODEL
+    reviewer = settings.OCI_GENAI_REVIEWER_MODEL
+    allowed = {writer, reviewer}
+
+    for skill, agents in MODEL_ROUTING.items():
+        for agent in agents:
+            model = get_model(skill, agent)
+            assert model in allowed, f"{skill}.{agent} -> {model} not in {allowed}"
+
+    # Enhancement/fix/writer roles resolve to the writer model; review-style to reviewer.
+    assert get_model("cfn_terraform", "enhancement") == writer
+    assert get_model("cfn_terraform", "review") == reviewer
+    assert get_model("cfn_terraform", "fix") == writer
+    assert get_model("dependency_discovery", "runbook") == writer
+    assert get_model("dependency_discovery", "anomalies") == reviewer
+
+
+def test_model_routing_picks_up_settings_change(monkeypatch):
+    """Settings are the single source of truth — changing them flips every call."""
     from app.gateway.model_gateway import get_model
-    # Enhancement always uses Opus
-    assert get_model("cfn_terraform", "enhancement") == "claude-opus-4-6"
-    assert get_model("iam_translation", "enhancement") == "claude-opus-4-6"
-    # cfn/iam use Opus for all passes (original skills, not yet refactored)
-    assert get_model("cfn_terraform", "review") in ("claude-opus-4-6", "claude-sonnet-4-6")
-    assert get_model("cfn_terraform", "fix") in ("claude-opus-4-6", "claude-sonnet-4-6")
-    assert get_model("iam_translation", "review") in ("claude-opus-4-6", "claude-sonnet-4-6")
-    # New skills use Sonnet for review/fix
-    assert get_model("network_translation", "review") == "claude-sonnet-4-6"
-    assert get_model("ec2_translation", "review") == "claude-sonnet-4-6"
-    assert get_model("dependency_discovery", "runbook") == "claude-opus-4-6"
-    assert get_model("dependency_discovery", "anomalies") == "claude-sonnet-4-6"
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "OCI_GENAI_WRITER_MODEL", "openai.gpt-4o")
+    monkeypatch.setattr(settings, "OCI_GENAI_REVIEWER_MODEL", "openai.gpt-4o-mini")
+    assert get_model("cfn_terraform", "enhancement") == "openai.gpt-4o"
+    assert get_model("cfn_terraform", "review") == "openai.gpt-4o-mini"
 
 
 def test_secret_scrubbing():
@@ -347,8 +364,8 @@ def test_agent_logger_no_file_io():
     # Should not create any files
     logger = AgentLogger("test", "test.json")
     logger.start_session()
-    logger.log_agent_call(1, AgentType.ENHANCEMENT, "in", "out", duration_seconds=0.1, model="claude-opus-4-6")
-    logger.log_review_call(1, ReviewDecision.APPROVED, 0.9, [], {}, 0.1, model="claude-sonnet-4-6")
+    logger.log_agent_call(1, AgentType.ENHANCEMENT, "in", "out", duration_seconds=0.1, model="openai.gpt-4.1")
+    logger.log_review_call(1, ReviewDecision.APPROVED, 0.9, [], {}, 0.1, model="openai.gpt-4.1-mini")
     result = logger.end_session(ReviewDecision.APPROVED, 0.9)
 
     assert isinstance(result, tuple) and len(result) == 2
@@ -380,9 +397,7 @@ def test_cfn_orchestrator_signature():
     from app.skills.cfn_terraform import orchestrator
     sig = inspect.signature(orchestrator.run)
     assert set(sig.parameters) >= {"input_content", "progress_callback", "anthropic_client", "max_iterations"}
-    assert orchestrator.ENHANCEMENT_MODEL == "claude-opus-4-6"
-    assert orchestrator.REVIEW_MODEL in ("claude-opus-4-6", "claude-sonnet-4-6")
-    assert orchestrator.FIX_MODEL in ("claude-opus-4-6", "claude-sonnet-4-6")
+    assert orchestrator._SKILL == "cfn_terraform"
 
 
 def test_iam_orchestrator_signature():
@@ -390,8 +405,7 @@ def test_iam_orchestrator_signature():
     from app.skills.iam_translation import orchestrator
     sig = inspect.signature(orchestrator.run)
     assert set(sig.parameters) >= {"input_content", "progress_callback", "anthropic_client"}
-    assert orchestrator.ENHANCEMENT_MODEL == "claude-opus-4-6"
-    assert orchestrator.REVIEW_MODEL in ("claude-opus-4-6", "claude-sonnet-4-6")
+    assert orchestrator._SKILL == "iam_translation"
 
 
 def test_dep_orchestrator_signature():
@@ -403,47 +417,43 @@ def test_dep_orchestrator_signature():
 
 # ── Unit: New Skill Orchestrator Signatures ───────────────────────────────────
 
-def test_network_translation_orchestrator_signature():
+def _assert_translation_run_signature(orchestrator):
     import inspect
-    from app.skills.network_translation import orchestrator
     sig = inspect.signature(orchestrator.run)
     assert set(sig.parameters) >= {"input_content", "progress_callback", "anthropic_client", "max_iterations"}
-    assert orchestrator.ENHANCEMENT_MODEL == "claude-opus-4-6"
-    assert orchestrator.REVIEW_MODEL == "claude-sonnet-4-6"
+
+
+def test_network_translation_orchestrator_signature():
+    from app.skills.network_translation import orchestrator
+    _assert_translation_run_signature(orchestrator)
 
 
 def test_ec2_translation_orchestrator_signature():
-    import inspect
     from app.skills.ec2_translation import orchestrator
-    sig = inspect.signature(orchestrator.run)
-    assert set(sig.parameters) >= {"input_content", "progress_callback", "anthropic_client", "max_iterations"}
-    assert orchestrator.ENHANCEMENT_MODEL == "claude-opus-4-6"
-    assert orchestrator.REVIEW_MODEL == "claude-sonnet-4-6"
+    _assert_translation_run_signature(orchestrator)
 
 
 def test_database_translation_orchestrator_signature():
-    import inspect
     from app.skills.database_translation import orchestrator
-    sig = inspect.signature(orchestrator.run)
-    assert set(sig.parameters) >= {"input_content", "progress_callback", "anthropic_client", "max_iterations"}
-    assert orchestrator.ENHANCEMENT_MODEL == "claude-opus-4-6"
-    assert orchestrator.REVIEW_MODEL == "claude-sonnet-4-6"
+    _assert_translation_run_signature(orchestrator)
 
 
 def test_loadbalancer_translation_orchestrator_signature():
-    import inspect
     from app.skills.loadbalancer_translation import orchestrator
-    sig = inspect.signature(orchestrator.run)
-    assert set(sig.parameters) >= {"input_content", "progress_callback", "anthropic_client", "max_iterations"}
-    assert orchestrator.ENHANCEMENT_MODEL == "claude-opus-4-6"
-    assert orchestrator.REVIEW_MODEL == "claude-sonnet-4-6"
+    _assert_translation_run_signature(orchestrator)
 
 
 def test_model_routing_new_skills():
+    """Every refactored skill resolves its models through get_model() / settings."""
     from app.gateway.model_gateway import get_model
-    for skill in ("network_translation", "ec2_translation", "database_translation", "loadbalancer_translation"):
-        assert get_model(skill, "enhancement") == "claude-opus-4-6", f"enhancement wrong for {skill}"
-        assert get_model(skill, "review") == "claude-sonnet-4-6", f"review wrong for {skill}"
+    from app.config import settings
+
+    writer = settings.OCI_GENAI_WRITER_MODEL
+    reviewer = settings.OCI_GENAI_REVIEWER_MODEL
+    for skill in ("network_translation", "ec2_translation", "database_translation",
+                  "loadbalancer_translation", "storage_translation", "synthesis"):
+        assert get_model(skill, "enhancement") == writer, f"enhancement wrong for {skill}"
+        assert get_model(skill, "review") == reviewer, f"review wrong for {skill}"
 
 
 # ── Unit: BaseTranslationOrchestrator ────────────────────────────────────────

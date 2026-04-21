@@ -1,0 +1,338 @@
+# AWS → OCI resource mapping — single source of truth.
+#
+# Consumed by:
+#   • app.services.resource_mapper         (deterministic per-resource mapping)
+#   • app.services.rightsizing_engine      (sanity checks on recommended shape)
+#   • skill orchestrators                  (table injected into LLM prompts)
+#
+# Field contract (all fields required unless marked optional):
+#   aws_type              AWS CloudFormation type string, e.g. "AWS::EC2::Instance".
+#   oci_service           Human-friendly OCI service name. Used in UI + LLM prompt.
+#   oci_terraform         Terraform resource name (hashicorp/oci provider).
+#   skill                 Which skill translates this type. One of:
+#                         network_translation, ec2_translation, storage_translation,
+#                         database_translation, loadbalancer_translation,
+#                         iam_translation, cfn_terraform, synthesis, workload_planning.
+#   mapping_confidence    high | medium | low — deterministic confidence before LLM review.
+#   notes          (opt)  Free-form guidance visible to LLM + UI.
+#   gaps           (opt)  Known feature gaps that require manual intervention.
+
+resources:
+  # ── Networking ────────────────────────────────────────────────────────────
+  - aws_type: AWS::EC2::VPC
+    oci_service: Networking
+    oci_resource_label: OCI VCN
+    oci_terraform: oci_core_vcn
+    skill: network_translation
+    mapping_confidence: high
+    notes:
+      - OCI VCN is regional (spans all ADs); AWS VPCs are regional too but subnets are AZ-pinned.
+    gaps: []
+
+  - aws_type: AWS::EC2::Subnet
+    oci_service: Networking
+    oci_resource_label: OCI Subnet
+    oci_terraform: oci_core_subnet
+    skill: network_translation
+    mapping_confidence: high
+    notes:
+      - OCI subnets are regional by default; use availability_domain to pin if strictly needed.
+
+  - aws_type: AWS::EC2::SecurityGroup
+    oci_service: Networking
+    oci_resource_label: OCI Network Security Group
+    oci_terraform: oci_core_network_security_group
+    skill: network_translation
+    mapping_confidence: high
+    notes:
+      - OCI NSGs (preferred) or Security Lists — NSGs attach to VNICs, SLs attach to subnets.
+
+  - aws_type: AWS::EC2::NetworkInterface
+    oci_service: Networking
+    oci_resource_label: OCI VNIC Attachment
+    oci_terraform: oci_core_vnic_attachment
+    skill: network_translation
+    mapping_confidence: high
+
+  - aws_type: AWS::EC2::InternetGateway
+    oci_service: Networking
+    oci_resource_label: OCI Internet Gateway
+    oci_terraform: oci_core_internet_gateway
+    skill: network_translation
+    mapping_confidence: high
+
+  - aws_type: AWS::EC2::NatGateway
+    oci_service: Networking
+    oci_resource_label: OCI NAT Gateway
+    oci_terraform: oci_core_nat_gateway
+    skill: network_translation
+    mapping_confidence: high
+
+  - aws_type: AWS::EC2::RouteTable
+    oci_service: Networking
+    oci_resource_label: OCI Route Table
+    oci_terraform: oci_core_route_table
+    skill: network_translation
+    mapping_confidence: high
+
+  # ── Compute ───────────────────────────────────────────────────────────────
+  - aws_type: AWS::EC2::Instance
+    oci_service: Compute
+    oci_terraform: oci_core_instance
+    skill: ec2_translation
+    mapping_confidence: high
+    notes:
+      - Shape chosen via rightsizing_engine. See instance_shapes.yaml for the catalog.
+
+  - aws_type: AWS::EC2::LaunchTemplate
+    oci_service: Compute
+    oci_terraform: oci_core_instance_configuration
+    skill: ec2_translation
+    mapping_confidence: high
+
+  - aws_type: AWS::AutoScaling::AutoScalingGroup
+    oci_service: Compute
+    oci_terraform: oci_core_instance_pool
+    skill: ec2_translation
+    mapping_confidence: high
+    notes:
+      - AWS ASG → OCI Instance Pool + Instance Configuration combo.
+
+  - aws_type: AWS::AutoScaling::LaunchConfiguration
+    oci_service: Compute
+    oci_terraform: oci_core_instance_configuration
+    skill: ec2_translation
+    mapping_confidence: high
+
+  # ── Storage ───────────────────────────────────────────────────────────────
+  - aws_type: AWS::EC2::Volume
+    oci_service: Block Volume
+    oci_terraform: oci_core_volume
+    skill: storage_translation
+    mapping_confidence: high
+    notes:
+      - OCI encrypts all block volumes by default.
+      - vpus_per_gb drives perf tier — see storage.ebs_to_block_volume below.
+
+  - aws_type: AWS::EC2::VolumeAttachment
+    oci_service: Block Volume
+    oci_terraform: oci_core_volume_attachment
+    skill: storage_translation
+    mapping_confidence: high
+    notes:
+      - Default attachment type is paravirtualized (standard for VM shapes).
+
+  - aws_type: AWS::S3::Bucket
+    oci_service: Object Storage
+    oci_terraform: oci_objectstorage_bucket
+    skill: storage_translation
+    mapping_confidence: high
+
+  # ── Database ──────────────────────────────────────────────────────────────
+  - aws_type: AWS::RDS::DBInstance
+    oci_service: Database
+    oci_terraform: oci_database_db_system
+    skill: database_translation
+    mapping_confidence: high
+    notes:
+      - Engine-specific target — see database.rds_engine below.
+      - Consider Autonomous Database for greenfield Postgres/Oracle workloads.
+
+  - aws_type: AWS::RDS::DBCluster
+    oci_service: Database
+    oci_terraform: oci_database_db_system
+    skill: database_translation
+    mapping_confidence: medium
+    notes:
+      - Aurora → OCI Autonomous (postgres/oracle) or MySQL HeatWave (mysql).
+
+  - aws_type: AWS::DynamoDB::Table
+    oci_service: NoSQL Database
+    oci_terraform: oci_nosql_table
+    skill: database_translation
+    mapping_confidence: medium
+    gaps:
+      - Query patterns differ — global secondary indexes map but validate access patterns.
+
+  # ── Load balancing ────────────────────────────────────────────────────────
+  - aws_type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    oci_service: Load Balancer
+    oci_terraform: oci_load_balancer_load_balancer
+    skill: loadbalancer_translation
+    mapping_confidence: high
+    notes:
+      - ALB → OCI LB with routing rules; NLB → OCI Network Load Balancer.
+    gaps:
+      - SSL certificates must be imported to OCI Certificate Service.
+
+  # ── Serverless / compute ──────────────────────────────────────────────────
+  - aws_type: AWS::Lambda::Function
+    oci_service: Functions
+    oci_terraform: oci_functions_function
+    skill: cfn_terraform
+    mapping_confidence: medium
+    notes:
+      - Requires OCI Functions application (Fn Project runtime).
+      - Code may need changes for SDK/API calls.
+    gaps:
+      - Lambda layers not supported in OCI Functions.
+      - Event source mappings need manual reconfiguration.
+
+  # ── Containers ────────────────────────────────────────────────────────────
+  - aws_type: AWS::ECS::Service
+    oci_service: Container Instances
+    oci_terraform: oci_container_instances_container_instance
+    skill: cfn_terraform
+    mapping_confidence: medium
+    notes:
+      - For simple services; use OKE for complex.
+
+  - aws_type: AWS::EKS::Cluster
+    oci_service: Container Engine (OKE)
+    oci_terraform: oci_containerengine_cluster
+    skill: cfn_terraform
+    mapping_confidence: high
+
+  # ── IAM ───────────────────────────────────────────────────────────────────
+  - aws_type: AWS::IAM::Role
+    oci_service: IAM
+    oci_terraform: oci_identity_dynamic_group
+    skill: iam_translation
+    mapping_confidence: medium
+    notes:
+      - Use dynamic groups for service roles (OCI has no direct "role" concept).
+    gaps:
+      - Cross-account trust policies → OCI tenancy federation (no 1:1 mapping).
+
+  - aws_type: AWS::IAM::Policy
+    oci_service: IAM
+    oci_terraform: oci_identity_policy
+    skill: iam_translation
+    mapping_confidence: medium
+    notes:
+      - OCI uses verb-based policy model (inspect/read/use/manage).
+      - See iam.yaml for the full action → verb table.
+
+  # ── Monitoring / messaging ────────────────────────────────────────────────
+  - aws_type: AWS::CloudWatch::Alarm
+    oci_service: Monitoring
+    oci_terraform: oci_monitoring_alarm
+    skill: cfn_terraform
+    mapping_confidence: medium
+    notes:
+      - Map metric namespaces to OCI equivalents (e.g., AWS/EC2 → oci_computeagent).
+
+  - aws_type: AWS::SNS::Topic
+    oci_service: Notifications
+    oci_terraform: oci_ons_notification_topic
+    skill: cfn_terraform
+    mapping_confidence: high
+
+  - aws_type: AWS::SQS::Queue
+    oci_service: Queue
+    oci_terraform: oci_queue_queue
+    skill: cfn_terraform
+    mapping_confidence: high
+
+  # ── CDN / DNS ─────────────────────────────────────────────────────────────
+  - aws_type: AWS::CloudFront::Distribution
+    oci_service: Web Application Acceleration
+    oci_terraform: oci_waa_web_app_acceleration
+    skill: cfn_terraform
+    mapping_confidence: low
+    gaps:
+      - Limited CDN feature parity — edge location footprint differs.
+
+  - aws_type: AWS::Route53::HostedZone
+    oci_service: DNS
+    oci_terraform: oci_dns_zone
+    skill: cfn_terraform
+    mapping_confidence: high
+
+  # ── Infrastructure-as-code ────────────────────────────────────────────────
+  - aws_type: AWS::CloudFormation::Stack
+    oci_service: Terraform
+    oci_terraform: null
+    skill: cfn_terraform
+    mapping_confidence: high
+    notes:
+      - Converted to Terraform HCL via cfn_terraform skill — not a runtime OCI resource.
+
+
+# ── Sub-tables referenced from resources[].notes ─────────────────────────────
+# Kept in the same file because they belong to the same domain. Accessed as
+# mappings.get_volume_type(...) / mappings.get_rds_engine(...) / etc.
+
+storage:
+  ebs_to_block_volume:
+    gp3:
+      oci_desc: OCI Block Volume — Balanced
+      vpus_per_gb: 10
+    gp2:
+      oci_desc: OCI Block Volume — Balanced
+      vpus_per_gb: 10
+    io1:
+      oci_desc: OCI Block Volume — High Performance
+      vpus_per_gb: 20
+    io2:
+      oci_desc: OCI Block Volume — High Performance
+      vpus_per_gb: 20
+    st1:
+      oci_desc: OCI Block Volume — Low Cost
+      vpus_per_gb: 0
+    sc1:
+      oci_desc: OCI Block Volume — Low Cost
+      vpus_per_gb: 0
+
+database:
+  rds_engine:
+    postgres:
+      oci_desc: OCI Database — PostgreSQL
+      oci_terraform: oci_database_db_system
+    mysql:
+      oci_desc: OCI MySQL HeatWave
+      oci_terraform: oci_mysql_mysql_db_system
+    mariadb:
+      oci_desc: OCI MySQL HeatWave
+      oci_terraform: oci_mysql_mysql_db_system
+    oracle-ee:
+      oci_desc: OCI Database — Oracle
+      oci_terraform: oci_database_db_system
+    oracle-se2:
+      oci_desc: OCI Database — Oracle
+      oci_terraform: oci_database_db_system
+    sqlserver:
+      oci_desc: OCI Compute (self-managed)
+      oci_terraform: oci_core_instance
+      gaps:
+        - No managed SQL Server on OCI — requires self-hosted on Compute.
+    aurora-postgresql:
+      oci_desc: OCI Autonomous Database (ATP)
+      oci_terraform: oci_database_autonomous_database
+    aurora-mysql:
+      oci_desc: OCI MySQL HeatWave
+      oci_terraform: oci_mysql_mysql_db_system
+
+  # Detected via SSM software inventory on EC2 instances, not via RDS.
+  local_db_keywords:
+    mariadb:
+      display: MariaDB
+      oci_target: OCI MySQL HeatWave
+    mysql:
+      display: MySQL
+      oci_target: OCI MySQL HeatWave
+    postgres:
+      display: PostgreSQL
+      oci_target: OCI Database — PostgreSQL
+    postgresql:
+      display: PostgreSQL
+      oci_target: OCI Database — PostgreSQL
+    mongodb:
+      display: MongoDB
+      oci_target: OCI NoSQL / self-managed
+    redis:
+      display: Redis
+      oci_target: OCI Cache with Redis
+    sqlite:
+      display: SQLite
+      oci_target: OCI MySQL HeatWave (upgrade)

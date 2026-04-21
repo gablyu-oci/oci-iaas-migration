@@ -408,8 +408,9 @@ def _llm_review_groups(
     )
 
     try:
+        from app.gateway.model_gateway import get_model
         response = anthropic_client.messages.create(
-            model="claude-sonnet-4-6",
+            model=get_model("app_grouping", "group"),
             max_tokens=4096,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -432,6 +433,11 @@ def _llm_review_groups(
 
         suggestions = json.loads(cleaned)
 
+        # LLMs occasionally hallucinate resource identifiers. Only accept IDs
+        # that correspond to real resources we passed in — anything else gets
+        # dropped before it can poison the assessment pipeline.
+        valid_ids = set(resource_by_id.keys())
+
         changes_made = 0
 
         # Apply merges first
@@ -449,6 +455,9 @@ def _llm_review_groups(
             to_group = move.get("to_group", "")
             if not rid or not to_group:
                 continue
+            if rid not in valid_ids:
+                logger.debug("LLM move dropped: unknown resource_id %s", rid)
+                continue
             # Remove from current group
             for gname, rids in groups.items():
                 if rid in rids:
@@ -465,8 +474,12 @@ def _llm_review_groups(
         # Create new groups
         for new in suggestions.get("new_groups", []):
             gname = new.get("name", "")
-            rids = new.get("resource_ids", [])
+            raw_rids = new.get("resource_ids", [])
+            # Filter hallucinated IDs — keep only real resources we know about.
+            rids = [r for r in raw_rids if r in valid_ids]
             if not gname or not rids:
+                if raw_rids and not rids:
+                    logger.debug("LLM new group '%s' dropped: all resource_ids unknown", gname)
                 continue
             # Remove these resources from any existing group
             for existing_rids in groups.values():

@@ -1,8 +1,11 @@
-"""OCI rightsizing engine -- maps AWS instance types to optimal OCI shapes.
+"""OCI rightsizing engine — maps AWS instance types to optimal OCI shapes.
 
 Given an AWS instance type and optional CloudWatch metrics, this module
 computes the best-fit OCI Flex shape, the number of OCPUs and memory,
 the projected monthly cost, and a confidence level.
+
+Instance specs and the OCI shape catalog now live in
+``backend/data/mappings/instance_shapes.yaml`` — see ``app.mappings``.
 """
 
 from __future__ import annotations
@@ -10,103 +13,13 @@ from __future__ import annotations
 import math
 from typing import Any
 
-# ---------------------------------------------------------------------------
-# AWS instance specifications (top 30 common instance types)
-# Monthly costs are approximate On-Demand prices (us-east-1, Linux).
-# ---------------------------------------------------------------------------
-AWS_INSTANCE_SPECS: dict[str, dict[str, Any]] = {
-    # T3 family (burstable)
-    "t3.micro":    {"vcpus": 2,  "memory_gb": 1,    "monthly_cost_usd": 7.59},
-    "t3.small":    {"vcpus": 2,  "memory_gb": 2,    "monthly_cost_usd": 15.18},
-    "t3.medium":   {"vcpus": 2,  "memory_gb": 4,    "monthly_cost_usd": 30.37},
-    "t3.large":    {"vcpus": 2,  "memory_gb": 8,    "monthly_cost_usd": 60.74},
-    "t3.xlarge":   {"vcpus": 4,  "memory_gb": 16,   "monthly_cost_usd": 121.47},
-    "t3.2xlarge":  {"vcpus": 8,  "memory_gb": 32,   "monthly_cost_usd": 242.94},
-    # T3a family (AMD burstable)
-    "t3a.micro":   {"vcpus": 2,  "memory_gb": 1,    "monthly_cost_usd": 6.86},
-    "t3a.small":   {"vcpus": 2,  "memory_gb": 2,    "monthly_cost_usd": 13.72},
-    "t3a.medium":  {"vcpus": 2,  "memory_gb": 4,    "monthly_cost_usd": 27.45},
-    "t3a.large":   {"vcpus": 2,  "memory_gb": 8,    "monthly_cost_usd": 54.90},
-    "t3a.xlarge":  {"vcpus": 4,  "memory_gb": 16,   "monthly_cost_usd": 109.79},
-    "t3a.2xlarge": {"vcpus": 8,  "memory_gb": 32,   "monthly_cost_usd": 219.58},
-    # M5 family (general purpose)
-    "m5.large":    {"vcpus": 2,  "memory_gb": 8,    "monthly_cost_usd": 70.08},
-    "m5.xlarge":   {"vcpus": 4,  "memory_gb": 16,   "monthly_cost_usd": 140.16},
-    "m5.2xlarge":  {"vcpus": 8,  "memory_gb": 32,   "monthly_cost_usd": 280.32},
-    "m5.4xlarge":  {"vcpus": 16, "memory_gb": 64,   "monthly_cost_usd": 560.64},
-    # M6i family (general purpose, latest gen)
-    "m6i.large":   {"vcpus": 2,  "memory_gb": 8,    "monthly_cost_usd": 70.08},
-    "m6i.xlarge":  {"vcpus": 4,  "memory_gb": 16,   "monthly_cost_usd": 140.16},
-    "m6i.2xlarge": {"vcpus": 8,  "memory_gb": 32,   "monthly_cost_usd": 280.32},
-    "m6i.4xlarge": {"vcpus": 16, "memory_gb": 64,   "monthly_cost_usd": 560.64},
-    # C5 family (compute optimized)
-    "c5.large":    {"vcpus": 2,  "memory_gb": 4,    "monthly_cost_usd": 62.05},
-    "c5.xlarge":   {"vcpus": 4,  "memory_gb": 8,    "monthly_cost_usd": 124.10},
-    "c5.2xlarge":  {"vcpus": 8,  "memory_gb": 16,   "monthly_cost_usd": 248.20},
-    "c5.4xlarge":  {"vcpus": 16, "memory_gb": 32,   "monthly_cost_usd": 496.40},
-    # C6i family (compute optimized, latest gen)
-    "c6i.large":   {"vcpus": 2,  "memory_gb": 4,    "monthly_cost_usd": 62.05},
-    "c6i.xlarge":  {"vcpus": 4,  "memory_gb": 8,    "monthly_cost_usd": 124.10},
-    "c6i.2xlarge": {"vcpus": 8,  "memory_gb": 16,   "monthly_cost_usd": 248.20},
-    "c6i.4xlarge": {"vcpus": 16, "memory_gb": 32,   "monthly_cost_usd": 496.40},
-    # R5 family (memory optimized)
-    "r5.large":    {"vcpus": 2,  "memory_gb": 16,   "monthly_cost_usd": 91.98},
-    "r5.xlarge":   {"vcpus": 4,  "memory_gb": 32,   "monthly_cost_usd": 183.96},
-    "r5.2xlarge":  {"vcpus": 8,  "memory_gb": 64,   "monthly_cost_usd": 367.92},
-    # R6i family (memory optimized, latest gen)
-    "r6i.large":   {"vcpus": 2,  "memory_gb": 16,   "monthly_cost_usd": 91.98},
-    "r6i.xlarge":  {"vcpus": 4,  "memory_gb": 32,   "monthly_cost_usd": 183.96},
-    "r6i.2xlarge": {"vcpus": 8,  "memory_gb": 64,   "monthly_cost_usd": 367.92},
-}
+from app import mappings
 
-# ---------------------------------------------------------------------------
-# OCI Flex shape catalogue
-# Costs are per-hour; we multiply by 730 hours/month in calculations.
-# ---------------------------------------------------------------------------
-HOURS_PER_MONTH: float = 730.0
-
-OCI_FLEX_SHAPES: dict[str, dict[str, Any]] = {
-    "VM.Standard.E5.Flex": {
-        "per_ocpu_cost": 0.024,
-        "per_gb_cost": 0.0015,
-        "min_ocpu": 1,
-        "max_ocpu": 94,
-        "min_mem": 1,
-        "max_mem": 1024,
-        "arch": "x86_64",
-        "description": "AMD EPYC (general purpose, best value x86)",
-    },
-    "VM.Standard3.Flex": {
-        "per_ocpu_cost": 0.032,
-        "per_gb_cost": 0.0020,
-        "min_ocpu": 1,
-        "max_ocpu": 56,
-        "min_mem": 1,
-        "max_mem": 896,
-        "arch": "x86_64",
-        "description": "Intel Xeon (general purpose)",
-    },
-    "VM.Optimized3.Flex": {
-        "per_ocpu_cost": 0.036,
-        "per_gb_cost": 0.0024,
-        "min_ocpu": 1,
-        "max_ocpu": 36,
-        "min_mem": 1,
-        "max_mem": 512,
-        "arch": "x86_64",
-        "description": "Intel Xeon (compute optimized, high frequency)",
-    },
-    "VM.Standard.A2.Flex": {
-        "per_ocpu_cost": 0.020,
-        "per_gb_cost": 0.0013,
-        "min_ocpu": 1,
-        "max_ocpu": 160,
-        "min_mem": 1,
-        "max_mem": 1024,
-        "arch": "aarch64",
-        "description": "Ampere Altra (ARM-based, best price-performance)",
-    },
-}
+# Back-compat re-exports: some modules still import these constants. They
+# now resolve through the YAML loader at import time.
+AWS_INSTANCE_SPECS: dict[str, dict[str, Any]] = mappings.aws_instance_specs()
+OCI_FLEX_SHAPES: dict[str, dict[str, Any]] = mappings.oci_flex_shapes()
+HOURS_PER_MONTH: float = mappings.hours_per_month()
 
 
 def _monthly_cost(shape: dict[str, Any], ocpus: int, memory_gb: int) -> float:

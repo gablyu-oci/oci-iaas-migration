@@ -340,7 +340,7 @@ def build_parser():
 
     def _add_token_args(p):
         """Add real-API token args to a subparser (no self-report --tokens)."""
-        p.add_argument("--model",              default=None, help="Model ID e.g. claude-sonnet-4-6")
+        p.add_argument("--model",              default=None, help="Model ID e.g. google.gemini-2.5-pro")
         p.add_argument("--tokens-in",          type=int, default=None, dest="tokens_in",
                        help="Input tokens from response.usage.input_tokens")
         p.add_argument("--tokens-out",         type=int, default=None, dest="tokens_out",

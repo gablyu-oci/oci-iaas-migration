@@ -1,48 +1,114 @@
-"""Anthropic client factory, model routing, and secret scrubbing."""
+"""LLM client factory, model routing, and secret scrubbing.
+
+This module is the **single source of truth** for model selection. Every
+orchestrator and service that picks a model should call ``get_model(
+skill_type, agent_type)`` rather than hardcode a model ID.
+
+Model identities live in only two places:
+
+    app.config.settings.LLM_WRITER_MODEL    # writer/enhancement/fix/runbook
+    app.config.settings.LLM_REVIEWER_MODEL  # review/classifier/anomalies
+
+``MODEL_ROUTING`` below binds each (skill, agent) pair to one of those two
+roles. Change the env var (or override ``MODEL_ROUTING[...]`` at runtime)
+and every call site picks up the new model on next ``get_model`` invocation.
+"""
 
 import re
 
-import anthropic
-
 from app.config import settings
+from app.gateway.llm_client import LLMClient
 
-# Maps skill_type -> agent_type -> model name
-MODEL_ROUTING = {
+
+def _writer() -> str:
+    return settings.LLM_WRITER_MODEL
+
+
+def _reviewer() -> str:
+    return settings.LLM_REVIEWER_MODEL
+
+
+# skill_type -> agent_type -> role resolver.
+# Using callables (instead of materialized strings) so that changing the
+# settings values at runtime — e.g. in a test — is picked up immediately.
+MODEL_ROUTING: dict[str, dict[str, object]] = {
     "cfn_terraform": {
-        "enhancement": "claude-opus-4-6",
-        "review": "claude-opus-4-6",
-        "fix": "claude-opus-4-6",
+        "enhancement": _writer,
+        "review": _reviewer,
+        "fix": _writer,
     },
     "iam_translation": {
-        "enhancement": "claude-opus-4-6",
-        "review": "claude-opus-4-6",
-        "fix": "claude-opus-4-6",
+        "enhancement": _writer,
+        "review": _reviewer,
+        "fix": _writer,
     },
     "dependency_discovery": {
-        "runbook": "claude-opus-4-6",
-        "anomalies": "claude-sonnet-4-6",
+        "runbook": _writer,
+        "anomalies": _reviewer,
+        "review": _reviewer,
     },
     "network_translation": {
-        "enhancement": "claude-opus-4-6",
-        "review": "claude-sonnet-4-6",
-        "fix": "claude-sonnet-4-6",
+        "enhancement": _writer,
+        "review": _reviewer,
+        "fix": _writer,
     },
     "ec2_translation": {
-        "enhancement": "claude-opus-4-6",
-        "review": "claude-sonnet-4-6",
-        "fix": "claude-sonnet-4-6",
+        "enhancement": _writer,
+        "review": _reviewer,
+        "fix": _writer,
     },
     "database_translation": {
-        "enhancement": "claude-opus-4-6",
-        "review": "claude-sonnet-4-6",
-        "fix": "claude-sonnet-4-6",
+        "enhancement": _writer,
+        "review": _reviewer,
+        "fix": _writer,
     },
     "loadbalancer_translation": {
-        "enhancement": "claude-opus-4-6",
-        "review": "claude-sonnet-4-6",
-        "fix": "claude-sonnet-4-6",
+        "enhancement": _writer,
+        "review": _reviewer,
+        "fix": _writer,
     },
+    "storage_translation": {
+        "enhancement": _writer,
+        "review": _reviewer,
+        "fix": _writer,
+    },
+    "synthesis": {
+        "enhancement": _writer,
+        "review": _reviewer,
+        "fix": _writer,
+    },
+    "workload_planning": {
+        "review": _reviewer,
+        "enhancement": _writer,
+    },
+    "data_migration_planning": {
+        "enhancement": _writer,
+        "review": _reviewer,
+        "fix": _writer,
+    },
+    # Non-skill services that still need to talk to an LLM.
+    "sixr_classification": {"classify": _reviewer},
+    "app_grouping":        {"group":    _reviewer},
+    "migration_execution": {"generate": _writer},
+    "resource_mapping":    {"map":      _reviewer},
 }
+
+
+def get_model(skill_type: str, agent_type: str) -> str:
+    """Look up the LLM model for a given (skill, agent) pair.
+
+    Falls back to the writer model if the pair is not in ``MODEL_ROUTING``.
+    Callers MUST route model selection through this function — do not
+    hardcode model strings elsewhere.
+    """
+    role = MODEL_ROUTING.get(skill_type, {}).get(agent_type)
+    if role is None:
+        return _writer()
+    # Resolvers are stored as callables so settings changes are hot.
+    if callable(role):
+        return role()
+    return role  # tolerate a plain string override for tests
+
 
 SECRET_PATTERNS = [
     re.compile(r"AKIA[0-9A-Z]{16}"),
@@ -59,26 +125,26 @@ def scrub_secrets(text: str) -> str:
     return text
 
 
-def get_anthropic_client(api_key: str | None = None):
+def get_llm_client(api_key: str | None = None) -> LLMClient:
+    """Build an LLM client pointed at the configured endpoint.
+
+    Anonymous endpoints (like the internal Llama Stack gateway) are
+    supported: an empty API key becomes a placeholder string since the
+    OpenAI SDK requires a non-empty value.
     """
-    Return an Anthropic-compatible client.
-
-    Priority:
-    1. Explicit api_key argument
-    2. ANTHROPIC_API_KEY env / settings
-    3. Claude Code OAuth via AgentSDKClient (no key needed)
-    """
-    key = api_key or settings.ANTHROPIC_API_KEY
-    if key:
-        return anthropic.Anthropic(api_key=key)
-    from app.gateway.agent_adapter import AgentSDKClient
-    return AgentSDKClient()
+    return LLMClient(
+        api_key=api_key or settings.LLM_API_KEY,
+        base_url=settings.LLM_BASE_URL,
+    )
 
 
-def get_model(skill_type: str, agent_type: str) -> str:
-    """Look up the model to use for a given skill + agent type combination."""
-    skill_models = MODEL_ROUTING.get(skill_type, {})
-    return skill_models.get(agent_type, "claude-opus-4-6")
+# Legacy aliases — kept so older call sites keep working. Prefer ``get_llm_client``.
+def get_anthropic_client(api_key: str | None = None) -> LLMClient:
+    return get_llm_client(api_key)
+
+
+def get_genai_client(api_key: str | None = None) -> LLMClient:
+    return get_llm_client(api_key)
 
 
 def guard_input(text: str, skill_type: str = "unknown") -> str:

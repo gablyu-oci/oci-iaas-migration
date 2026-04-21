@@ -6,13 +6,13 @@ AWS -> OCI IAM translation with real token tracking.
 Runs enhancement -> review -> fix agent loop and returns results as dicts.
 """
 
+from typing import Any
 import json
 import sys
 import time
 from pathlib import Path
 from datetime import datetime
 
-import anthropic
 
 # ── Path setup ────────────────────────────────────────────────────────────────
 SKILLS_ROOT = Path(__file__).parent.parent.resolve()
@@ -22,10 +22,11 @@ from agent_logger import (
     AgentLogger, AgentType, ReviewDecision, ConfidenceCalculator, calculate_cost
 )
 
+from app.gateway.model_gateway import get_model
+
 # ── Model config ──────────────────────────────────────────────────────────────
-ENHANCEMENT_MODEL = "claude-opus-4-6"
-REVIEW_MODEL = "claude-opus-4-6"
-FIX_MODEL         = "claude-opus-4-6"
+# Models resolve through model_gateway.get_model() — do NOT hardcode here.
+_SKILL = "iam_translation"
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 WORKFLOWS_DIR  = SKILLS_ROOT / "iam_translation" / "workflows"
@@ -79,7 +80,13 @@ def load_service_docs(services: list[str]) -> str:
 
 
 def load_workflow_rules() -> str:
-    """Load translation rules, verb mappings, and condition mappings."""
+    """Load IAM prose rules + inject the live action → verb mapping table.
+
+    Prose (ordering, condition translation, role/dg reasoning) stays in the
+    workflows/*.md files. The AWS action → OCI verb TABLE is rendered from
+    ``data/mappings/iam.yaml`` so the deterministic and LLM views agree.
+    """
+    from app import mappings
     rules_file = WORKFLOWS_DIR / "translation-rules.md"
     verbs_file = WORKFLOWS_DIR / "action-verb-mappings.md"
     conds_file = WORKFLOWS_DIR / "condition-mappings.md"
@@ -87,8 +94,19 @@ def load_workflow_rules() -> str:
     parts = []
     if rules_file.exists():
         parts.append(f"## Translation Rules\n{rules_file.read_text(encoding='utf-8')}")
+
+    # Inject the canonical table FIRST so the LLM sees the authoritative rows
+    # before reading the discursive per-service notes in action-verb-mappings.md.
+    parts.append(
+        "## Canonical AWS Action → OCI Verb Table (single source of truth)\n\n"
+        + mappings.render_iam_table_md()
+    )
+
     if verbs_file.exists():
-        parts.append(f"## Action->Verb Mappings\n{verbs_file.read_text(encoding='utf-8')}")
+        parts.append(
+            f"## Per-service Discussion (Action → Verb)\n"
+            f"{verbs_file.read_text(encoding='utf-8')}"
+        )
     if conds_file.exists():
         parts.append(f"## Condition Mappings\n{conds_file.read_text(encoding='utf-8')}")
     return "\n\n".join(parts) if parts else "[workflow rules not found]"
@@ -96,7 +114,7 @@ def load_workflow_rules() -> str:
 
 # ── JSON extraction ───────────────────────────────────────────────────────────
 
-def _parse_json_response(response: anthropic.types.Message) -> dict:
+def _parse_json_response(response: Any) -> dict:
     """Robustly extract a JSON object from an API response."""
     if response.stop_reason == "max_tokens":
         raise json.JSONDecodeError(
@@ -125,7 +143,7 @@ def _parse_json_response(response: anthropic.types.Message) -> dict:
 
 # ── Token extraction ──────────────────────────────────────────────────────────
 
-def extract_usage(response: anthropic.types.Message) -> dict:
+def extract_usage(response: Any) -> dict:
     """Extract all token fields from a real API response."""
     u = response.usage
     return {
@@ -248,7 +266,7 @@ Output ONLY a JSON object:
 # ── Agent calls ───────────────────────────────────────────────────────────────
 
 def call_enhancement(
-    client: anthropic.Anthropic,
+    client: Any,
     policy_text: str,
     current_translation: dict | None,
     issues: list,
@@ -261,9 +279,10 @@ def call_enhancement(
     prev = json.dumps(current_translation, indent=2) if current_translation else "None -- this is the initial translation."
     issues_text = json.dumps(issues, indent=2) if issues else "None"
 
+    model = get_model(_SKILL, "enhancement")
     start = time.perf_counter()
     response = client.messages.create(
-        model=ENHANCEMENT_MODEL,
+        model=model,
         max_tokens=8192,
         system=[
             {"type": "text", "text": ENHANCEMENT_SYSTEM},
@@ -288,24 +307,25 @@ def call_enhancement(
 
     usage = extract_usage(response)
     usage["duration"] = duration
-    usage["model"] = ENHANCEMENT_MODEL
-    usage["cost"] = calculate_cost(ENHANCEMENT_MODEL, **{k: usage[k] for k in
+    usage["model"] = model
+    usage["cost"] = calculate_cost(model, **{k: usage[k] for k in
                                     ["tokens_input", "tokens_output",
                                      "tokens_cache_read", "tokens_cache_write"]})
     return translation, usage
 
 
 def call_review(
-    client: anthropic.Anthropic,
+    client: Any,
     policy_text: str,
     translation: dict,
     oci_docs: str,
 ) -> tuple[dict, dict]:
     """Call review agent. Returns (review_dict, usage_dict)."""
 
+    model = get_model(_SKILL, "review")
     start = time.perf_counter()
     response = client.messages.create(
-        model=REVIEW_MODEL,
+        model=model,
         max_tokens=4096,
         system=[
             {"type": "text", "text": REVIEW_SYSTEM},
@@ -327,15 +347,15 @@ def call_review(
 
     usage = extract_usage(response)
     usage["duration"] = duration
-    usage["model"] = REVIEW_MODEL
-    usage["cost"] = calculate_cost(REVIEW_MODEL, **{k: usage[k] for k in
+    usage["model"] = model
+    usage["cost"] = calculate_cost(model, **{k: usage[k] for k in
                                     ["tokens_input", "tokens_output",
                                      "tokens_cache_read", "tokens_cache_write"]})
     return review, usage
 
 
 def call_fix(
-    client: anthropic.Anthropic,
+    client: Any,
     policy_text: str,
     translation: dict,
     issues: list,
@@ -344,9 +364,10 @@ def call_fix(
 ) -> tuple[dict, dict]:
     """Call fix agent. Returns (fixed_translation_dict, usage_dict)."""
 
+    model = get_model(_SKILL, "fix")
     start = time.perf_counter()
     response = client.messages.create(
-        model=FIX_MODEL,
+        model=model,
         max_tokens=8192,
         system=[
             {"type": "text", "text": FIX_SYSTEM},
@@ -369,8 +390,8 @@ def call_fix(
 
     usage = extract_usage(response)
     usage["duration"] = duration
-    usage["model"] = FIX_MODEL
-    usage["cost"] = calculate_cost(FIX_MODEL, **{k: usage[k] for k in
+    usage["model"] = model
+    usage["cost"] = calculate_cost(model, **{k: usage[k] for k in
                                     ["tokens_input", "tokens_output",
                                      "tokens_cache_read", "tokens_cache_write"]})
     return fixed, usage
@@ -718,7 +739,7 @@ def generate_rich_report_md(
 def run(
     input_content: str,
     progress_callback,
-    anthropic_client: anthropic.Anthropic,
+    anthropic_client: Any,
     max_iterations: int = 3,
 ) -> dict:
     """

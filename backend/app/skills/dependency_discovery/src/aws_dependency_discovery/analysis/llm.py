@@ -1,41 +1,63 @@
-"""AI-powered dependency analysis using Anthropic Claude API.
+"""AI-powered dependency analysis.
 
-Goes beyond simple summarization to provide:
+Provides:
 1. Anomaly detection — unusual dependency patterns
 2. Migration runbook generation — step-by-step cutover plans
 3. Risk narratives — CTO-readable impact assessments
 4. Cross-correlation — CloudTrail + Flow Log pattern matching
+
+Targets any OpenAI-compatible chat completions endpoint; defaults to the
+Oracle internal Llama Stack gateway (anonymous). Configure via
+``LLM_BASE_URL`` / ``LLM_API_KEY`` env vars.
 """
 
 from __future__ import annotations
 
-from ..config import get_anthropic_api_key, has_anthropic_credentials
+import os
+
+from ..config import (
+    get_llm_api_key,
+    get_llm_base_url,
+    has_llm_credentials,
+)
 from .classifier import DependencyInfo
+
+# Standalone CLI: can't import app.gateway.model_gateway (pulls in FastAPI).
+# Reads the same env vars the main app reads → one source of truth.
+_DEFAULT_MODEL = os.environ.get("LLM_WRITER_MODEL", "oci/openai.gpt-5.4")
 
 
 def is_available() -> bool:
-    """Check if any Anthropic credentials are available (API key or Claude Code OAuth)."""
-    return has_anthropic_credentials()
+    """Check if an LLM endpoint is reachable (base URL configured)."""
+    return has_llm_credentials()
 
 
 def _get_client():
-    """Get an Anthropic client, raising if not configured."""
-    api_key = get_anthropic_api_key()
-    if not api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY not set")
-    import anthropic
-    return anthropic.Anthropic(api_key=api_key)
+    """Return an OpenAI client pointed at the configured LLM endpoint."""
+    from openai import OpenAI
+    # API key is optional; the OpenAI SDK demands a non-empty string even
+    # for anonymous endpoints, so fall back to a placeholder.
+    api_key = get_llm_api_key() or "anonymous"
+    return OpenAI(api_key=api_key, base_url=get_llm_base_url())
 
 
-def _call_claude(prompt: str, max_tokens: int = 4096) -> str:
-    """Make a Claude API call with the given prompt."""
+def _is_reasoning_model(model: str) -> bool:
+    """Detect reasoning-family models that need max_completion_tokens."""
+    lower = model.lower()
+    return any(tag in lower for tag in ("gpt-5", ".o1", ".o3", ".o4", "-reasoning"))
+
+
+def _call_llm(prompt: str, max_tokens: int = 4096) -> str:
+    """Chat-completion call with the given prompt."""
     client = _get_client()
-    message = client.messages.create(
-        model="claude-opus-4-6",
-        max_tokens=max_tokens,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return message.content[0].text
+    params: dict = {
+        "model": _DEFAULT_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    # Reasoning models reject max_tokens
+    params["max_completion_tokens" if _is_reasoning_model(_DEFAULT_MODEL) else "max_tokens"] = max_tokens
+    response = client.chat.completions.create(**params)
+    return response.choices[0].message.content or ""
 
 
 def _build_dependency_context(
@@ -103,21 +125,14 @@ Produce a CTO-readable migration brief.
 7. Keep the language accessible to a CTO — no deep AWS jargon without explanation
 """
 
-    return _call_claude(prompt)
+    return _call_llm(prompt)
 
 
 def detect_anomalies(
     dependencies: list[DependencyInfo],
     network_deps: list[dict] | None = None,
 ) -> str:
-    """Use AI to detect unusual dependency patterns that indicate hidden risks.
-
-    Looks for:
-    - Unexpected cross-service coupling
-    - Unusually high-frequency calls suggesting tight coupling
-    - Orphaned services with no inbound/outbound dependencies
-    - Network traffic patterns that don't match API-level dependencies
-    """
+    """Use AI to detect unusual dependency patterns that indicate hidden risks."""
     dep_lines = []
     for d in dependencies:
         dep_lines.append(
@@ -169,7 +184,7 @@ For each anomaly, explain:
 Be specific and actionable. Reference actual services and IPs from the data.
 """
 
-    return _call_claude(prompt, max_tokens=4096)
+    return _call_llm(prompt, max_tokens=4096)
 
 
 def generate_runbook(
@@ -177,11 +192,7 @@ def generate_runbook(
     migration_steps: list[dict],
     network_deps: list[dict] | None = None,
 ) -> str:
-    """Generate a detailed migration runbook with pre/during/post cutover steps.
-
-    This is the most valuable AI output — a step-by-step guide that a migration
-    team can follow during the actual cutover weekend.
-    """
+    """Generate a detailed migration runbook with pre/during/post cutover steps."""
     context = _build_dependency_context(dependencies, migration_steps, network_deps)
 
     prompt = f"""You are an AWS-to-OCI migration architect. Generate a detailed MIGRATION RUNBOOK
@@ -223,4 +234,4 @@ Use the migration ordering as the basis for the cutover sequence.
 Format as markdown suitable for pasting into a Confluence/Notion page.
 """
 
-    return _call_claude(prompt, max_tokens=8192)
+    return _call_llm(prompt, max_tokens=8192)

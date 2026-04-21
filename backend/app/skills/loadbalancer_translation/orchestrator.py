@@ -157,16 +157,30 @@ Output ONLY a JSON object with the same schema as the enhancement output, plus:
     # LoadBalancer uses cache_control on both enhancement and fix system blocks.
 
     def get_enhancement_system_blocks(self) -> list[dict]:
-        return [
-            {"type": "text", "text": self.ENHANCEMENT_SYSTEM,
-             "cache_control": {"type": "ephemeral"}},
-        ]
+        blocks = [{
+            "type": "text", "text": self.ENHANCEMENT_SYSTEM,
+            "cache_control": {"type": "ephemeral"},
+        }]
+        prose = self._workflow_rules_block()
+        if prose:
+            blocks.append(prose)
+        table = self._canonical_mapping_block()
+        if table:
+            blocks.append(table)
+        return blocks
 
     def get_fix_system_blocks(self) -> list[dict]:
-        return [
-            {"type": "text", "text": self.FIX_SYSTEM,
-             "cache_control": {"type": "ephemeral"}},
-        ]
+        blocks = [{
+            "type": "text", "text": self.FIX_SYSTEM,
+            "cache_control": {"type": "ephemeral"},
+        }]
+        prose = self._workflow_rules_block()
+        if prose:
+            blocks.append(prose)
+        table = self._canonical_mapping_block()
+        if table:
+            blocks.append(table)
+        return blocks
 
     # ── Gap analysis ─────────────────────────────────────────────────────────
 
@@ -473,12 +487,6 @@ Output ONLY a JSON object with the same schema as the enhancement output, plus:
 # ── Module-level exports (backward compatibility) ────────────────────────────
 
 _orchestrator = LoadBalancerTranslationOrchestrator()
-
-ENHANCEMENT_MODEL = _orchestrator.ENHANCEMENT_MODEL
-REVIEW_MODEL      = _orchestrator.REVIEW_MODEL
-FIX_MODEL         = _orchestrator.FIX_MODEL
-
-
 def run(
     input_content: str,
     progress_callback,

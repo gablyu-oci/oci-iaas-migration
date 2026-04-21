@@ -1,8 +1,10 @@
 """Deterministic AWS-to-OCI resource mapping service.
 
 Computes a clear mapping table for a set of AWS resources to their OCI
-equivalents, pulling from existing rightsizing, OS compat, and skill
-mapping data.  No LLM calls -- purely algorithmic.
+equivalents. All lookup tables (volume types, DB engines, network resources,
+local-DB keywords) come from ``backend/data/mappings/resources.yaml`` via
+``app.mappings`` — single source of truth for LLM and deterministic code.
+No LLM calls in the draft pass — purely algorithmic.
 """
 from __future__ import annotations
 
@@ -10,50 +12,46 @@ import logging
 from dataclasses import dataclass, asdict
 from typing import Any
 
+from app import mappings
+
 logger = logging.getLogger(__name__)
 
-# ── Volume type mapping (from storage_translation skill) ──────────────────────
-_VOLUME_TYPE_MAP = {
-    "gp3": ("OCI Block Volume — Balanced", 10),
-    "gp2": ("OCI Block Volume — Balanced", 10),
-    "io1": ("OCI Block Volume — High Performance", 20),
-    "io2": ("OCI Block Volume — High Performance", 20),
-    "st1": ("OCI Block Volume — Low Cost", 0),
-    "sc1": ("OCI Block Volume — Low Cost", 0),
-}
 
-# ── Database engine mapping (from database_translation skill) ─────────────────
-_DB_ENGINE_MAP = {
-    "postgres":  ("OCI Database — PostgreSQL", "oci_database_db_system"),
-    "mysql":     ("OCI MySQL HeatWave", "oci_mysql_mysql_db_system"),
-    "mariadb":   ("OCI MySQL HeatWave", "oci_mysql_mysql_db_system"),
-    "oracle-ee": ("OCI Database — Oracle", "oci_database_db_system"),
-    "oracle-se2":("OCI Database — Oracle", "oci_database_db_system"),
-    "sqlserver": ("OCI Compute (self-managed)", "oci_core_instance"),
-    "aurora-postgresql": ("OCI Autonomous Database (ATP)", "oci_database_autonomous_database"),
-    "aurora-mysql": ("OCI MySQL HeatWave", "oci_mysql_mysql_db_system"),
-}
+def _volume_type(vol_type: str) -> tuple[str, int]:
+    """(oci_desc, vpus_per_gb) for an EBS volume type. Default: Balanced, 10 vpus."""
+    entry = mappings.volume_type_mapping().get(vol_type, {})
+    return (
+        entry.get("oci_desc", "OCI Block Volume — Balanced"),
+        int(entry.get("vpus_per_gb", 10)),
+    )
 
-# ── Network resource mapping ─────────────────────────────────────────────────
-_NETWORK_MAP = {
-    "AWS::EC2::VPC":              ("OCI VCN", "oci_core_vcn"),
-    "AWS::EC2::Subnet":           ("OCI Subnet", "oci_core_subnet"),
-    "AWS::EC2::SecurityGroup":    ("OCI Network Security Group", "oci_core_network_security_group"),
-    "AWS::EC2::NetworkInterface": ("OCI VNIC Attachment", "oci_core_vnic_attachment"),
-    "AWS::EC2::InternetGateway":  ("OCI Internet Gateway", "oci_core_internet_gateway"),
-    "AWS::EC2::NatGateway":       ("OCI NAT Gateway", "oci_core_nat_gateway"),
-}
 
-# ── Local database detection keywords ────────────────────────────────────────
-_LOCAL_DB_KEYWORDS = {
-    "mariadb": ("MariaDB", "OCI MySQL HeatWave"),
-    "mysql":   ("MySQL", "OCI MySQL HeatWave"),
-    "postgres": ("PostgreSQL", "OCI Database — PostgreSQL"),
-    "postgresql": ("PostgreSQL", "OCI Database — PostgreSQL"),
-    "mongodb": ("MongoDB", "OCI NoSQL / self-managed"),
-    "redis":   ("Redis", "OCI Cache with Redis"),
-    "sqlite":  ("SQLite", "OCI MySQL HeatWave (upgrade)"),
-}
+def _db_engine(engine_key: str) -> tuple[str, str, list[str]]:
+    """(oci_desc, oci_terraform, gaps) for an RDS engine key."""
+    entry = mappings.rds_engine_mapping().get(engine_key, {})
+    return (
+        entry.get("oci_desc", "Manual mapping required"),
+        entry.get("oci_terraform", ""),
+        list(entry.get("gaps") or []),
+    )
+
+
+def _network_target(aws_type: str) -> tuple[str, str] | None:
+    """(oci_display_label, oci_terraform) for a networking AWS type, or None."""
+    entry = mappings.resource_by_aws_type(aws_type)
+    if entry and entry.get("skill") == "network_translation":
+        # Prefer the human-friendly label, fall back to the service name.
+        label = entry.get("oci_resource_label") or entry.get("oci_service", "")
+        return label, entry.get("oci_terraform") or ""
+    return None
+
+
+def _iter_local_db_keywords() -> list[tuple[str, str, str]]:
+    """(keyword, display_name, oci_target) tuples for local-DB detection."""
+    out = []
+    for kw, info in mappings.local_db_keywords().items():
+        out.append((kw, info.get("display", kw), info.get("oci_target", "")))
+    return out
 
 
 @dataclass
@@ -113,7 +111,7 @@ def compute_resource_mapping(
             apps = inv.get("applications", [])
             for app in apps:
                 app_name = (app.get("Name") or app.get("name") or "").lower()
-                for keyword, (db_name, oci_target) in _LOCAL_DB_KEYWORDS.items():
+                for keyword, db_name, oci_target in _iter_local_db_keywords():
                     if keyword in app_name and keyword not in seen_local_dbs:
                         seen_local_dbs.add(keyword)
                         version = app.get("Version") or app.get("version") or "unknown"
@@ -201,8 +199,8 @@ def compute_resource_mapping(
                 gaps=["Cross-account IAM roles → use OCI tenancy federation"],
             ))
 
-        elif aws_type in _NETWORK_MAP:
-            oci_name, oci_tf = _NETWORK_MAP[aws_type]
+        elif (net_target := _network_target(aws_type)) is not None:
+            oci_name, oci_tf = net_target
             entries.append(_map_network(rid, name, aws_type, raw, oci_name, oci_tf))
 
         else:
@@ -269,7 +267,7 @@ def _map_ebs(rid: str, name: str, raw: dict) -> ResourceMappingEntry:
     size_gb = raw.get("size_gb") or raw.get("Size") or 0
     encrypted = raw.get("encrypted") or raw.get("Encrypted") or False
 
-    oci_desc, vpus = _VOLUME_TYPE_MAP.get(vol_type, ("OCI Block Volume — Balanced", 10))
+    oci_desc, vpus = _volume_type(vol_type)
 
     return ResourceMappingEntry(
         aws_resource_id=rid,
@@ -295,14 +293,12 @@ def _map_rds(rid: str, name: str, raw: dict, ra: dict) -> ResourceMappingEntry:
     storage_gb = raw.get("allocated_storage") or raw.get("AllocatedStorage") or 0
     multi_az = raw.get("multi_az") or raw.get("MultiAZ") or False
 
-    oci_name, oci_tf = _DB_ENGINE_MAP.get(engine_key, ("Manual mapping required", ""))
+    oci_name, oci_tf, engine_gaps = _db_engine(engine_key)
 
     notes = []
-    gaps = []
+    gaps = list(engine_gaps)
     if multi_az:
         notes.append("Multi-AZ → 2-node OCI DB System for HA")
-    if "sqlserver" in engine_key:
-        gaps.append("No managed SQL Server on OCI — requires self-hosted on Compute")
 
     return ResourceMappingEntry(
         aws_resource_id=rid,
@@ -418,8 +414,9 @@ def review_mapping_with_llm(
 
     try:
         start = time.perf_counter()
+        from app.gateway.model_gateway import get_model
         response = anthropic_client.messages.create(
-            model="claude-sonnet-4-6",
+            model=get_model("resource_mapping", "map"),
             max_tokens=4096,
             system=_REVIEW_SYSTEM,
             messages=[{"role": "user", "content": prompt}],

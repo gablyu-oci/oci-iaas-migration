@@ -12,7 +12,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-REVIEW_MODEL = "claude-opus-4-6"
+from app.gateway.model_gateway import get_model
+_SKILL = "workload_planning"
 
 RUNBOOK_SYSTEM = """\
 You are an expert AWS-to-OCI migration engineer. Generate a comprehensive migration \
@@ -75,7 +76,7 @@ def _call_agent(
     """Call an LLM agent and return (text, usage_dict)."""
     start = time.perf_counter()
     response = client.messages.create(
-        model=REVIEW_MODEL,
+        model=get_model(_SKILL, "review"),
         max_tokens=max_tokens,
         system=system,
         messages=[{"role": "user", "content": user_prompt}],

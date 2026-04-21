@@ -6,13 +6,13 @@ Runs the enhancement -> review -> fix agent loop and returns results as dicts
 instead of writing files. Accepts an Anthropic client from the caller.
 """
 
+from typing import Any
 import json
 import sys
 import time
 from pathlib import Path
 from datetime import datetime
 
-import anthropic
 import yaml
 
 # ── Path setup ────────────────────────────────────────────────────────────────
@@ -23,10 +23,11 @@ from agent_logger import (
     AgentLogger, AgentType, ReviewDecision, ConfidenceCalculator, calculate_cost
 )
 
+from app.gateway.model_gateway import get_model
+
 # ── Model config ──────────────────────────────────────────────────────────────
-ENHANCEMENT_MODEL = "claude-opus-4-6"
-REVIEW_MODEL = "claude-opus-4-6"
-FIX_MODEL         = "claude-opus-4-6"
+# Models resolve through model_gateway.get_model() — do NOT hardcode here.
+_SKILL = "cfn_terraform"
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 WORKFLOWS_DIR = SKILLS_ROOT / "cfn_terraform" / "workflows"
@@ -34,7 +35,7 @@ WORKFLOWS_DIR = SKILLS_ROOT / "cfn_terraform" / "workflows"
 
 # ── JSON extraction ───────────────────────────────────────────────────────────
 
-def _parse_json_response(response: anthropic.types.Message) -> dict:
+def _parse_json_response(response: Any) -> dict:
     """
     Robustly extract a JSON object from an API response.
 
@@ -72,7 +73,7 @@ def _parse_json_response(response: anthropic.types.Message) -> dict:
 
 # ── Token extraction ──────────────────────────────────────────────────────────
 
-def extract_usage(response: anthropic.types.Message) -> dict:
+def extract_usage(response: Any) -> dict:
     """Extract all token fields from a real API response. Never estimated."""
     u = response.usage
     return {
@@ -85,12 +86,48 @@ def extract_usage(response: anthropic.types.Message) -> dict:
 
 # ── Workflow rules loading ─────────────────────────────────────────────────────
 
+_DOCS_DIR = SKILLS_ROOT / "cfn_terraform" / "docs"
+
+
 def load_workflow_rules() -> str:
-    """Load the CFN conversion rules for use in prompts."""
+    """Assemble the CFN prompt context: prose rules + tool guide + mapping table.
+
+    The prose rules (ordering constraints, edge cases, examples) live in
+    ``workflows/conversion-rules.md``. The cf2tf tool guide lives in
+    ``docs/CF2TF-TOOL.md`` — referenced from the prompt so the LLM knows
+    what the upstream tool handles vs what it needs to fill in.
+    The AWS→OCI mapping TABLE is rendered from ``data/mappings/resources.yaml``
+    via ``app.mappings`` so the LLM sees the same facts the deterministic
+    code does.
+    """
+    from app import mappings
+
+    parts: list[str] = []
+
     rules_path = WORKFLOWS_DIR / "conversion-rules.md"
     if rules_path.exists():
-        return rules_path.read_text(encoding="utf-8")
-    return "[conversion-rules.md not found]"
+        parts.append(rules_path.read_text(encoding="utf-8"))
+    else:
+        parts.append("[conversion-rules.md not found]")
+
+    tool_guide = _DOCS_DIR / "CF2TF-TOOL.md"
+    if tool_guide.exists():
+        parts.append(
+            "## Reference: cf2tf Upstream Tool Guide\n\n"
+            "cf2tf handles ~75% of CFN → Terraform structural conversion. Treat "
+            "its output as a starting point — you still must remap AWS provider "
+            "resources to OCI provider resources per the table below.\n\n"
+            + tool_guide.read_text(encoding="utf-8")
+        )
+
+    parts.append(
+        "## Canonical AWS → OCI Resource Table (single source of truth)\n\n"
+        "Use these mappings. If a type isn't listed, fall back to the prose rules "
+        "above and flag it as a gap.\n\n"
+        + mappings.render_resource_table_md(skill="cfn_terraform")
+    )
+
+    return "\n\n".join(parts)
 
 
 # ── System prompts ────────────────────────────────────────────────────────────
@@ -199,7 +236,7 @@ def make_decision_from_review(review: dict, gap_analysis: dict) -> tuple[ReviewD
 # ── Agent calls ───────────────────────────────────────────────────────────────
 
 def call_enhancement(
-    client: anthropic.Anthropic,
+    client: Any,
     template_text: str,
     current_translation: dict | None,
     issues: list,
@@ -210,9 +247,10 @@ def call_enhancement(
     prev = json.dumps(current_translation, indent=2) if current_translation else "None -- this is the initial translation."
     issues_text = json.dumps(issues, indent=2) if issues else "None"
 
+    model = get_model(_SKILL, "enhancement")
     start = time.perf_counter()
     with client.messages.stream(
-        model=ENHANCEMENT_MODEL,
+        model=model,
         max_tokens=32768,
         system=[
             {"type": "text", "text": ENHANCEMENT_SYSTEM},
@@ -236,15 +274,15 @@ def call_enhancement(
 
     usage = extract_usage(response)
     usage["duration"] = duration
-    usage["model"] = ENHANCEMENT_MODEL
-    usage["cost"] = calculate_cost(ENHANCEMENT_MODEL, **{k: usage[k] for k in
+    usage["model"] = model
+    usage["cost"] = calculate_cost(model, **{k: usage[k] for k in
                                     ["tokens_input", "tokens_output",
                                      "tokens_cache_read", "tokens_cache_write"]})
     return translation, usage
 
 
 def call_review(
-    client: anthropic.Anthropic,
+    client: Any,
     template_text: str,
     translation: dict,
 ) -> tuple[dict, dict]:
@@ -260,9 +298,10 @@ def call_review(
         "main_tf_excerpt": translation.get("main_tf", "")[:4000],
     }
 
+    model = get_model(_SKILL, "review")
     start = time.perf_counter()
     response = client.messages.create(
-        model=REVIEW_MODEL,
+        model=model,
         max_tokens=4096,
         system=[
             {"type": "text", "text": REVIEW_SYSTEM},
@@ -282,15 +321,15 @@ def call_review(
 
     usage = extract_usage(response)
     usage["duration"] = duration
-    usage["model"] = REVIEW_MODEL
-    usage["cost"] = calculate_cost(REVIEW_MODEL, **{k: usage[k] for k in
+    usage["model"] = model
+    usage["cost"] = calculate_cost(model, **{k: usage[k] for k in
                                     ["tokens_input", "tokens_output",
                                      "tokens_cache_read", "tokens_cache_write"]})
     return review, usage
 
 
 def call_fix(
-    client: anthropic.Anthropic,
+    client: Any,
     template_text: str,
     translation: dict,
     issues: list,
@@ -298,9 +337,10 @@ def call_fix(
 ) -> tuple[dict, dict]:
     """Call fix agent. Returns (fixed_translation_dict, usage_dict)."""
 
+    model = get_model(_SKILL, "fix")
     start = time.perf_counter()
     with client.messages.stream(
-        model=FIX_MODEL,
+        model=model,
         max_tokens=32768,
         system=[
             {"type": "text", "text": FIX_SYSTEM},
@@ -324,8 +364,8 @@ def call_fix(
 
     usage = extract_usage(response)
     usage["duration"] = duration
-    usage["model"] = FIX_MODEL
-    usage["cost"] = calculate_cost(FIX_MODEL, **{k: usage[k] for k in
+    usage["model"] = model
+    usage["cost"] = calculate_cost(model, **{k: usage[k] for k in
                                     ["tokens_input", "tokens_output",
                                      "tokens_cache_read", "tokens_cache_write"]})
     return fixed, usage
@@ -578,7 +618,7 @@ def build_artifact_dict(translation: dict, summary: dict | None = None) -> dict:
 def run(
     input_content: str,
     progress_callback,
-    anthropic_client: anthropic.Anthropic,
+    anthropic_client: Any,
     max_iterations: int = 3,
 ) -> dict:
     """
