@@ -1431,6 +1431,51 @@ async def assign_resources_to_migration(
     return {"assigned": assigned}
 
 
+@router.get("/aws/resources/{resource_id}/details")
+async def get_resource_details(
+    resource_id: str,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return an enriched detail view for one resource.
+
+    Joins the resource's ``raw_config`` against the local mapping catalogs:
+    - ``instance_shapes.yaml`` for EC2 vCPU/memory/arch/GPU
+    - ``resources.yaml`` for the canonical OCI target + confidence + notes
+    - ``rightsizing_engine`` for an OCI shape recommendation (EC2 only)
+
+    Also surfaces any CloudWatch metrics / SSM software inventory captured
+    at discovery time. Useful for the resource detail modal in the UI.
+    """
+    try:
+        rid = uuid.UUID(resource_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid resource ID")
+    result = await db.execute(
+        select(Resource).where(
+            Resource.id == rid,
+            Resource.tenant_id == tenant.id,
+        )
+    )
+    resource = result.scalar_one_or_none()
+    if not resource:
+        raise HTTPException(status_code=404, detail="Resource not found")
+
+    from app.services.resource_details import enrich
+    details = enrich(resource.aws_type, resource.raw_config)
+
+    return {
+        "id": str(resource.id),
+        "aws_type": resource.aws_type,
+        "aws_arn": resource.aws_arn,
+        "name": resource.name,
+        "status": resource.status,
+        "created_at": str(resource.created_at),
+        "raw_config": resource.raw_config,
+        **details,
+    }
+
+
 @router.delete("/aws/resources/{resource_id}", status_code=204)
 async def delete_resource(
     resource_id: str,

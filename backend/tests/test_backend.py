@@ -549,6 +549,101 @@ def test_orchestrator_tool_catalog_matches_spec_registry():
     )
 
 
+def test_resource_details_ec2_joins_shape_and_oci_mapping():
+    """EC2 enrichment pulls vCPU/memory from instance_shapes.yaml + OCI target from resources.yaml."""
+    from app.services.resource_details import enrich
+
+    rc = {
+        "instance_id": "i-abc",
+        "instance_type": "m7g.xlarge",
+        "state": "running",
+        "vpc_id": "vpc-1",
+        "subnet_id": "sub-1",
+        "availability_zone": "us-east-1a",
+        "architecture": "arm64",
+        "security_groups": ["sg-1", "sg-2"],
+    }
+    out = enrich("AWS::EC2::Instance", rc)
+
+    # Shape lookup (from instance_shapes.yaml) hits Graviton3 specs
+    assert out["summary"]["vCPU"] == 4
+    assert out["summary"]["Memory (GB)"] == 16
+    assert out["summary"]["Arch"] == "aarch64"
+    # OCI mapping resolved from resources.yaml
+    assert out["oci_mapping"] is not None
+    assert out["oci_mapping"]["oci_terraform"] == "oci_core_instance"
+    # Rightsizing preview was generated
+    assert out["rightsizing"] is not None
+    # Graviton → should land on an ARM OCI shape (A2.Flex per family_to_oci)
+    assert "A" in out["rightsizing"]["recommended_oci_shape"]
+
+
+def test_resource_details_rds_full_summary():
+    """RDS enrichment surfaces engine + class + storage + HA in summary + sections."""
+    from app.services.resource_details import enrich
+
+    rc = {
+        "db_instance_id": "mydb",
+        "engine": "postgres",
+        "engine_version": "16.1",
+        "db_instance_class": "db.r6g.large",
+        "allocated_storage_gb": 100,
+        "multi_az": True,
+        "storage_encrypted": True,
+        "iops": 3000,
+        "endpoint_address": "mydb.us-east-1.rds.amazonaws.com",
+        "endpoint_port": 5432,
+    }
+    out = enrich("AWS::RDS::DBInstance", rc)
+    assert out["summary"]["Engine"] == "postgres 16.1"
+    assert out["summary"]["Class"] == "db.r6g.large"
+    assert out["summary"]["Multi-AZ"] is True
+    # Storage / Backup / Networking / Engine / Compute sections should all render
+    section_titles = {s["title"] for s in out["sections"]}
+    assert {"Engine", "Compute + HA", "Storage", "Networking"} <= section_titles
+    # IOPS row lives in the Storage section
+    storage = next(s for s in out["sections"] if s["title"] == "Storage")
+    iops_row = next((r for r in storage["rows"] if r["label"] == "IOPS"), None)
+    assert iops_row is not None and iops_row["value"] == 3000
+    # Endpoint lands in Networking
+    net = next(s for s in out["sections"] if s["title"] == "Networking")
+    endpoint_row = next((r for r in net["rows"] if r["label"] == "Endpoint"), None)
+    assert endpoint_row is not None
+
+
+def test_resource_details_unknown_type_falls_back():
+    """A type we don't have a builder for still produces a valid (generic) detail view."""
+    from app.services.resource_details import enrich
+
+    out = enrich("AWS::NovelService::Thing", {"name": "foo", "status": "active", "count": 5})
+    assert out["oci_mapping"] is None  # not in resources.yaml
+    assert out["rightsizing"] is None
+    assert isinstance(out["sections"], list) and len(out["sections"]) >= 1
+
+
+def test_resource_details_ec2_feeds_metrics_into_rightsizer():
+    """When CloudWatch metrics are present on raw_config, the p95 values drive rightsizing."""
+    from app.services.resource_details import enrich
+
+    rc = {
+        "instance_id": "i-big",
+        "instance_type": "m5.4xlarge",   # 16 vCPU / 64 GB
+        "state": "running",
+        "vpc_id": "vpc-1",
+        "metrics": {
+            "CPUUtilization": {"avg": 12, "p95": 20, "max": 35},
+            "mem_used_percent": {"avg": 25, "p95": 35, "max": 50},
+        },
+    }
+    out = enrich("AWS::EC2::Instance", rc)
+    assert out["rightsizing"] is not None
+    # With p95 cpu=20% and mem=35%, the rightsizer should pick something smaller
+    # than the source instance's 16 vCPU / 64 GB.
+    assert out["rightsizing"]["ocpus"] < 16
+    # Confidence should be "high" since both CPU + memory metrics were supplied.
+    assert out["rightsizing"]["confidence"] == "high"
+
+
 def test_job_result_shape():
     """The adapter returns the dict shape the job_runner persistence layer expects."""
     from app.agents.job_result import to_job_result

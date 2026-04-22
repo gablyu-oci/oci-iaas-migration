@@ -128,13 +128,16 @@ def run_discovery(migration_id: str) -> None:
 
         freshly_seen_arns: set[str] = set()  # ARNs discovered in this run (for stale detection)
 
-        def add_resource(aws_type: str, aws_arn: str | None, name: str | None, raw_config: dict) -> bool:
+        def add_resource(aws_type: str, aws_arn: str | None, name: str | None, raw_config: dict) -> Resource | None:
+            """Insert a Resource row (unless duplicate). Returns the row (or None if duped)
+            so callers can attach post-processing enrichments (metrics, SSM) later in
+            the same session."""
             nonlocal extracted_count
             norm_arn = _normalize_arn(aws_arn) if aws_arn else None
             if norm_arn:
                 freshly_seen_arns.add(norm_arn)
             if norm_arn and norm_arn in existing_arns:
-                return False
+                return None
             if norm_arn:
                 existing_arns.add(norm_arn)
             # Resources are connection-scoped, not migration-scoped
@@ -150,7 +153,7 @@ def run_discovery(migration_id: str) -> None:
             )
             session.add(resource)
             extracted_count += 1
-            return True
+            return resource
 
         # Import extractors
         from app.services.aws_extractor import (
@@ -175,6 +178,9 @@ def run_discovery(migration_id: str) -> None:
             extract_route_tables,
             extract_network_acls,
             extract_elastic_ips,
+            extract_s3_buckets,
+            extract_ec2_metrics,
+            extract_ssm_inventory,
         )
 
         # Build CFN membership map: physical_resource_id → stack_name
@@ -209,7 +215,12 @@ def run_discovery(migration_id: str) -> None:
             ("Route Tables", lambda: extract_route_tables(creds, region)),
             ("Network ACLs", lambda: extract_network_acls(creds, region)),
             ("Elastic IPs", lambda: extract_elastic_ips(creds, region)),
+            ("S3 Buckets", lambda: extract_s3_buckets(creds, region)),
         ]
+
+        # Cache of discovered EC2 rows so we can enrich them after the main
+        # loop without re-querying the DB. Keyed by instance_id → Resource obj.
+        ec2_instances_for_enrich: dict[str, Resource] = {}
 
         for label, extractor_fn in extractors:
             try:
@@ -245,6 +256,7 @@ def run_discovery(migration_id: str) -> None:
                                 "Route Tables": "AWS::EC2::RouteTable",
                                 "Network ACLs": "AWS::EC2::NetworkAcl",
                                 "Elastic IPs": "AWS::EC2::EIP",
+                                "S3 Buckets": "AWS::S3::Bucket",
                             }
                             aws_type = type_map.get(label, "")
 
@@ -254,10 +266,45 @@ def run_discovery(migration_id: str) -> None:
                             rc["cfn_stack_name"] = cfn_membership[aws_arn]
                         elif name and name in cfn_membership:
                             rc["cfn_stack_name"] = cfn_membership[name]
-                        add_resource(aws_type, aws_arn, name, rc)
+                        res_row = add_resource(aws_type, aws_arn, name, rc)
+                        # Remember EC2 rows so we can attach CloudWatch / SSM
+                        # enrichments after the main loop.
+                        if res_row is not None and aws_type == "AWS::EC2::Instance":
+                            iid = rc.get("instance_id")
+                            if iid:
+                                ec2_instances_for_enrich[iid] = res_row
                 logger.info("Extracted %s: %d items", label, len(items))
             except Exception as exc:
                 logger.warning("Failed to extract %s: %s", label, exc)
+
+        # ── Per-instance enrichment (best-effort, never fails discovery) ──
+        # CloudWatch metrics + SSM inventory are pulled once per discovery
+        # run and folded into the existing EC2 rows' raw_config.
+        if ec2_instances_for_enrich:
+            instance_ids = list(ec2_instances_for_enrich.keys())
+            try:
+                metrics_map = extract_ec2_metrics(creds, region, instance_ids)
+                logger.info("CloudWatch metrics collected for %d/%d instances",
+                            len(metrics_map), len(instance_ids))
+            except Exception as exc:
+                logger.warning("CloudWatch metric enrichment failed: %s", exc)
+                metrics_map = {}
+
+            try:
+                inventory_map = extract_ssm_inventory(creds, region, instance_ids)
+                logger.info("SSM inventory collected for %d/%d instances",
+                            len(inventory_map), len(instance_ids))
+            except Exception as exc:
+                logger.warning("SSM inventory enrichment failed: %s", exc)
+                inventory_map = {}
+
+            for iid, row in ec2_instances_for_enrich.items():
+                rc = dict(row.raw_config or {})
+                if iid in metrics_map:
+                    rc["metrics"] = metrics_map[iid]
+                if iid in inventory_map:
+                    rc["software_inventory"] = inventory_map[iid]
+                row.raw_config = rc
 
         session.commit()
 

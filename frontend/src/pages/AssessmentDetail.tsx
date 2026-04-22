@@ -14,6 +14,7 @@ import OSCompatBadge from '../components/OSCompatBadge';
 import SixRBadge from '../components/SixRBadge';
 import CostComparisonChart from '../components/CostComparisonChart';
 import DependencyGraph from '../components/DependencyGraph';
+import ResourceDetailPanel from '../components/ResourceDetailPanel';
 import { formatDate } from '../lib/utils';
 
 type TabId = 'overview' | 'workloads' | 'resources' | 'dependencies' | 'os-compat';
@@ -40,6 +41,7 @@ export default function AssessmentDetail() {
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortAsc, setSortAsc] = useState(true);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [detailResource, setDetailResource] = useState<{ id: string; name: string; aws_type: string } | null>(null);
 
   const { data: assessment, isLoading: loadingAssessment } = useAssessment(assessmentId || '');
   const { data: migration } = useMigration(assessment?.migration_id || '');
@@ -378,7 +380,11 @@ export default function AssessmentDetail() {
                   </thead>
                   <tbody>
                     {sortedResources.map((r) => (
-                      <tr key={r.id}>
+                      <tr
+                        key={r.id}
+                        onClick={() => setDetailResource({ id: r.resource_id, name: r.name, aws_type: r.aws_type })}
+                        style={{ cursor: 'pointer' }}
+                      >
                         <td className="td-primary">{r.name}</td>
                         <td>
                           <span className="badge badge-neutral" style={{ fontSize: '0.625rem' }}>
@@ -557,6 +563,42 @@ export default function AssessmentDetail() {
           </div>
         )}
       </div>
+
+      {/* ── Resource Detail Modal ── */}
+      {detailResource && (
+        <div
+          className="modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Resource Details"
+          onClick={(e) => { if (e.target === e.currentTarget) setDetailResource(null); }}
+        >
+          <div className="modal modal-lg" style={{ maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}>
+            <div className="modal-header">
+              <div>
+                <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>
+                  {detailResource.name || 'Unnamed Resource'}
+                </h3>
+                <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)', fontFamily: 'var(--font-mono)' }}>
+                  {detailResource.aws_type}
+                </p>
+              </div>
+              <button
+                onClick={() => setDetailResource(null)}
+                className="btn btn-ghost btn-sm"
+                aria-label="Close modal"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="modal-body overflow-y-auto flex-1 space-y-4">
+              <ResourceDetailPanel resourceId={detailResource.id} />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

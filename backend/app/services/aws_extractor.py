@@ -173,8 +173,12 @@ def extract_ec2_instances(
     """Extract EC2 instance details. If *instance_id* is given, return only
     that instance; otherwise return all instances in the region.
 
-    Each dict contains: instance_id, instance_type, state, vpc_id,
-    subnet_id, security_groups (list of group-ids), name, arn.
+    Each dict contains everything we can pull from DescribeInstances in a
+    single call: identity, type, sizing, networking, OS/arch, root device,
+    all block-device mappings, IAM profile, tags. vCPU + memory are not in
+    DescribeInstances — they're looked up from ``instance_shapes.yaml``
+    downstream (see ``enrich_resource_detail``) so we don't pay the
+    ``DescribeInstanceTypes`` call per resource.
     """
     try:
         session = _build_session(credentials, region)
@@ -205,18 +209,60 @@ def extract_ec2_instances(
                             break
                     sg_ids = [sg["GroupId"] for sg in inst.get("SecurityGroups", [])]
                     profile = inst.get("IamInstanceProfile", {})
+                    placement = inst.get("Placement", {}) or {}
+                    monitoring = inst.get("Monitoring", {}) or {}
+                    # Block-device mappings: volume id + device name + delete-on-term
+                    bdms = [
+                        {
+                            "device_name": b.get("DeviceName", ""),
+                            "volume_id": (b.get("Ebs") or {}).get("VolumeId", ""),
+                            "status": (b.get("Ebs") or {}).get("Status", ""),
+                            "delete_on_termination": (b.get("Ebs") or {}).get("DeleteOnTermination", False),
+                            "attach_time": (
+                                (b.get("Ebs") or {}).get("AttachTime").isoformat()
+                                if (b.get("Ebs") or {}).get("AttachTime") else ""
+                            ),
+                        }
+                        for b in inst.get("BlockDeviceMappings", [])
+                    ]
+                    launch_time = inst.get("LaunchTime")
                     results.append({
+                        # Identity
                         "instance_id": inst["InstanceId"],
+                        "name": name,
+                        "arn": f"arn:aws:ec2:{region}::instance/{inst['InstanceId']}",
+                        # Type + state
                         "instance_type": inst.get("InstanceType", ""),
                         "state": inst.get("State", {}).get("Name", ""),
+                        "state_reason": (inst.get("StateReason") or {}).get("Message", ""),
+                        "launch_time": launch_time.isoformat() if launch_time else "",
+                        # OS / arch
+                        "architecture": inst.get("Architecture", ""),
+                        "platform": inst.get("Platform", "") or "linux",  # AWS returns "windows" or absent
+                        "platform_details": inst.get("PlatformDetails", ""),
+                        "hypervisor": inst.get("Hypervisor", ""),
+                        "virtualization_type": inst.get("VirtualizationType", ""),
+                        "image_id": inst.get("ImageId", ""),
+                        "key_name": inst.get("KeyName", ""),
+                        # Networking
                         "vpc_id": inst.get("VpcId", ""),
                         "subnet_id": inst.get("SubnetId", ""),
                         "security_groups": sg_ids,
+                        "private_ip_address": inst.get("PrivateIpAddress", ""),
+                        "public_ip_address": inst.get("PublicIpAddress", ""),
+                        "private_dns_name": inst.get("PrivateDnsName", ""),
+                        "public_dns_name": inst.get("PublicDnsName", ""),
+                        # Placement
+                        "availability_zone": placement.get("AvailabilityZone", ""),
+                        "tenancy": placement.get("Tenancy", ""),
+                        # Storage
+                        "root_device_type": inst.get("RootDeviceType", ""),
+                        "root_device_name": inst.get("RootDeviceName", ""),
+                        "block_device_mappings": bdms,
+                        "ebs_optimized": inst.get("EbsOptimized", False),
+                        # Monitoring / IAM
+                        "monitoring_state": monitoring.get("State", ""),
                         "iam_instance_profile_arn": profile.get("Arn", ""),
-                        "name": name,
-                        "arn": (
-                            f"arn:aws:ec2:{region}::instance/{inst['InstanceId']}"
-                        ),
                         "Tags": inst.get("Tags", []),
                     })
         return results
@@ -374,9 +420,12 @@ def extract_iam_policies_for_instance_profile(
 def extract_rds_instances(
     credentials: dict, region: str, vpc_id: str | None = None
 ) -> list[dict[str, Any]]:
-    """Extract RDS instances, optionally filtered to those in *vpc_id*.
+    """Extract RDS instances with full sizing + HA + security detail.
 
-    Each dict contains: db_instance_id, engine, status, vpc_id, arn.
+    Optionally filtered to those in *vpc_id*. The raw_config carries
+    everything downstream consumers (UI, TCO, rightsizing) need:
+    instance class, engine + version, storage (size/type/IOPS/throughput),
+    multi-AZ, endpoint, backups, encryption, public accessibility.
     """
     try:
         session = _build_session(credentials, region)
@@ -386,15 +435,59 @@ def extract_rds_instances(
         paginator = rds.get_paginator("describe_db_instances")
         for page in paginator.paginate():
             for db_inst in page.get("DBInstances", []):
-                inst_vpc = db_inst.get("DBSubnetGroup", {}).get("VpcId", "")
+                sub_group = db_inst.get("DBSubnetGroup", {}) or {}
+                inst_vpc = sub_group.get("VpcId", "")
                 if vpc_id and inst_vpc != vpc_id:
                     continue
+                endpoint = db_inst.get("Endpoint", {}) or {}
+                sg_ids = [
+                    sg.get("VpcSecurityGroupId", "")
+                    for sg in db_inst.get("VpcSecurityGroups", [])
+                ]
+                created = db_inst.get("InstanceCreateTime")
                 results.append({
+                    # Identity
                     "db_instance_id": db_inst["DBInstanceIdentifier"],
-                    "engine": db_inst.get("Engine", ""),
-                    "status": db_inst.get("DBInstanceStatus", ""),
-                    "vpc_id": inst_vpc,
                     "arn": db_inst.get("DBInstanceArn", ""),
+                    "status": db_inst.get("DBInstanceStatus", ""),
+                    "created_at": created.isoformat() if created else "",
+                    # Engine
+                    "engine": db_inst.get("Engine", ""),
+                    "engine_version": db_inst.get("EngineVersion", ""),
+                    "license_model": db_inst.get("LicenseModel", ""),
+                    # Compute + sizing
+                    "db_instance_class": db_inst.get("DBInstanceClass", ""),
+                    "availability_zone": db_inst.get("AvailabilityZone", ""),
+                    "secondary_availability_zone": db_inst.get("SecondaryAvailabilityZone", ""),
+                    "multi_az": db_inst.get("MultiAZ", False),
+                    # Storage
+                    "allocated_storage_gb": db_inst.get("AllocatedStorage", 0),
+                    "max_allocated_storage_gb": db_inst.get("MaxAllocatedStorage", 0),
+                    "storage_type": db_inst.get("StorageType", ""),
+                    "iops": db_inst.get("Iops", 0),
+                    "storage_throughput_mbps": db_inst.get("StorageThroughput", 0),
+                    "storage_encrypted": db_inst.get("StorageEncrypted", False),
+                    "kms_key_id": db_inst.get("KmsKeyId", ""),
+                    # Networking
+                    "vpc_id": inst_vpc,
+                    "db_subnet_group_name": sub_group.get("DBSubnetGroupName", ""),
+                    "vpc_security_group_ids": sg_ids,
+                    "publicly_accessible": db_inst.get("PubliclyAccessible", False),
+                    "endpoint_address": endpoint.get("Address", ""),
+                    "endpoint_port": endpoint.get("Port", 0),
+                    # Backup / HA
+                    "backup_retention_period_days": db_inst.get("BackupRetentionPeriod", 0),
+                    "preferred_backup_window": db_inst.get("PreferredBackupWindow", ""),
+                    "preferred_maintenance_window": db_inst.get("PreferredMaintenanceWindow", ""),
+                    "auto_minor_version_upgrade": db_inst.get("AutoMinorVersionUpgrade", False),
+                    "deletion_protection": db_inst.get("DeletionProtection", False),
+                    "performance_insights_enabled": db_inst.get("PerformanceInsightsEnabled", False),
+                    "read_replica_source": db_inst.get("ReadReplicaSourceDBInstanceIdentifier", ""),
+                    "read_replica_db_instance_identifiers": db_inst.get("ReadReplicaDBInstanceIdentifiers", []),
+                    # Identity
+                    "master_username": db_inst.get("MasterUsername", ""),
+                    "db_name": db_inst.get("DBName", ""),
+                    "Tags": db_inst.get("TagList", []),
                 })
         return results
     except (ClientError, BotoCoreError) as e:
@@ -518,15 +611,21 @@ def extract_ebs_volumes(
                         name = tag["Value"]
                         break
                 account_id = vol.get("OwnerId", "")
+                created = vol.get("CreateTime")
                 results.append({
                     "volume_id": vol["VolumeId"],
+                    "name": name,
                     "size_gb": vol.get("Size", 0),
                     "volume_type": vol.get("VolumeType", ""),
+                    "iops": vol.get("Iops", 0),
+                    "throughput_mbps": vol.get("Throughput", 0),
                     "state": vol.get("State", ""),
                     "encrypted": vol.get("Encrypted", False),
+                    "kms_key_id": vol.get("KmsKeyId", ""),
                     "availability_zone": vol.get("AvailabilityZone", ""),
+                    "multi_attach_enabled": vol.get("MultiAttachEnabled", False),
+                    "create_time": created.isoformat() if created else "",
                     "attachments": attachments,
-                    "name": name,
                     "arn": f"arn:aws:ec2:{region}:{account_id}:volume/{vol['VolumeId']}",
                     "Tags": vol.get("Tags", []),
                 })
@@ -604,10 +703,13 @@ def extract_subnet_by_id(
 def extract_lambda_functions(
     credentials: dict, region: str, vpc_id: str | None = None
 ) -> list[dict[str, Any]]:
-    """Extract Lambda functions, optionally filtered to those attached to
-    *vpc_id*.
+    """Extract Lambda functions with full runtime + sizing + packaging detail.
 
-    Each dict contains: function_name, runtime, vpc_id, arn.
+    Captures runtime, memory, timeout, handler, arch, package type, code
+    size, layers, environment variable keys (not values — secrets), DLQ,
+    tracing config. Does NOT call GetFunction per function (which would
+    also return signed download URLs); ListFunctions response already
+    contains everything we need.
     """
     try:
         session = _build_session(credentials, region)
@@ -617,14 +719,49 @@ def extract_lambda_functions(
         paginator = lam.get_paginator("list_functions")
         for page in paginator.paginate():
             for fn in page.get("Functions", []):
-                fn_vpc = fn.get("VpcConfig", {}).get("VpcId", "")
+                vpc_config = fn.get("VpcConfig", {}) or {}
+                fn_vpc = vpc_config.get("VpcId", "")
                 if vpc_id and fn_vpc != vpc_id:
                     continue
+                env_keys = list((fn.get("Environment") or {}).get("Variables", {}).keys())
+                layers = [
+                    {"arn": lyr.get("Arn", ""), "code_size_bytes": lyr.get("CodeSize", 0)}
+                    for lyr in fn.get("Layers", [])
+                ]
                 results.append({
+                    # Identity
                     "function_name": fn["FunctionName"],
-                    "runtime": fn.get("Runtime", ""),
-                    "vpc_id": fn_vpc,
                     "arn": fn.get("FunctionArn", ""),
+                    "last_modified": fn.get("LastModified", ""),
+                    # Runtime + sizing
+                    "runtime": fn.get("Runtime", ""),
+                    "handler": fn.get("Handler", ""),
+                    "memory_size_mb": fn.get("MemorySize", 0),
+                    "timeout_seconds": fn.get("Timeout", 0),
+                    "architectures": fn.get("Architectures", []),
+                    "ephemeral_storage_mb": (fn.get("EphemeralStorage") or {}).get("Size", 0),
+                    # Packaging
+                    "package_type": fn.get("PackageType", ""),
+                    "code_size_bytes": fn.get("CodeSize", 0),
+                    "code_sha256": fn.get("CodeSha256", ""),
+                    # Network + IAM
+                    "vpc_id": fn_vpc,
+                    "subnet_ids": vpc_config.get("SubnetIds", []),
+                    "security_group_ids": vpc_config.get("SecurityGroupIds", []),
+                    "role_arn": fn.get("Role", ""),
+                    # Observability / routing
+                    "tracing_mode": (fn.get("TracingConfig") or {}).get("Mode", ""),
+                    "dead_letter_target_arn": (fn.get("DeadLetterConfig") or {}).get("TargetArn", ""),
+                    # Environment — keys only (never values: secrets frequently here)
+                    "environment_variable_keys": env_keys,
+                    "environment_variable_count": len(env_keys),
+                    # Layers
+                    "layers": layers,
+                    "layer_count": len(layers),
+                    # Event-driven config
+                    "reserved_concurrent_executions": fn.get("ReservedConcurrentExecutions", 0),
+                    "state": fn.get("State", ""),
+                    "state_reason": fn.get("StateReason", ""),
                 })
         return results
     except (ClientError, BotoCoreError) as e:
@@ -1089,3 +1226,267 @@ def extract_launch_templates(
     except (ClientError, BotoCoreError) as e:
         print(f"Launch Template extraction error: {e}")
         return []
+
+
+# ---------------------------------------------------------------------------
+# Object storage
+# ---------------------------------------------------------------------------
+
+
+def extract_s3_buckets(credentials: dict, region: str) -> list[dict[str, Any]]:
+    """Extract S3 buckets + their security/versioning posture.
+
+    S3 buckets are global (not region-scoped) but each bucket lives in a
+    home region. We list all buckets, then filter to those in *region*
+    (leaves cross-region buckets for discovery in the matching region's
+    run). For each bucket we pull versioning, encryption, public-access
+    block, and tags — all small per-bucket calls.
+    """
+    try:
+        session = _build_session(credentials, region)
+        s3 = session.client("s3")
+        all_buckets = s3.list_buckets().get("Buckets", [])
+
+        results: list[dict[str, Any]] = []
+        for b in all_buckets:
+            name = b["Name"]
+            # Locate the bucket's home region
+            try:
+                loc = s3.get_bucket_location(Bucket=name).get("LocationConstraint", "") or "us-east-1"
+            except (ClientError, BotoCoreError):
+                continue
+            if loc != region:
+                continue
+
+            versioning = ""
+            try:
+                v = s3.get_bucket_versioning(Bucket=name)
+                versioning = v.get("Status", "Disabled")
+            except (ClientError, BotoCoreError):
+                pass
+
+            encryption_type = "none"
+            encryption_kms_key = ""
+            try:
+                enc = s3.get_bucket_encryption(Bucket=name)
+                rules = (enc.get("ServerSideEncryptionConfiguration") or {}).get("Rules", [])
+                if rules:
+                    sse = (rules[0].get("ApplyServerSideEncryptionByDefault") or {})
+                    encryption_type = sse.get("SSEAlgorithm", "")
+                    encryption_kms_key = sse.get("KMSMasterKeyID", "")
+            except (ClientError, BotoCoreError):
+                # NoSuchConfiguration is expected when no default encryption set
+                pass
+
+            pab: dict = {}
+            try:
+                pab_resp = s3.get_public_access_block(Bucket=name)
+                pab = pab_resp.get("PublicAccessBlockConfiguration", {}) or {}
+            except (ClientError, BotoCoreError):
+                pass
+
+            tags: list[dict] = []
+            try:
+                tag_resp = s3.get_bucket_tagging(Bucket=name)
+                tags = tag_resp.get("TagSet", []) or []
+            except (ClientError, BotoCoreError):
+                pass
+
+            created = b.get("CreationDate")
+            results.append({
+                "bucket_name": name,
+                "name": name,
+                "region": loc,
+                "creation_date": created.isoformat() if created else "",
+                "versioning_status": versioning,
+                "encryption_type": encryption_type,
+                "encryption_kms_key": encryption_kms_key,
+                "public_access_block": {
+                    "block_public_acls": pab.get("BlockPublicAcls", False),
+                    "ignore_public_acls": pab.get("IgnorePublicAcls", False),
+                    "block_public_policy": pab.get("BlockPublicPolicy", False),
+                    "restrict_public_buckets": pab.get("RestrictPublicBuckets", False),
+                },
+                "arn": f"arn:aws:s3:::{name}",
+                "Tags": tags,
+            })
+        return results
+    except (ClientError, BotoCoreError) as e:
+        print(f"S3 extraction error: {e}")
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Best-effort per-instance enrichment (CloudWatch + SSM)
+# ---------------------------------------------------------------------------
+# These are post-processing passes invoked after the main extractor loop
+# so they don't block discovery when the underlying services aren't set up
+# on the customer's AWS (CWAgent not installed, SSM agent absent, etc.).
+
+
+def extract_ec2_metrics(
+    credentials: dict, region: str, instance_ids: list[str],
+    lookback_days: int = 14,
+) -> dict[str, dict[str, float]]:
+    """Fetch last-{lookback_days} CloudWatch stats per instance.
+
+    Returns ``{instance_id: {metric: {avg, p95, max}}}`` — a compact
+    summary the rightsizer + UI can show. Metrics pulled:
+
+    - ``CPUUtilization`` (AWS/EC2, always available)
+    - ``mem_used_percent`` (CWAgent — only populated if the CloudWatch
+      Agent is installed on the instance; silently absent otherwise)
+    - ``NetworkIn``, ``NetworkOut`` (AWS/EC2)
+    - ``DiskReadOps``, ``DiskWriteOps`` (AWS/EC2, EBS-backed only)
+
+    Never raises — returns ``{}`` on any failure. CloudWatch calls are
+    rate-limited by boto3's retry policy and are cheap relative to per-
+    instance Describe calls.
+    """
+    if not instance_ids:
+        return {}
+
+    from datetime import datetime, timedelta, timezone
+    try:
+        session = _build_session(credentials, region)
+        cw = session.client("cloudwatch")
+    except (ClientError, BotoCoreError):
+        return {}
+
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=lookback_days)
+    # 1-hour granularity — 14 days × 24 = 336 data points max, well under quota
+    period = 3600
+
+    def _one_metric(namespace: str, metric_name: str, instance_id: str) -> dict[str, float]:
+        try:
+            resp = cw.get_metric_statistics(
+                Namespace=namespace,
+                MetricName=metric_name,
+                Dimensions=[{"Name": "InstanceId", "Value": instance_id}],
+                StartTime=start,
+                EndTime=end,
+                Period=period,
+                Statistics=["Average", "Maximum"],
+                ExtendedStatistics=["p95"],
+            )
+            points = resp.get("Datapoints", [])
+            if not points:
+                return {}
+            avg = sum(p.get("Average", 0) for p in points) / max(len(points), 1)
+            mx = max((p.get("Maximum", 0) for p in points), default=0)
+            p95_vals = [p.get("ExtendedStatistics", {}).get("p95") for p in points
+                         if p.get("ExtendedStatistics")]
+            p95_vals = [v for v in p95_vals if v is not None]
+            p95 = (sum(p95_vals) / len(p95_vals)) if p95_vals else 0
+            return {"avg": round(avg, 2), "p95": round(p95, 2), "max": round(mx, 2)}
+        except (ClientError, BotoCoreError):
+            return {}
+
+    wanted = [
+        ("AWS/EC2", "CPUUtilization"),
+        ("AWS/EC2", "NetworkIn"),
+        ("AWS/EC2", "NetworkOut"),
+        ("AWS/EC2", "DiskReadOps"),
+        ("AWS/EC2", "DiskWriteOps"),
+        ("CWAgent", "mem_used_percent"),
+    ]
+    out: dict[str, dict[str, float]] = {}
+    for iid in instance_ids:
+        inst_metrics: dict[str, Any] = {}
+        for ns, name in wanted:
+            vals = _one_metric(ns, name, iid)
+            if vals:
+                inst_metrics[name] = vals
+        if inst_metrics:
+            out[iid] = inst_metrics
+    return out
+
+
+def extract_ssm_inventory(
+    credentials: dict, region: str, instance_ids: list[str],
+) -> dict[str, dict[str, Any]]:
+    """Pull SSM inventory (OS + installed software) per instance.
+
+    Returns ``{instance_id: {os_name, os_version, installed_applications:
+    [{name, version}, …]}}``. Only instances with the SSM Agent installed +
+    ``AmazonSSMManagedInstanceCore`` attached show up — others are silently
+    skipped.
+
+    We filter ``installed_applications`` to common DB / web / runtime
+    signatures so the UI can surface "MySQL 8.0" / "nginx 1.24" / "java 17"
+    without dumping 800-entry package lists.
+    """
+    if not instance_ids:
+        return {}
+
+    try:
+        session = _build_session(credentials, region)
+        ssm = session.client("ssm")
+    except (ClientError, BotoCoreError):
+        return {}
+
+    # Keywords we surface — mirrors data/mappings/resources.yaml's
+    # local_db_keywords + a few common web-server / runtime names.
+    INTERESTING_APP_KEYWORDS = {
+        "mysql", "mariadb", "postgres", "postgresql", "mongodb", "redis",
+        "memcached", "cassandra", "elasticsearch", "kafka", "sqlite",
+        "nginx", "apache", "httpd", "tomcat", "iis",
+        "python", "java", "jdk", "node", "nodejs", "ruby", "php", "go", "dotnet",
+        "docker", "kubernetes", "kubelet",
+    }
+
+    out: dict[str, dict[str, Any]] = {}
+    for iid in instance_ids:
+        entry: dict[str, Any] = {
+            "os_name": "",
+            "os_version": "",
+            "kernel": "",
+            "installed_applications": [],
+            "inventory_collected": False,
+        }
+        # OS
+        try:
+            os_resp = ssm.list_inventory_entries(
+                InstanceId=iid,
+                TypeName="AWS:InstanceInformation",
+            )
+            ents = os_resp.get("Entries", [])
+            if ents:
+                e = ents[0]
+                entry["os_name"] = e.get("PlatformName", "") or e.get("Name", "")
+                entry["os_version"] = e.get("PlatformVersion", "")
+                entry["kernel"] = e.get("KernelVersion", "")
+                entry["inventory_collected"] = True
+        except (ClientError, BotoCoreError):
+            pass
+        # Apps
+        try:
+            # list_inventory_entries paginates; capture up to 500 entries to
+            # avoid runaway on full package lists.
+            app_resp = ssm.list_inventory_entries(
+                InstanceId=iid,
+                TypeName="AWS:Application",
+                MaxResults=500,
+            )
+            apps = []
+            for e in app_resp.get("Entries", []):
+                name = (e.get("Name") or "").strip()
+                if not name:
+                    continue
+                nlow = name.lower()
+                if any(kw in nlow for kw in INTERESTING_APP_KEYWORDS):
+                    apps.append({
+                        "name": name,
+                        "version": e.get("Version", ""),
+                        "publisher": e.get("Publisher", ""),
+                    })
+            entry["installed_applications"] = apps
+            if apps:
+                entry["inventory_collected"] = True
+        except (ClientError, BotoCoreError):
+            pass
+
+        if entry["inventory_collected"]:
+            out[iid] = entry
+    return out

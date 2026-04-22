@@ -6,6 +6,7 @@ import { useCreateTranslationJob, useResourceTranslationJobs, type TranslationJo
 import { useMigrations } from '../api/hooks/useMigrations';
 import client from '../api/client';
 import { formatDate } from '../lib/utils';
+import ResourceDetailPanel from '../components/ResourceDetailPanel';
 
 const SKILL_FOR_TYPE: Record<string, string> = {
   'AWS::CloudFormation::Stack': 'cfn_terraform',
@@ -211,7 +212,7 @@ export default function Resources() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isDeleting, setIsDeleting] = useState(false);
   const [viewResource, setViewResource] = useState<Resource | null>(null);
-  const [modalTab, setModalTab] = useState<'config' | 'runs'>('config');
+  const [modalTab, setModalTab] = useState<'details' | 'config' | 'runs'>('details');
 
   const qc = useQueryClient();
 
@@ -634,7 +635,7 @@ export default function Resources() {
           role="dialog"
           aria-modal="true"
           aria-label="Resource Details"
-          onClick={(e) => { if (e.target === e.currentTarget) { setViewResource(null); setModalTab('config'); }}}
+          onClick={(e) => { if (e.target === e.currentTarget) { setViewResource(null); setModalTab('details'); }}}
         >
           <div className="modal modal-lg" style={{ maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}>
             <div className="modal-header">
@@ -647,7 +648,7 @@ export default function Resources() {
                 </p>
               </div>
               <button
-                onClick={() => { setViewResource(null); setModalTab('config'); }}
+                onClick={() => { setViewResource(null); setModalTab('details'); }}
                 className="btn btn-ghost btn-sm"
                 aria-label="Close modal"
               >
@@ -659,19 +660,21 @@ export default function Resources() {
 
             {/* Tabs */}
             <div className="tabs px-4">
-              {(['config', 'runs'] as const).map((tab) => (
+              {(['details', 'config', 'runs'] as const).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setModalTab(tab)}
                   className={`tab-btn ${modalTab === tab ? 'active' : ''}`}
                 >
-                  {tab === 'config' ? 'Raw Config' : 'Translation Jobs'}
+                  {tab === 'details' ? 'Details' : tab === 'config' ? 'Raw Config' : 'Translation Jobs'}
                 </button>
               ))}
             </div>
 
             <div className="modal-body overflow-y-auto flex-1 space-y-4">
-              {modalTab === 'config' ? (
+              {modalTab === 'details' ? (
+                <ResourceDetailPanel resourceId={viewResource.id} />
+              ) : modalTab === 'config' ? (
                 <>
                   <div className="grid grid-cols-2 gap-4 text-xs">
                     {[
