@@ -122,9 +122,16 @@ class AssignResourcesBody(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 def _to_str(val):
-    """Convert UUID or datetime to string for Pydantic output."""
+    """Convert UUID or datetime to string for Pydantic output.
+
+    For datetimes we emit strict ISO-8601 with a ``T`` separator — ``str(dt)``
+    uses a space separator that Safari refuses to parse, which silently
+    poisoned every ``new Date(...)`` on the frontend that relied on it.
+    """
     if val is None:
         return None
+    if hasattr(val, "isoformat"):
+        return val.isoformat()
     return str(val)
 
 

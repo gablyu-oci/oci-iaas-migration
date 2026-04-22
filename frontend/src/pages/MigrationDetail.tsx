@@ -1426,6 +1426,12 @@ function PlanStep({
     completed_at?: string;
   } | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  // Client-side timestamp of the user's most recent "Generate" click. We use
+  // this as a fallback for the timer's zero-reference because the backend's
+  // `plan_started_at` on the cached migration object isn't refreshed after
+  // the POST — if a prior plan ran weeks ago, the stale value would produce
+  // a nonsense elapsed (e.g. "31343m 8s").
+  const [clickStartMs, setClickStartMs] = useState<number | null>(null);
 
   const namedWorkloads = (workloads || []).filter((w) => w.name && !w.name.startsWith('ungrouped-'));
   let selected = namedWorkloads.find(w => w.id === selectedWorkloadId || w.name === selectedWorkloadId);
@@ -1460,19 +1466,28 @@ function PlanStep({
     return () => clearInterval(interval);
   }, [viewState, selected?.id]);
 
-  // Simple timer: compute elapsed from start time every second
+  // Simple timer: compute elapsed from start time every second.
+  // Reference is whichever is MOST RECENT among the user's click and the
+  // backend-reported plan_started_at — we use max() instead of falling back
+  // to one or the other because the backend may return a stale value from a
+  // previous run until it refreshes.
   useEffect(() => {
     if (viewState !== 'running') return;
-    const startMs = planStartedAt ? new Date(planStartedAt).getTime() : Date.now();
-    const tick = () => setElapsed(Math.round((Date.now() - startMs) / 1000));
+    const backendMs = planStartedAt ? new Date(planStartedAt).getTime() : NaN;
+    const candidates: number[] = [];
+    if (clickStartMs) candidates.push(clickStartMs);
+    if (Number.isFinite(backendMs) && backendMs > 0) candidates.push(backendMs);
+    const startMs = candidates.length > 0 ? Math.max(...candidates) : Date.now();
+    const tick = () => setElapsed(Math.max(0, Math.round((Date.now() - startMs) / 1000)));
     tick();
     const timer = setInterval(tick, 1000);
     return () => clearInterval(timer);
-  }, [viewState, planStartedAt]);
+  }, [viewState, planStartedAt, clickStartMs]);
 
   const handleGeneratePlan = async () => {
     if (!latestAssessment || !selected?.id) return;
     setElapsed(0);
+    setClickStartMs(Date.now());
     setViewState('running');
     setPlanError(null);
     setPlanResults(null);
