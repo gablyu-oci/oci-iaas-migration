@@ -315,3 +315,249 @@ def count_resources_by_type(ctx: RunContextWrapper[MigrationContext]) -> str:
             return json.dumps({aws_type: count for aws_type, count in rows})
     finally:
         engine.dispose()
+
+
+# ─── Orchestrator dispatch tools ──────────────────────────────────────────────
+# The LLM orchestrator uses these to spawn skill groups and observe the world.
+# Each call appends a structured record to ``ctx.context.run_state`` so the
+# Python composer can assemble the ``OrchestratorResult`` at end-of-run
+# without the LLM having to re-emit telemetry.
+
+
+def _append_invocation(ctx: RunContextWrapper[MigrationContext], record: dict) -> None:
+    """Append a skill-invocation record to the shared run_state accumulator."""
+    state = getattr(ctx, "context", None)
+    if state is None:
+        return
+    log = state.run_state.setdefault("invocations", [])
+    log.append(record)
+
+
+@function_tool
+async def run_skill_group(
+    ctx: RunContextWrapper[MigrationContext],
+    skill_type: str,
+    input_content: str,
+    max_iterations: int = 3,
+    confidence_threshold: float = 0.90,
+) -> str:
+    """Spawn a writer+reviewer pair for one skill and wait for its result.
+
+    Use this tool to translate a resource-type-scoped chunk of the migration:
+    one ``network_translation`` run, one ``database_translation`` run, etc.
+    The SkillGroup runs its own bounded writer→reviewer→revise loop
+    internally; you only see the final result.
+
+    Args:
+        skill_type: One of the keys from ``get_skill_catalog`` (e.g.,
+            ``"iam_translation"``, ``"ec2_translation"``).
+        input_content: The JSON payload the skill expects — shape varies per
+            skill. Look at the catalog's ``input_shape_hint``.
+        max_iterations: Upper bound on writer↔reviewer rounds. Default 3.
+        confidence_threshold: Early-stop when reviewer confidence ≥ this
+            value and decision is APPROVED/APPROVED_WITH_NOTES. Default 0.90.
+
+    Returns:
+        JSON string with the full ``SkillRunResult``: ``{skill_type, draft,
+        review, iterations, stopped_early, approved, writer_tool_calls,
+        reviewer_tool_calls}``.
+    """
+    import time as _time
+    from app.agents.skill_group import get_skill_group
+
+    t0 = _time.perf_counter()
+    try:
+        group = get_skill_group(
+            skill_type,
+            max_iterations=max_iterations,
+            confidence_threshold=confidence_threshold,
+        )
+        result = await group.run(input_content, ctx.context)
+        elapsed = _time.perf_counter() - t0
+        record = {
+            "skill_type": skill_type,
+            "result": result.as_dict(),
+            "duration_s": round(elapsed, 2),
+        }
+        _append_invocation(ctx, record)
+        return json.dumps(record)
+    except Exception as exc:  # noqa: BLE001 — surface to the LLM so it can adapt
+        elapsed = _time.perf_counter() - t0
+        record = {
+            "skill_type": skill_type,
+            "error": str(exc)[:2000],
+            "duration_s": round(elapsed, 2),
+        }
+        _append_invocation(ctx, record)
+        return json.dumps(record)
+
+
+@function_tool
+async def run_skills_parallel(
+    ctx: RunContextWrapper[MigrationContext],
+    specs_json: str,
+) -> str:
+    """Spawn multiple skill groups concurrently (typical for one dependency wave).
+
+    Prefer this over calling ``run_skill_group`` N times for independent
+    skills — it runs them in parallel via ``asyncio.gather``.
+
+    Args:
+        specs_json: JSON array string. Each element is an object with:
+            ``skill_type`` (str, required),
+            ``input_content`` (str, required),
+            ``max_iterations`` (int, optional, default 3),
+            ``confidence_threshold`` (float, optional, default 0.90).
+
+    Returns:
+        JSON array with one result per spec, in input order. Each entry is
+        the same shape ``run_skill_group`` returns.
+    """
+    import asyncio
+    import time as _time
+    from app.agents.skill_group import get_skill_group
+
+    try:
+        specs = json.loads(specs_json)
+    except json.JSONDecodeError as exc:
+        return json.dumps({"error": f"specs_json is not valid JSON: {exc}"})
+    if not isinstance(specs, list):
+        return json.dumps({"error": "specs_json must be a JSON array"})
+
+    async def _one(spec: dict) -> dict:
+        skill = spec.get("skill_type")
+        inp = spec.get("input_content")
+        if not skill or inp is None:
+            return {"error": "missing skill_type or input_content", "spec": spec}
+        max_iter = int(spec.get("max_iterations", 3))
+        conf = float(spec.get("confidence_threshold", 0.90))
+        t0 = _time.perf_counter()
+        try:
+            group = get_skill_group(skill, max_iterations=max_iter, confidence_threshold=conf)
+            res = await group.run(inp, ctx.context)
+            elapsed = _time.perf_counter() - t0
+            record = {
+                "skill_type": skill,
+                "result": res.as_dict(),
+                "duration_s": round(elapsed, 2),
+            }
+        except Exception as exc:  # noqa: BLE001
+            elapsed = _time.perf_counter() - t0
+            record = {
+                "skill_type": skill,
+                "error": str(exc)[:2000],
+                "duration_s": round(elapsed, 2),
+            }
+        _append_invocation(ctx, record)
+        return record
+
+    results = await asyncio.gather(*(_one(s) for s in specs))
+    return json.dumps(results)
+
+
+@function_tool
+def get_skill_catalog() -> str:
+    """List every registered skill: skill_type, display name, description, claimed AWS types.
+
+    Call this early to learn which skills are available + what inputs each
+    one expects. Skills with ``aws_types = null`` don't route off raw
+    resources — e.g. ``synthesis`` consumes prior skill outputs.
+
+    Returns:
+        JSON array of ``{skill_type, display_name, description,
+        input_shape_hint, aws_types, needs_terraform_validate}``.
+    """
+    from app.agents.skill_group import SKILL_SPECS, SKILL_TO_AWS_TYPES
+    out = []
+    for name, spec in SKILL_SPECS.items():
+        claimed = SKILL_TO_AWS_TYPES.get(name)
+        out.append({
+            "skill_type": spec.skill_type,
+            "display_name": spec.display_name,
+            "description": spec.description,
+            "input_shape_hint": spec.input_shape_hint,
+            "aws_types": sorted(claimed) if claimed else None,
+            "needs_terraform_validate": spec.needs_terraform_validate,
+        })
+    return json.dumps(out)
+
+
+@function_tool
+def classify_resource_type(aws_type: str) -> str:
+    """Determine which skill (if any) handles a given AWS CFN resource type.
+
+    Use this when the inventory shows a type you don't recognize from
+    ``get_skill_catalog``. For novel / unclaimed types, returns a hint so
+    you can decide whether to route via a related skill, map to a generic
+    fallback, or flag as unsupported.
+
+    Returns:
+        JSON: ``{aws_type, claimed, skill, mapping_hint}``. When
+        ``claimed=false``, ``mapping_hint`` carries any YAML row that knows
+        this type (or null if fully novel).
+    """
+    from app.agents.skill_group import SKILL_TO_AWS_TYPES, KNOWN_AWS_TYPES
+
+    if aws_type in KNOWN_AWS_TYPES:
+        for skill, types in SKILL_TO_AWS_TYPES.items():
+            if types and aws_type in types:
+                return json.dumps({
+                    "aws_type": aws_type,
+                    "claimed": True,
+                    "skill": skill,
+                    "mapping_hint": None,
+                })
+
+    entry = mappings.resource_by_aws_type(aws_type)
+    return json.dumps({
+        "aws_type": aws_type,
+        "claimed": False,
+        "skill": None,
+        "mapping_hint": {
+            "oci_service": entry.get("oci_service"),
+            "oci_terraform": entry.get("oci_terraform"),
+            "notes": entry.get("notes") or [],
+            "gaps": entry.get("gaps") or [],
+        } if entry else None,
+    })
+
+
+@function_tool
+def get_dependency_guidance() -> str:
+    """Return the canonical dependency-wave ordering as guidance (not enforcement).
+
+    The orchestrator is free to deviate — but IaaS resources have real
+    ordering constraints (VCN before subnets before instances) and this
+    table captures the ordering that works for most migrations.
+
+    Returns:
+        JSON with ``waves`` (list of lists of skill names) and ``rationale``
+        (string explaining why).
+    """
+    from app.agents.skill_group import SKILL_SPECS  # noqa: F401 — sanity import
+
+    waves = [
+        ["iam_translation", "security_translation"],
+        ["network_translation"],
+        ["storage_translation", "database_translation", "data_migration_planning"],
+        ["ec2_translation"],
+        ["loadbalancer_translation"],
+        ["serverless_translation"],
+        ["observability_translation"],
+        ["cfn_terraform"],
+        ["workload_planning", "dependency_discovery"],
+        ["synthesis"],
+    ]
+    rationale = (
+        "Wave 0: identity + secrets have no infra deps but are referenced by later waves. "
+        "Wave 1: VCN + subnets + NSGs must exist before compute/DB/LB. "
+        "Wave 2: storage + DB can run in parallel once the network exists. "
+        "Wave 3: compute (instances, ASGs) depends on subnets + (optionally) volumes. "
+        "Wave 4: load balancers reference instance backends. "
+        "Wave 5: serverless / containers can call anything above them. "
+        "Wave 6: observability wires alarms to the resources they target. "
+        "Wave 7: full CFN stack translation (only when input was a CFN template). "
+        "Wave 8: per-workload planning consumes the inventory + assessment context. "
+        "Wave 9: synthesis composes every prior artifact into the final package."
+    )
+    return json.dumps({"waves": waves, "rationale": rationale})

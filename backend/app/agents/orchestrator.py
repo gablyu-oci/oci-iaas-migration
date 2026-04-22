@@ -1,25 +1,33 @@
-"""Python-driven migration orchestrator.
+"""LLM-driven migration orchestrator.
 
-Unlike the LLM-handoff pattern, this orchestrator is Python code that:
+A full agent (not a Python dispatcher) sits at the top of the migration
+pipeline. It:
 
-1. Reads the discovered AWS resource inventory for a migration.
-2. Groups resources into **dependency waves** — skills that must finish
-   before later waves can start (network before compute, storage before DB, …).
-3. Within a wave, runs every applicable skill group **in parallel** via
-   ``asyncio.gather``. Each skill group is itself a writer+reviewer agent
-   pair that runs a bounded iteration loop (see ``skill_group.py``).
-4. Collects all skill outputs and returns them as a single structured
-   result, plus an overall summary.
+1. Inspects the discovered inventory via ``count_resources_by_type`` +
+   ``list_discovered_resources``.
+2. Classifies novel / unclaimed AWS types via ``classify_resource_type``
+   and decides how to route them (fallback skill, flag as unsupported).
+3. Plans a dispatch order informed by ``get_dependency_guidance`` (the
+   canonical IaaS wave order) but is free to deviate when the guidance
+   doesn't fit.
+4. Spawns writer+reviewer skill groups via ``run_skill_group`` /
+   ``run_skills_parallel`` — each call blocks until the group's internal
+   writer→reviewer loop finishes with APPROVED.
+5. Validates the final artifact bundle via ``terraform_validate``.
+6. Returns a narrative summary of what ran, what was skipped, and what
+   needs human follow-up.
 
-Why Python instead of an LLM orchestrator: our dispatch is prescriptive
-(dependency-ordered), not adaptive. An LLM deciding "should I run the
-network skill first or compute first?" adds latency + a failure mode
-without adding value. LLMs shine inside the skill groups (write/review/
-validate) where judgement matters.
+The Python ``run_migration`` entry point wraps the agent run, seeds a
+``MigrationContext`` with an ``invocation_log`` accumulator that the
+orchestrator's tools append to, and composes the final
+``OrchestratorResult`` from that accumulator (so the LLM doesn't have to
+emit telemetry in its final message).
 
-Callers:
-- ``/api/migrations/{id}/generate-plan`` API route (future wiring).
-- ``app.services.job_runner`` via ``run_skill()`` for single-skill jobs.
+Why LLM-driven: dispatch decisions that used to be fixed (strict
+dependency waves) were fine for a well-formed inventory but brittle for
+partial or novel inputs. Giving the orchestrator tools + agency lets it
+adapt — handle unknown resource types, retry a failed skill with a
+different input shape, or skip a wave entirely when nothing applies.
 """
 
 from __future__ import annotations
@@ -31,6 +39,9 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from agents import Agent, Runner
+
+from app.agents.config import build_model
 from app.agents.context import MigrationContext
 from app.agents.skill_group import (
     DEFAULT_CONFIDENCE_THRESHOLD,
@@ -38,39 +49,35 @@ from app.agents.skill_group import (
     KNOWN_AWS_TYPES,
     SKILL_SPECS,
     SKILL_TO_AWS_TYPES,
-    SkillGroup,
-    SkillRunResult,
-    get_skill_group,
 )
+from app.agents.tools import (
+    classify_resource_type,
+    count_resources_by_type,
+    get_dependency_guidance,
+    get_skill_catalog,
+    list_discovered_resources,
+    list_resources_for_skill,
+    lookup_aws_mapping,
+    run_skill_group,
+    run_skills_parallel,
+    terraform_validate,
+)
+from app.config import settings
 
 _log = logging.getLogger(__name__)
 
 
-# ─── Dependency waves ─────────────────────────────────────────────────────────
-# Skills within a wave run in parallel; waves run sequentially.
-# Order is determined by OCI resource dependencies (VCN before subnets before
-# instances, etc.). A skill appears in exactly one wave.
+# ─── Canonical wave ordering (guidance only, also exported to the UI) ─────────
 DEPENDENCY_WAVES: list[tuple[str, ...]] = (
-    # Wave 0 — no infrastructure dependencies. Security (KMS/Vault) runs here
-    # because compute + DB + storage references KMS keys.
     ("iam_translation", "security_translation"),
-    # Wave 1 — networking foundation (other waves depend on it)
     ("network_translation",),
-    # Wave 2 — storage + DB + data-migration planning (need network + security)
     ("storage_translation", "database_translation", "data_migration_planning"),
-    # Wave 3 — compute depends on network + (optionally) storage/db
     ("ec2_translation",),
-    # Wave 4 — load balancers depend on backends (instances)
     ("loadbalancer_translation",),
-    # Wave 5 — serverless + containers (may reference earlier resources)
     ("serverless_translation",),
-    # Wave 6 — observability + messaging (targets everything above)
     ("observability_translation",),
-    # Wave 7 — full CFN stack translation (if input was a CFN template)
     ("cfn_terraform",),
-    # Wave 8 — per-workload planning (needs everything above)
     ("workload_planning", "dependency_discovery"),
-    # Wave 9 — final synthesis composes every prior artifact
     ("synthesis",),
 )
 
@@ -81,59 +88,151 @@ DEPENDENCY_WAVES: list[tuple[str, ...]] = (
 class OrchestratorResult:
     """Structured return shape for one full migration orchestration run.
 
-    Gap-tracking fields (``unknown_resource_types``, ``unmatched_resource_count``,
-    ``skipped_skills``) surface what we did *not* translate so callers never
-    see a silent drop. These are populated from the resource inventory —
-    they're inputs to the UI's "what still needs manual work" list.
+    Composed by Python from (a) the LLM's final summary text and (b) the
+    ``invocation_log`` accumulator that orchestrator tools appended to
+    during the run. Every telemetry field (tool-call counts, elapsed time,
+    failure lists) is derived from the accumulator — the LLM doesn't have
+    to emit them.
     """
     migration_id: str
     max_iterations: int
     confidence_threshold: float
     elapsed_seconds: float
-    total_resources: int                         # input inventory size
-    matched_resources: int                       # resources claimed by at least one skill
-    unmatched_resource_count: int                # resources with no skill
-    unknown_resource_types: list[str]            # AWS types in inventory not in KNOWN_AWS_TYPES
-    skipped_skills: list[str]                    # skills registered but with zero resources
-    waves: list[dict]                            # one entry per wave
-    skills: dict[str, dict]                      # skill_type → SkillRunResult.as_dict()
+    total_resources: int
+    matched_resources: int
+    unmatched_resource_count: int
+    unknown_resource_types: list[str]
+    skipped_skills: list[str]
+    invocations: list[dict]                  # per-skill call log w/ timings
+    skills: dict[str, dict]                  # skill_type → last SkillRunResult.as_dict()
     total_writer_tool_calls: int
     total_reviewer_tool_calls: int
     failed_skills: list[str]
-    summary: str                                 # short human line
+    orchestrator_narrative: str              # the LLM's final message
+    summary: str                             # short human-readable line
 
     def as_dict(self) -> dict:
         return asdict(self)
 
 
-# ─── Input builders ───────────────────────────────────────────────────────────
-# Each skill expects a slightly different input shape. These helpers turn
-# a flat list of AWS resources into the per-skill payload. They mirror the
-# ``_build_*_input`` functions in ``app.services.job_runner`` — that module's
-# logic is the authoritative source; we delegate to it to avoid drift.
+# ─── Agent definition ─────────────────────────────────────────────────────────
+
+def _orchestrator_instructions(max_iterations: int, confidence_threshold: float) -> str:
+    return f"""You are the **Migration Orchestrator** for an AWS → OCI migration.
+You have full dispatch authority — you decide which skills to run, in what
+order, with what inputs, and when to stop. You are an agent, not a script.
+
+## Your tools
+
+- `count_resources_by_type()` — start here. Gives you an inventory summary
+  grouped by AWS CFN type. No arguments.
+- `list_discovered_resources(limit)` — fetch up to `limit` raw resource
+  rows (id, aws_type, name, aws_arn) when you need sample data to build
+  a skill's input payload.
+- `get_skill_catalog()` — list every registered skill + what it handles.
+  Call this early so you know your arsenal.
+- `get_dependency_guidance()` — canonical IaaS dependency-wave ordering
+  (VCN before subnets before instances, etc.). Guidance, not enforcement —
+  you're free to deviate when the guidance doesn't fit.
+- `classify_resource_type(aws_type)` — check whether an AWS type has a
+  registered skill. Use this for novel / unclaimed types so you can decide
+  how to route them.
+- `lookup_aws_mapping(aws_type)` — pull the canonical OCI target from
+  data/mappings/resources.yaml for any AWS type.
+- `list_resources_for_skill(skill)` — the inverse: which AWS types does a
+  given skill claim?
+- `run_skill_group(skill_type, input_content, ...)` — spawn a writer+reviewer
+  pair for one skill and wait for its bounded loop to finish. The tool
+  response is the SkillRunResult (draft, review, iterations, approved, …).
+- `run_skills_parallel(specs_json)` — fan out to multiple skills
+  concurrently. Use this for skills in the same dependency wave.
+- `terraform_validate(main_tf, variables_tf, outputs_tf)` — run
+  `terraform init -backend=false && terraform validate` in a sandbox.
+  Use this at the end to sanity-check the synthesized HCL.
+
+## Your job
+
+1. **Inventory.** Call `count_resources_by_type()` first. Note how many
+   resources of each type there are.
+2. **Learn the arsenal.** Call `get_skill_catalog()` once.
+3. **Triage novel types.** For any AWS type in the inventory NOT covered
+   by the catalog (check `aws_types` per skill), call
+   `classify_resource_type` to confirm it's truly unclaimed, then decide:
+   - Route to a related skill with a note explaining the gap, OR
+   - Route to `cfn_terraform` as a generic fallback, OR
+   - Flag as unsupported in your final summary (don't silently drop).
+4. **Plan dispatch.** Call `get_dependency_guidance()`. Use its wave
+   ordering unless you have a concrete reason to deviate. Skills whose
+   claimed AWS types aren't present in the inventory should be skipped.
+5. **Execute.** For each wave that has applicable skills:
+   - Build the input payload per skill (the catalog's `input_shape_hint`
+     tells you what shape each skill expects).
+   - If multiple skills run in the same wave, use `run_skills_parallel`.
+   - If only one runs, use `run_skill_group`.
+6. **Handle failures.** If a skill returns an error or a NEEDS_FIXES
+   review with low confidence, decide: retry with a different input,
+   skip, or continue. Don't re-run a skill that already succeeded.
+7. **Final validation.** After all per-skill work is done and (if
+   applicable) the `synthesis` skill has produced a merged bundle, call
+   `terraform_validate` on the synthesized main.tf + variables.tf +
+   outputs.tf. Include its verdict in your narrative.
+8. **Summarize.** Return a final message describing:
+   - What ran and what was skipped (with counts).
+   - Novel resource types you encountered and how you handled them.
+   - Any skills that failed or that the reviewer marked NEEDS_FIXES.
+   - The terraform_validate verdict.
+   - What the operator still needs to do manually.
+
+## Constraints
+
+- Max iterations per skill loop is **{max_iterations}**; early-stop
+  threshold is confidence ≥ **{confidence_threshold}**. You can override
+  per-call via tool arguments but defaults are usually fine.
+- Never run `synthesis` before the skills it would be composing are done.
+- Never run `workload_planning` or `dependency_discovery` unless the
+  caller explicitly asks — those need assessment context this
+  orchestrator doesn't have today.
+- Your final message is for humans — write prose, not JSON. Per-skill
+  telemetry is collected automatically by the tools; you don't need to
+  repeat it.
+"""
 
 
-def _select_resources_for(skill: str, resources: list[dict]) -> list[dict]:
-    """Return raw resource dicts relevant to a given skill.
+def build_orchestrator_agent(
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
+    confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
+) -> Agent:
+    """Build the orchestrator Agent with its full tool set.
 
-    Routing table lives in ``skill_group.SKILL_TO_AWS_TYPES`` — the single
-    source of truth also consumed by the registry. A skill whose entry is
-    ``None`` doesn't route off raw resources (synthesis, workload_planning,
-    …) and always returns empty here.
+    Called per run (not cached) so settings changes (e.g., rotating the
+    orchestrator model via the UI) take effect on the next invocation.
     """
-    types = SKILL_TO_AWS_TYPES.get(skill)
-    if not types:
-        return []
-    return [r for r in resources if r.get("aws_type") in types]
+    return Agent(
+        name="Migration Orchestrator",
+        instructions=_orchestrator_instructions(max_iterations, confidence_threshold),
+        model=build_model(settings.LLM_ORCHESTRATOR_MODEL),
+        tools=[
+            # Inspection
+            count_resources_by_type,
+            list_discovered_resources,
+            lookup_aws_mapping,
+            list_resources_for_skill,
+            get_skill_catalog,
+            classify_resource_type,
+            get_dependency_guidance,
+            # Dispatch
+            run_skill_group,
+            run_skills_parallel,
+            # Validation
+            terraform_validate,
+        ],
+    )
 
+
+# ─── Python wrapper: seed context, run agent, compose result ──────────────────
 
 def _classify_inventory(resources: list[dict]) -> tuple[list[str], list[str], int]:
-    """Split the inventory into (matched_aws_types, unknown_aws_types, unmatched_count).
-
-    - ``matched``: types present in inventory AND claimed by some skill
-    - ``unknown``: types present in inventory but not claimed by any skill
-    - ``unmatched_count``: individual resources with an unknown type
-    """
+    """Split the inventory into (matched_aws_types, unknown_aws_types, unmatched_count)."""
     types_in_inventory: set[str] = set()
     unmatched = 0
     for r in resources:
@@ -148,433 +247,135 @@ def _classify_inventory(resources: list[dict]) -> tuple[list[str], list[str], in
     return matched, unknown, unmatched
 
 
-def _build_input_for(skill: str, resources: list[dict], prior_results: dict) -> str | None:
-    """Build the JSON input string the skill expects. Returns None to skip."""
-    selected = _select_resources_for(skill, resources)
+def _compose_result(
+    migration_id: str,
+    max_iterations: int,
+    confidence_threshold: float,
+    resources: list[dict],
+    ctx: MigrationContext,
+    narrative: str,
+    elapsed: float,
+) -> OrchestratorResult:
+    """Assemble OrchestratorResult from the run-state accumulator."""
+    invocations: list[dict] = ctx.run_state.get("invocations", []) or []
 
-    if skill == "iam_translation":
-        if not selected:
-            return None
-        # Keep the legacy single-policy shape when the inventory is exactly one
-        # IAM::Policy document (lets the existing writer prompt match). For
-        # anything else, fan out into per-object buckets.
-        only_policies = all(
-            r.get("aws_type") == "AWS::IAM::Policy" for r in selected
+    matched_types, unknown_types, unmatched_count = _classify_inventory(resources)
+    matched_count = len(resources) - unmatched_count
+
+    # Per-skill aggregation — keep the *last* successful call per skill_type
+    # (the orchestrator may legitimately retry a skill with new input).
+    skills_by_type: dict[str, dict] = {}
+    failed: list[str] = []
+    total_w, total_r = 0, 0
+    for inv in invocations:
+        skill = inv.get("skill_type") or "_unknown_"
+        if "error" in inv:
+            if skill not in failed:
+                failed.append(skill)
+            continue
+        res = inv.get("result") or {}
+        skills_by_type[skill] = res
+        total_w += int(res.get("writer_tool_calls", 0) or 0)
+        total_r += int(res.get("reviewer_tool_calls", 0) or 0)
+
+    # Skipped: skills registered with a routing set whose AWS types are in
+    # the inventory but were never invoked. (Skills with no claimed types
+    # — synthesis, workload_planning, dependency_discovery — don't count
+    # as skipped unless the orchestrator would have been expected to run
+    # them. We conservatively only list resource-routed skills.)
+    called = set(skills_by_type) | set(failed)
+    skipped: list[str] = []
+    for skill, types in SKILL_TO_AWS_TYPES.items():
+        if types is None:
+            continue
+        if any(r.get("aws_type") in types for r in resources) and skill not in called:
+            skipped.append(skill)
+
+    summary_bits = [
+        f"Ran {len(skills_by_type)} skills in {elapsed:.1f}s; "
+        f"{len(failed)} failed."
+    ]
+    if unknown_types:
+        summary_bits.append(
+            f"⚠ {unmatched_count} resources of {len(unknown_types)} unhandled AWS "
+            f"type(s): {', '.join(unknown_types[:5])}"
+            + (" …" if len(unknown_types) > 5 else "")
         )
-        if only_policies and len(selected) == 1:
-            rc = selected[0].get("raw_config") or {}
-            return json.dumps(rc) if rc else None
-        return json.dumps({
-            "policies": [r.get("raw_config", {}) for r in selected
-                          if r.get("aws_type") == "AWS::IAM::Policy"],
-            "roles": [r.get("raw_config", {}) for r in selected
-                       if r.get("aws_type") == "AWS::IAM::Role"],
-            "users": [r.get("raw_config", {}) for r in selected
-                       if r.get("aws_type") == "AWS::IAM::User"],
-            "groups": [r.get("raw_config", {}) for r in selected
-                        if r.get("aws_type") == "AWS::IAM::Group"],
-            "instance_profiles": [r.get("raw_config", {}) for r in selected
-                                   if r.get("aws_type") == "AWS::IAM::InstanceProfile"],
-            "access_keys": [r.get("raw_config", {}) for r in selected
-                             if r.get("aws_type") == "AWS::IAM::AccessKey"],
-        })
+    if skipped:
+        summary_bits.append(f"skipped {len(skipped)} skills: {', '.join(skipped)}")
 
-    if skill == "network_translation":
-        if not selected:
-            return None
-        from collections import defaultdict
-        agg: dict[str, list] = defaultdict(list)
-        bucket_by_type = {
-            "AWS::EC2::VPC":                     "vpcs",
-            "AWS::EC2::Subnet":                  "subnets",
-            "AWS::EC2::SecurityGroup":           "security_groups",
-            "AWS::EC2::NetworkInterface":        "network_interfaces",
-            "AWS::EC2::InternetGateway":         "internet_gateways",
-            "AWS::EC2::NatGateway":              "nat_gateways",
-            "AWS::EC2::RouteTable":              "route_tables",
-            "AWS::EC2::EIP":                     "elastic_ips",
-            "AWS::EC2::NetworkAcl":              "network_acls",
-            "AWS::EC2::VPCPeeringConnection":    "vpc_peerings",
-            "AWS::EC2::TransitGateway":          "transit_gateways",
-            "AWS::EC2::TransitGatewayAttachment":"transit_gateway_attachments",
-            "AWS::EC2::TransitGatewayRouteTable":"transit_gateway_route_tables",
-            "AWS::EC2::VPCEndpoint":             "vpc_endpoints",
-            "AWS::EC2::VPNConnection":           "vpn_connections",
-            "AWS::EC2::VPNGateway":              "vpn_gateways",
-            "AWS::EC2::CustomerGateway":         "customer_gateways",
-            "AWS::DirectConnect::Connection":    "direct_connects",
-            "AWS::Route53::HostedZone":          "dns_zones",
-            "AWS::Route53::RecordSet":           "dns_records",
-        }
-        for r in selected:
-            rc = r.get("raw_config", {}) or {}
-            bucket = bucket_by_type.get(r.get("aws_type", ""))
-            if bucket:
-                agg[bucket].append(rc)
-        return json.dumps(agg) if any(agg.values()) else None
-
-    if skill == "ec2_translation":
-        if not selected:
-            return None
-        return json.dumps({
-            "instances": [r.get("raw_config", {}) for r in selected
-                          if r.get("aws_type") == "AWS::EC2::Instance"],
-            "auto_scaling_groups": [r.get("raw_config", {}) for r in selected
-                                     if r.get("aws_type") == "AWS::AutoScaling::AutoScalingGroup"],
-            "launch_configurations": [r.get("raw_config", {}) for r in selected
-                                       if r.get("aws_type") == "AWS::AutoScaling::LaunchConfiguration"],
-            "launch_templates": [r.get("raw_config", {}) for r in selected
-                                  if r.get("aws_type") == "AWS::EC2::LaunchTemplate"],
-            "images": [r.get("raw_config", {}) for r in selected
-                        if r.get("aws_type") == "AWS::EC2::Image"],
-            "key_pairs": [r.get("raw_config", {}) for r in selected
-                           if r.get("aws_type") == "AWS::EC2::KeyPair"],
-            "spot_fleets": [r.get("raw_config", {}) for r in selected
-                             if r.get("aws_type") == "AWS::EC2::SpotFleet"],
-        })
-
-    if skill == "storage_translation":
-        if not selected:
-            return None
-        return json.dumps({
-            "volumes": [r.get("raw_config", {}) for r in selected
-                         if r.get("aws_type") in ("AWS::EC2::Volume", "AWS::EC2::VolumeAttachment")],
-            "snapshots": [r.get("raw_config", {}) for r in selected
-                           if r.get("aws_type") == "AWS::EC2::Snapshot"],
-            "s3_buckets": [r.get("raw_config", {}) for r in selected
-                            if r.get("aws_type") in ("AWS::S3::Bucket", "AWS::S3::BucketPolicy")],
-            "efs_filesystems": [r.get("raw_config", {}) for r in selected
-                                 if r.get("aws_type") in (
-                                     "AWS::EFS::FileSystem", "AWS::EFS::MountTarget", "AWS::EFS::AccessPoint",
-                                 )],
-            "fsx_filesystems": [r.get("raw_config", {}) for r in selected
-                                 if r.get("aws_type") == "AWS::FSx::FileSystem"],
-        })
-
-    if skill == "database_translation":
-        if not selected:
-            return None
-        return json.dumps({
-            "db_instances": [r.get("raw_config", {}) for r in selected
-                              if r.get("aws_type") == "AWS::RDS::DBInstance"],
-            "db_clusters": [r.get("raw_config", {}) for r in selected
-                             if r.get("aws_type") == "AWS::RDS::DBCluster"],
-            "db_subnet_groups": [r.get("raw_config", {}) for r in selected
-                                  if r.get("aws_type") == "AWS::RDS::DBSubnetGroup"],
-            "db_parameter_groups": [r.get("raw_config", {}) for r in selected
-                                     if r.get("aws_type") == "AWS::RDS::DBParameterGroup"],
-            "dynamodb_tables": [r.get("raw_config", {}) for r in selected
-                                 if r.get("aws_type") == "AWS::DynamoDB::Table"],
-            "elasticache_clusters": [r.get("raw_config", {}) for r in selected
-                                      if r.get("aws_type") in (
-                                          "AWS::ElastiCache::CacheCluster",
-                                          "AWS::ElastiCache::ReplicationGroup",
-                                      )],
-            "documentdb_clusters": [r.get("raw_config", {}) for r in selected
-                                     if r.get("aws_type") == "AWS::DocDB::DBCluster"],
-            "neptune_clusters": [r.get("raw_config", {}) for r in selected
-                                  if r.get("aws_type") == "AWS::Neptune::DBCluster"],
-            "opensearch_domains": [r.get("raw_config", {}) for r in selected
-                                    if r.get("aws_type") == "AWS::OpenSearchService::Domain"],
-            "redshift_clusters": [r.get("raw_config", {}) for r in selected
-                                   if r.get("aws_type") == "AWS::Redshift::Cluster"],
-            "dax_clusters": [r.get("raw_config", {}) for r in selected
-                              if r.get("aws_type") == "AWS::DAX::Cluster"],
-            "msk_clusters": [r.get("raw_config", {}) for r in selected
-                              if r.get("aws_type") == "AWS::MSK::Cluster"],
-            "timestream_databases": [r.get("raw_config", {}) for r in selected
-                                      if r.get("aws_type") == "AWS::Timestream::Database"],
-        })
-
-    if skill == "loadbalancer_translation":
-        if not selected:
-            return None
-        return json.dumps({
-            "load_balancers":  [r.get("raw_config", {}) for r in selected
-                                if r.get("aws_type") == "AWS::ElasticLoadBalancingV2::LoadBalancer"],
-            "target_groups":   [r.get("raw_config", {}) for r in selected
-                                if r.get("aws_type") == "AWS::ElasticLoadBalancingV2::TargetGroup"],
-            "listeners":       [r.get("raw_config", {}) for r in selected
-                                if r.get("aws_type") == "AWS::ElasticLoadBalancingV2::Listener"],
-            "classic_load_balancers": [r.get("raw_config", {}) for r in selected
-                                        if r.get("aws_type") == "AWS::ElasticLoadBalancing::LoadBalancer"],
-        })
-
-    if skill == "security_translation":
-        if not selected:
-            return None
-        return json.dumps({
-            "kms_keys": [r.get("raw_config", {}) for r in selected
-                          if r.get("aws_type") in ("AWS::KMS::Key", "AWS::KMS::Alias")],
-            "secrets": [r.get("raw_config", {}) for r in selected
-                         if r.get("aws_type") in (
-                             "AWS::SecretsManager::Secret",
-                             "AWS::SecretsManager::RotationSchedule",
-                         )],
-            "ssm_parameters": [r.get("raw_config", {}) for r in selected
-                                if r.get("aws_type") == "AWS::SSM::Parameter"],
-            "certificates": [r.get("raw_config", {}) for r in selected
-                              if r.get("aws_type") == "AWS::CertificateManager::Certificate"],
-            "waf_acls": [r.get("raw_config", {}) for r in selected
-                          if r.get("aws_type") == "AWS::WAFv2::WebACL"],
-            "waf_ip_sets": [r.get("raw_config", {}) for r in selected
-                             if r.get("aws_type") == "AWS::WAFv2::IPSet"],
-        })
-
-    if skill == "serverless_translation":
-        if not selected:
-            return None
-        return json.dumps({
-            "functions": [r.get("raw_config", {}) for r in selected
-                           if r.get("aws_type") in (
-                               "AWS::Lambda::Function",
-                               "AWS::Lambda::LayerVersion",
-                               "AWS::Lambda::EventSourceMapping",
-                           )],
-            "apis": [r.get("raw_config", {}) for r in selected
-                      if r.get("aws_type") in (
-                          "AWS::ApiGateway::RestApi",
-                          "AWS::ApiGatewayV2::Api",
-                          "AWS::ApiGateway::Stage",
-                      )],
-            "state_machines": [r.get("raw_config", {}) for r in selected
-                                if r.get("aws_type") == "AWS::StepFunctions::StateMachine"],
-            "event_rules": [r.get("raw_config", {}) for r in selected
-                             if r.get("aws_type") in ("AWS::Events::Rule", "AWS::Events::EventBus")],
-            "streams": [r.get("raw_config", {}) for r in selected
-                         if r.get("aws_type") in (
-                             "AWS::Kinesis::Stream",
-                             "AWS::KinesisFirehose::DeliveryStream",
-                         )],
-            "ecs_services": [r.get("raw_config", {}) for r in selected
-                              if r.get("aws_type") in (
-                                  "AWS::ECS::Service",
-                                  "AWS::ECS::TaskDefinition",
-                                  "AWS::ECS::Cluster",
-                              )],
-            "eks_clusters": [r.get("raw_config", {}) for r in selected
-                              if r.get("aws_type") in ("AWS::EKS::Cluster", "AWS::EKS::Nodegroup")],
-            "container_repos": [r.get("raw_config", {}) for r in selected
-                                 if r.get("aws_type") == "AWS::ECR::Repository"],
-        })
-
-    if skill == "observability_translation":
-        if not selected:
-            return None
-        return json.dumps({
-            "alarms": [r.get("raw_config", {}) for r in selected
-                        if r.get("aws_type") == "AWS::CloudWatch::Alarm"],
-            "dashboards": [r.get("raw_config", {}) for r in selected
-                            if r.get("aws_type") == "AWS::CloudWatch::Dashboard"],
-            "log_groups": [r.get("raw_config", {}) for r in selected
-                            if r.get("aws_type") == "AWS::Logs::LogGroup"],
-            "log_streams": [r.get("raw_config", {}) for r in selected
-                             if r.get("aws_type") == "AWS::Logs::LogStream"],
-            "log_subscriptions": [r.get("raw_config", {}) for r in selected
-                                   if r.get("aws_type") == "AWS::Logs::SubscriptionFilter"],
-            "sns_topics": [r.get("raw_config", {}) for r in selected
-                            if r.get("aws_type") == "AWS::SNS::Topic"],
-            "sns_subscriptions": [r.get("raw_config", {}) for r in selected
-                                   if r.get("aws_type") == "AWS::SNS::Subscription"],
-            "sqs_queues": [r.get("raw_config", {}) for r in selected
-                            if r.get("aws_type") in ("AWS::SQS::Queue", "AWS::SQS::QueuePolicy")],
-            "trails": [r.get("raw_config", {}) for r in selected
-                        if r.get("aws_type") == "AWS::CloudTrail::Trail"],
-        })
-
-    if skill == "cfn_terraform":
-        if not selected:
-            return None
-        # Pass the first stack's template; orchestration for multi-stack is
-        # a follow-up.
-        rc = selected[0].get("raw_config") or {}
-        return rc.get("template") or json.dumps(rc)
-
-    if skill == "synthesis":
-        # Synthesis takes all prior skill outputs.
-        if not prior_results:
-            return None
-        return json.dumps({k: v.get("draft") for k, v in prior_results.items() if v.get("draft")})
-
-    if skill == "data_migration_planning":
-        db = [r for r in resources if r.get("aws_type") in ("AWS::RDS::DBInstance", "AWS::RDS::DBCluster")]
-        return json.dumps({"db_resources": [r.get("raw_config", {}) for r in db]}) if db else None
-
-    if skill in ("workload_planning", "dependency_discovery"):
-        # These need more context than this orchestrator has today; skip
-        # them from the migration-wide loop and run them only if the caller
-        # invokes them directly.
-        return None
-
-    return None
+    return OrchestratorResult(
+        migration_id=migration_id,
+        max_iterations=max_iterations,
+        confidence_threshold=confidence_threshold,
+        elapsed_seconds=round(elapsed, 2),
+        total_resources=len(resources),
+        matched_resources=matched_count,
+        unmatched_resource_count=unmatched_count,
+        unknown_resource_types=unknown_types,
+        skipped_skills=skipped,
+        invocations=invocations,
+        skills=skills_by_type,
+        total_writer_tool_calls=total_w,
+        total_reviewer_tool_calls=total_r,
+        failed_skills=failed,
+        orchestrator_narrative=narrative,
+        summary=" · ".join(summary_bits),
+    )
 
 
-# ─── The orchestrator ─────────────────────────────────────────────────────────
+async def _run_orchestrator_agent(
+    migration_id: str,
+    resources: list[dict],
+    max_iterations: int,
+    confidence_threshold: float,
+    tenant_id: str | None,
+    aws_connection_id: str | None,
+    max_turns: int,
+) -> OrchestratorResult:
+    t_start = time.perf_counter()
 
-class MigrationOrchestrator:
-    """Drives a full migration: parallel waves of skill groups with iteration loops.
+    ctx = MigrationContext(
+        migration_id=migration_id,
+        tenant_id=tenant_id,
+        aws_connection_id=aws_connection_id,
+    )
+    # Seed the accumulator so tools can append without None-checking.
+    ctx.run_state["invocations"] = []
 
-    Single instance per migration run. Not thread-safe; create a new one
-    per migration.
+    agent = build_orchestrator_agent(
+        max_iterations=max_iterations,
+        confidence_threshold=confidence_threshold,
+    )
 
-    Args:
-        max_iterations: Upper bound on writer↔reviewer rounds per skill.
-            Passed through to every ``SkillGroup``.
-        confidence_threshold: Early-stop threshold inside each skill group.
-    """
+    # Short priming prompt — the detailed workflow lives in the agent's
+    # system instructions. This just kicks off the run.
+    prime = (
+        f"Begin the migration for migration_id={migration_id}. "
+        f"Use your tools per the workflow in your instructions. "
+        f"Your final message should be a human-readable report."
+    )
 
-    def __init__(
-        self,
-        max_iterations: int = DEFAULT_MAX_ITERATIONS,
-        confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
-    ):
-        self.max_iterations = max(1, int(max_iterations))
-        self.confidence_threshold = float(confidence_threshold)
+    try:
+        run = await Runner.run(agent, input=prime, context=ctx, max_turns=max_turns)
+        narrative = (run.final_output or "").strip() if isinstance(run.final_output, str) else str(run.final_output)
+    except Exception as exc:  # noqa: BLE001 — surface in the result
+        _log.exception("orchestrator agent failed")
+        narrative = f"Orchestrator agent raised an exception: {exc}"
 
-    async def run(
-        self,
-        migration_id: str,
-        resources: list[dict],
-        tenant_id: str | None = None,
-        aws_connection_id: str | None = None,
-    ) -> OrchestratorResult:
-        """Run every applicable skill group across ``DEPENDENCY_WAVES``.
-
-        Args:
-            migration_id: UUID string for the migration.
-            resources: List of discovered resource dicts. Minimum fields:
-                ``aws_type``, ``raw_config``. Optional: ``id``, ``name``.
-            tenant_id / aws_connection_id: Threaded into ``MigrationContext``
-                for tools that need them.
-
-        Returns:
-            ``OrchestratorResult`` with per-skill results + wave timing.
-        """
-        t_start = time.perf_counter()
-        ctx = MigrationContext(
-            migration_id=migration_id,
-            tenant_id=tenant_id,
-            aws_connection_id=aws_connection_id,
-        )
-
-        # Classify the inventory UP FRONT so we can report gaps even if a
-        # skill run fails later.
-        matched_types, unknown_types, unmatched_count = _classify_inventory(resources)
-        matched_count = len(resources) - unmatched_count
-        if unknown_types:
-            _log.warning(
-                "migration %s: %d unknown AWS resource types will not be translated: %s",
-                migration_id, len(unknown_types), unknown_types,
-            )
-
-        results: dict[str, dict] = {}
-        waves_report: list[dict] = []
-        failed: list[str] = []
-        # Skills that *could* apply to this inventory but produced no input
-        # (e.g., synthesis with no prior results, workload_planning today).
-        # We populate this as we walk the waves.
-        skipped: list[str] = []
-        total_w, total_r = 0, 0
-
-        for wave_idx, wave in enumerate(DEPENDENCY_WAVES):
-            wave_t0 = time.perf_counter()
-            # Build inputs now so we know which skills are applicable
-            planned = []
-            for skill in wave:
-                inp = _build_input_for(skill, resources, results)
-                if inp is None:
-                    skipped.append(skill)
-                    continue
-                planned.append((skill, inp))
-
-            if not planned:
-                waves_report.append({
-                    "wave": wave_idx, "skills": list(wave),
-                    "executed": [], "skipped": list(wave), "duration_s": 0.0,
-                })
-                continue
-
-            # Parallel dispatch within the wave
-            async def _run_one(skill: str, inp: str) -> tuple[str, SkillRunResult | BaseException]:
-                try:
-                    group = SkillGroup(
-                        SKILL_SPECS[skill],
-                        max_iterations=self.max_iterations,
-                        confidence_threshold=self.confidence_threshold,
-                    )
-                    res = await group.run(inp, ctx)
-                    return skill, res
-                except BaseException as exc:  # noqa: BLE001 — surface the failure
-                    _log.exception("skill %s failed", skill)
-                    return skill, exc
-
-            gathered = await asyncio.gather(*(_run_one(s, i) for s, i in planned))
-
-            executed: list[dict] = []
-            for skill, res in gathered:
-                if isinstance(res, BaseException):
-                    failed.append(skill)
-                    results[skill] = {"error": str(res)}
-                    executed.append({"skill": skill, "error": str(res)})
-                else:
-                    results[skill] = res.as_dict()
-                    total_w += res.writer_tool_calls
-                    total_r += res.reviewer_tool_calls
-                    executed.append({
-                        "skill": skill,
-                        "iterations": res.iterations,
-                        "approved": res.approved,
-                        "stopped_early": res.stopped_early,
-                    })
-
-            waves_report.append({
-                "wave": wave_idx, "skills": list(wave),
-                "executed": executed,
-                "skipped": [s for s in wave if s not in {e["skill"] for e in executed}],
-                "duration_s": round(time.perf_counter() - wave_t0, 2),
-            })
-
-        elapsed = time.perf_counter() - t_start
-        approved = sum(1 for v in results.values() if v.get("approved"))
-
-        summary_parts = [
-            f"Ran {len(results)} skills in {elapsed:.1f}s across "
-            f"{len([w for w in waves_report if w['executed']])} waves; "
-            f"{approved} approved, {len(failed)} failed."
-        ]
-        if unknown_types:
-            summary_parts.append(
-                f"⚠ {unmatched_count} resources with {len(unknown_types)} unhandled "
-                f"AWS types: {', '.join(unknown_types[:5])}"
-                + (" …" if len(unknown_types) > 5 else "")
-            )
-        if skipped:
-            # De-dup while preserving order
-            dedup_skipped = list(dict.fromkeys(skipped))
-            summary_parts.append(
-                f"skipped {len(dedup_skipped)} skills w/ no input: {', '.join(dedup_skipped)}"
-            )
-
-        return OrchestratorResult(
-            migration_id=migration_id,
-            max_iterations=self.max_iterations,
-            confidence_threshold=self.confidence_threshold,
-            elapsed_seconds=round(elapsed, 2),
-            total_resources=len(resources),
-            matched_resources=matched_count,
-            unmatched_resource_count=unmatched_count,
-            unknown_resource_types=unknown_types,
-            skipped_skills=list(dict.fromkeys(skipped)),
-            waves=waves_report,
-            skills=results,
-            total_writer_tool_calls=total_w,
-            total_reviewer_tool_calls=total_r,
-            failed_skills=failed,
-            summary=" · ".join(summary_parts),
-        )
+    elapsed = time.perf_counter() - t_start
+    return _compose_result(
+        migration_id=migration_id,
+        max_iterations=max_iterations,
+        confidence_threshold=confidence_threshold,
+        resources=resources,
+        ctx=ctx,
+        narrative=narrative,
+        elapsed=elapsed,
+    )
 
 
-# ─── Entry points used by the API + job_runner ────────────────────────────────
+# ─── Public entry points ──────────────────────────────────────────────────────
 
 async def run_migration(
     migration_id: str,
@@ -583,24 +384,39 @@ async def run_migration(
     confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
     tenant_id: str | None = None,
     aws_connection_id: str | None = None,
+    max_turns: int = 60,
 ) -> dict:
-    """Run the full orchestrator for one migration.
+    """Run the full LLM-driven orchestrator for one migration.
 
     If ``resources`` isn't supplied, load them from the ``resources`` table
-    for this migration's AWS connection.
+    for this migration's AWS connection. The orchestrator agent will call
+    tools to inspect + dispatch; this function just seeds the context,
+    invokes the agent, and composes the final OrchestratorResult.
+
+    Args:
+        migration_id: UUID string for the migration.
+        resources: Optional pre-loaded list of {aws_type, raw_config, …}
+            dicts. If None, loaded from the DB.
+        max_iterations: Default max writer↔reviewer rounds per skill.
+        confidence_threshold: Default early-stop threshold per skill.
+        tenant_id / aws_connection_id: Threaded into MigrationContext for
+            context-scoped tools.
+        max_turns: Safety cap on total orchestrator LLM turns (default 60).
+
+    Returns:
+        ``OrchestratorResult.as_dict()``.
     """
     if resources is None:
         resources = _load_resources_sync(migration_id)
 
-    orchestrator = MigrationOrchestrator(
-        max_iterations=max_iterations,
-        confidence_threshold=confidence_threshold,
-    )
-    result = await orchestrator.run(
+    result = await _run_orchestrator_agent(
         migration_id=migration_id,
         resources=resources,
+        max_iterations=max_iterations,
+        confidence_threshold=confidence_threshold,
         tenant_id=tenant_id,
         aws_connection_id=aws_connection_id,
+        max_turns=max_turns,
     )
     return result.as_dict()
 
@@ -612,7 +428,14 @@ async def run_skill(
     confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
     migration_id: str | None = None,
 ) -> dict:
-    """Run a single skill group standalone (bypasses the orchestrator)."""
+    """Run a single skill group standalone (bypasses the orchestrator).
+
+    Used by the single-skill-run API route and the plan orchestrator's
+    per-app-group path — the orchestrator agent isn't useful when you
+    already know which skill to run and on what input.
+    """
+    from app.agents.skill_group import get_skill_group
+
     group = get_skill_group(
         skill_type,
         max_iterations=max_iterations,
@@ -624,12 +447,13 @@ async def run_skill(
 
 
 def _load_resources_sync(migration_id: str) -> list[dict]:
-    """Fetch discovered resources for a migration via a sync engine (called
-    from async code, but does its own session — short-lived, fine)."""
+    """Fetch discovered resources for a migration via a sync engine.
+
+    Called from async code but uses a sync session — short-lived, fine.
+    """
     import uuid as _uuid
     from sqlalchemy import create_engine, select
     from sqlalchemy.orm import sessionmaker
-    from app.config import settings
     from app.db.models import Migration, Resource
 
     engine = create_engine(settings.DATABASE_URL.replace("+asyncpg", ""), echo=False)

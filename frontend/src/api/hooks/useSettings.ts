@@ -11,7 +11,7 @@ export interface ModelInfo {
 export interface ModelSettings {
   writer_model: string;
   reviewer_model: string;
-  orchestrator_model?: string;   // reserved — orchestrator is Python today
+  orchestrator_model?: string;   // drives the top-level planner/dispatcher agent
   available: ModelInfo[];
 }
 

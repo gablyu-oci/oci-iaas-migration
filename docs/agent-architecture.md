@@ -63,18 +63,23 @@ artifact.
 
 | Tool | Scope | Used by | Context-scoped | Read-only | Description |
 |---|---|---|:---:|:---:|---|
-| `lookup_aws_mapping` | skill | writer, reviewer | — | ✅ | Resolve an AWS CloudFormation type to its canonical OCI target from data/mappings/resources.yaml. |
-| `list_resources_for_skill` | skill | writer | — | ✅ | Enumerate every AWS type a given skill is allowed to translate. |
-| `terraform_validate` | skill | writer | — | ✅ | Run `terraform init -backend=false && terraform validate -json` on the supplied HCL inside a bubblewrap sandbox. The agent uses this to self-check correctness before returning. |
+| `lookup_aws_mapping` | shared | writer, reviewer, orchestrator | — | ✅ | Resolve an AWS CloudFormation type to its canonical OCI target from data/mappings/resources.yaml. |
+| `list_resources_for_skill` | shared | writer, orchestrator | — | ✅ | Enumerate every AWS type a given skill is allowed to translate. |
+| `terraform_validate` | shared | writer, orchestrator | — | ✅ | Run `terraform init -backend=false && terraform validate -json` on the supplied HCL inside a bubblewrap sandbox. Writer agents use this to self-check correctness before returning; the orchestrator uses it at end-of-run to sanity-check the synthesized bundle. |
 | `list_discovered_resources` | orchestrator | orchestrator | ✅ | ✅ | List AWS resources already discovered for the current migration. Reads ``migration_id`` from the trusted MigrationContext — the LLM cannot target a different migration. |
 | `count_resources_by_type` | orchestrator | orchestrator | ✅ | ✅ | Count discovered AWS resources for the current migration, grouped by ``aws_type``. Also reads ``migration_id`` from MigrationContext. |
+| `get_skill_catalog` | orchestrator | orchestrator | — | ✅ | List every registered skill: skill_type, display_name, description, input_shape_hint, claimed AWS types, and whether it calls terraform_validate. The orchestrator calls this once to learn its arsenal. |
+| `classify_resource_type` | orchestrator | orchestrator | — | ✅ | Determine which skill (if any) claims a given AWS CFN type. Returns a hint with the canonical YAML mapping row for novel/unclaimed types so the orchestrator can decide how to route them. |
+| `get_dependency_guidance` | orchestrator | orchestrator | — | ✅ | Return the canonical IaaS dependency-wave ordering (VCN before subnets before instances, etc.) as guidance the orchestrator can follow or deviate from. |
+| `run_skill_group` | orchestrator | orchestrator | ✅ | — | Spawn a writer+reviewer pair for one skill and wait for its bounded review-edit loop to finish. Records a structured invocation entry on MigrationContext.run_state so the Python composer can assemble the final OrchestratorResult. |
+| `run_skills_parallel` | orchestrator | orchestrator | ✅ | — | Run multiple skill groups concurrently via asyncio.gather. Preferred for skills in the same dependency wave (e.g., storage + database + data_migration_planning). |
 
 ## Agent roles
 
 ### orchestrator
-- **Model:** n/a (Python code)
-- **Tools:** _(none)_
-- Python-driven (not LLM-driven). Loads the discovered resource inventory, decides which skill groups are applicable, and dispatches them across ``DEPENDENCY_WAVES`` with parallel execution within each wave. Does not itself call the LLM — the LLM calls happen inside each SkillGroup.
+- **Model:** settings.LLM_ORCHESTRATOR_MODEL
+- **Tools:** lookup_aws_mapping, list_resources_for_skill, terraform_validate, list_discovered_resources, count_resources_by_type, get_skill_catalog, classify_resource_type, get_dependency_guidance, run_skill_group, run_skills_parallel
+- Top-level LLM agent with full dispatch authority. Inspects the discovered inventory via tools, classifies novel resource types, spawns writer+reviewer skill groups (serial via run_skill_group or parallel via run_skills_parallel), and runs terraform_validate at end-of-run. The dependency-wave ordering is guidance, not enforcement — the orchestrator can deviate when an inventory calls for it. Python only wraps the agent: seeds MigrationContext, invokes the Runner, and composes OrchestratorResult from the shared run_state accumulator.
 
 ### writer
 - **Model:** settings.LLM_WRITER_MODEL
@@ -88,12 +93,13 @@ artifact.
 
 ## Orchestrator workflow
 
-- **Type:** dependency-wave parallel dispatch
-- **Concurrency:** Within a wave every applicable skill runs via asyncio.gather; waves themselves are sequential.
+- **Type:** LLM-driven agent with tool-based dispatch
+- **Concurrency:** Orchestrator agent chooses dispatch; run_skills_parallel fans a wave out via asyncio.gather. Waves are guidance — orchestrator may deviate.
 - **Loop policy:**
   - per_skill_loop: writer → reviewer → (revise) → review, bounded
   - max_iterations: user-configurable (default 3)
   - early_stop: reviewer returns APPROVED/APPROVED_WITH_NOTES and confidence >= confidence_threshold (default 0.90)
+  - orchestrator_turn_cap: 60 turns (safety cap on agent loops)
 
 ### Dependency waves
 

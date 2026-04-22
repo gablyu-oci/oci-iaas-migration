@@ -13,13 +13,16 @@ class Settings(BaseSettings):
 
     # Default models. Override per skill via MODEL_ROUTING (app.gateway.model_gateway)
     # or at runtime through the Settings page.
+    #
+    # - ``LLM_WRITER_MODEL`` drives the writer agents (drafts + revisions).
+    # - ``LLM_REVIEWER_MODEL`` drives the reviewer agents (scoring + feedback).
+    # - ``LLM_ORCHESTRATOR_MODEL`` drives the top-level orchestrator agent
+    #   (inventory inspection + skill dispatch + final validation).
+    #
+    # The orchestrator benefits from a reasoning-capable model since it does
+    # multi-step planning, so default it to the same model as writer.
     LLM_WRITER_MODEL: str = "oci/openai.gpt-5.4"
     LLM_REVIEWER_MODEL: str = "oci/openai.gpt-5.4-mini"
-
-    # Orchestrator model reserved for future use — today the
-    # ``MigrationOrchestrator`` is Python code and doesn't call the LLM
-    # directly. Kept here so the Settings-stored value still deserializes
-    # cleanly if it was set previously.
     LLM_ORCHESTRATOR_MODEL: str = "oci/openai.gpt-5.4"
 
     JWT_SECRET: str = "change-me-in-production"

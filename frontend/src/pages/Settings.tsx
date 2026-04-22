@@ -271,11 +271,13 @@ function ModelsSection() {
 
   const [writer, setWriter] = useState<string>('');
   const [reviewer, setReviewer] = useState<string>('');
+  const [orchestrator, setOrchestrator] = useState<string>('');
 
   useEffect(() => {
     if (data) {
       setWriter(data.writer_model);
       setReviewer(data.reviewer_model);
+      setOrchestrator(data.orchestrator_model ?? data.writer_model);
     }
   }, [data]);
 
@@ -283,11 +285,15 @@ function ModelsSection() {
     return <div className="skel rounded-xl" style={{ height: '280px' }} />;
   }
 
-  const dirty = writer !== data.writer_model || reviewer !== data.reviewer_model;
+  const dirty =
+    writer !== data.writer_model ||
+    reviewer !== data.reviewer_model ||
+    orchestrator !== (data.orchestrator_model ?? data.writer_model);
 
   const save = () => update.mutate({
     writer_model: writer,
     reviewer_model: reviewer,
+    orchestrator_model: orchestrator,
   });
 
   return (
@@ -305,21 +311,30 @@ function ModelsSection() {
         </h3>
         <p className="text-xs mb-4" style={{ color: 'var(--color-text-dim)' }}>
           Only models verified to respond on the configured endpoint are shown.
-          Changes apply to every skill — the Writer model handles enhancement / fix / runbook
-          generation; the Reviewer model handles review / 6R classification / grouping.
+          Three agents drive the pipeline: the <strong>Orchestrator</strong> plans the
+          migration and dispatches skills; each skill spawns a <strong>Writer</strong>
+          {' '}(drafts) and a <strong>Reviewer</strong> (scores + feedback) that loop
+          until the reviewer approves or hits the iteration cap.
         </p>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+          <ModelSelect
+            label="Orchestrator model"
+            hint="Top-level planner — inventory inspection, skill dispatch, novel-type routing, final validation. Benefits from a reasoning-capable model."
+            value={orchestrator}
+            onChange={setOrchestrator}
+            models={data.available}
+          />
           <ModelSelect
             label="Writer model"
-            hint="Enhancement, fix, runbook, resource generation — prefers a capable model."
+            hint="Per-skill drafts + revisions. Prefers a capable model."
             value={writer}
             onChange={setWriter}
             models={data.available}
           />
           <ModelSelect
             label="Reviewer model"
-            hint="Review, 6R classification, grouping refinement — smaller/faster is fine."
+            hint="Per-skill scoring, 6R classification, grouping refinement — smaller/faster is fine."
             value={reviewer}
             onChange={setReviewer}
             models={data.available}
@@ -332,8 +347,10 @@ function ModelsSection() {
         >
           <div className="text-xs" style={{ color: 'var(--color-text-dim)' }}>
             <strong style={{ color: 'var(--color-text-bright)' }}>Runtime:</strong>{' '}
-            all skills run through the agent runtime (<code style={{ fontFamily: 'var(--font-mono)' }}>openai-agents</code> SDK)
-            with a bounded writer→reviewer loop. Max iterations is picked per job on the skill-run form.
+            the orchestrator is an LLM agent with tool-based dispatch (<code style={{ fontFamily: 'var(--font-mono)' }}>openai-agents</code> SDK);
+            it inspects the inventory, classifies novel resource types, spawns per-skill writer→reviewer
+            loops (parallel or serial), and runs <code style={{ fontFamily: 'var(--font-mono)' }}>terraform_validate</code>
+            {' '}at end-of-run. Max iterations per skill is picked per job on the skill-run form.
             See <a href="https://github.com/gablyu-oci/oci-iaas-migration/blob/main/docs/agent-architecture.md" target="_blank" rel="noreferrer" style={{ color: 'var(--color-ember)' }}>docs/agent-architecture.md</a> for
             the tool registry + workflow reference.
           </div>

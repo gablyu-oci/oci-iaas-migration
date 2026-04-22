@@ -4,12 +4,13 @@ This module is the **single source of truth** for model selection. Every
 orchestrator and service that picks a model should call ``get_model(
 skill_type, agent_type)`` rather than hardcode a model ID.
 
-Model identities live in only two places:
+Model identities live in only three places:
 
-    app.config.settings.LLM_WRITER_MODEL    # writer/enhancement/fix/runbook
-    app.config.settings.LLM_REVIEWER_MODEL  # review/classifier/anomalies
+    app.config.settings.LLM_WRITER_MODEL        # writer/enhancement/fix/runbook
+    app.config.settings.LLM_REVIEWER_MODEL      # review/classifier/anomalies
+    app.config.settings.LLM_ORCHESTRATOR_MODEL  # top-level orchestrator planning
 
-``MODEL_ROUTING`` below binds each (skill, agent) pair to one of those two
+``MODEL_ROUTING`` below binds each (skill, agent) pair to one of those three
 roles. Change the env var (or override ``MODEL_ROUTING[...]`` at runtime)
 and every call site picks up the new model on next ``get_model`` invocation.
 """
@@ -26,6 +27,10 @@ def _writer() -> str:
 
 def _reviewer() -> str:
     return settings.LLM_REVIEWER_MODEL
+
+
+def _orchestrator() -> str:
+    return settings.LLM_ORCHESTRATOR_MODEL
 
 
 # skill_type -> agent_type -> role resolver.
@@ -86,6 +91,13 @@ MODEL_ROUTING: dict[str, dict[str, object]] = {
         "review": _reviewer,
         "fix": _writer,
     },
+    # Top-level orchestrator — separate model role because it does
+    # multi-step planning + tool coordination, not drafting or reviewing.
+    "orchestrator": {
+        "plan":     _orchestrator,
+        "dispatch": _orchestrator,
+    },
+
     # Non-skill services that still need to talk to an LLM.
     "sixr_classification": {"classify": _reviewer},
     "app_grouping":        {"group":    _reviewer},
