@@ -1,4 +1,4 @@
-# OCI IaaS Migration Platform — Startup Guide
+# OCI Migration Tool — Startup Guide
 
 ## Prerequisites
 
@@ -6,125 +6,125 @@
 - Python 3.10+
 - Node.js 18+ (20 recommended — Vite 8 requires it)
 - PostgreSQL 14+
-- Redis 6+ (optional — jobs run in-process without it)
+- Redis 6+ *(optional — jobs run in-process without it)*
+- `terraform` CLI on `$PATH` — agents use it to self-validate generated HCL
+- `bwrap` (bubblewrap) — *optional but recommended*; sandboxes `terraform_validate`
+- Network access to an **OpenAI-compatible chat-completions endpoint**. Default is the Oracle-internal Llama Stack (anonymous, in-network).
 
-## 1. Install System Dependencies
+## 1. System dependencies
 
 ```bash
-# PostgreSQL
 sudo apt-get update
-sudo apt-get install -y postgresql postgresql-contrib
-
-# Redis (optional but recommended for background job queue)
-sudo apt-get install -y redis-server
-
-# Start services
-sudo systemctl start postgresql
-sudo systemctl enable postgresql
-sudo systemctl start redis-server   # if installed
-sudo systemctl enable redis-server  # if installed
+sudo apt-get install -y postgresql postgresql-contrib redis-server bubblewrap terraform
+sudo systemctl enable --now postgresql
+sudo systemctl enable --now redis-server    # optional
 ```
 
-## 2. Create Database
+## 2. Database
 
 ```bash
-sudo -u postgres psql -c "CREATE DATABASE oci_migration;"
+sudo -u postgres createdb oci_migration
 sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'postgres';"
 ```
 
-## 3. Backend Setup
+Tables are auto-created on backend startup.
+
+## 3. Backend
 
 ```bash
-cd /home/ubuntu/oci-iaas-migration/backend
-
-# Install Python dependencies
+cd backend
 pip3 install -r requirements.txt
-
-# Create environment config
-cp .env.example .env
-# Edit .env and set JWT_SECRET (generate with: openssl rand -hex 32)
-```
-
-### Environment Variables
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `DATABASE_URL` | No | `postgresql+asyncpg://postgres:postgres@localhost:5432/oci_migration` | PostgreSQL connection |
-| `REDIS_URL` | No | `redis://localhost:6379` | Redis connection (for ARQ job queue) |
-| `ANTHROPIC_API_KEY` | No | — | Anthropic API key. Leave **empty** to use Claude Code agent (OAuth) instead |
-| `JWT_SECRET` | Yes | `change-me-in-production` | Secret for JWT token signing |
-| `JWT_EXPIRE_MINUTES` | No | `1440` | JWT token expiry (24 hours) |
-
-### AI Backend: Claude Code Agent vs API Key
-
-The app supports two modes for AI features (6R classification, etc.):
-
-1. **Claude Code Agent (default)** — Leave `ANTHROPIC_API_KEY` empty. The app uses the `AgentSDKClient` adapter which authenticates via Claude Code OAuth. No API key needed.
-2. **Anthropic API** — Set `ANTHROPIC_API_KEY=sk-ant-...` to use the Anthropic API directly.
-
-## 4. Start Backend
-
-```bash
-cd /home/ubuntu/oci-iaas-migration/backend
+cp .env.example .env     # then edit — at minimum set JWT_SECRET
 uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 ```
 
-The backend will:
-- Auto-create all database tables on startup
-- Seed reference data (service mappings, IAM mappings)
-- Serve API at http://localhost:8001
-- Swagger docs at http://localhost:8001/docs
+### Environment variables
 
-## 5. Start Frontend
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `DATABASE_URL` | no | `postgresql+asyncpg://postgres:postgres@localhost:5432/oci_migration` | Postgres connection |
+| `REDIS_URL` | no | `redis://localhost:6379` | Redis connection (ARQ job queue) |
+| `LLM_BASE_URL` | no | `https://llama-stack.ai-apps-ord.oci-incubations.com/v1` | OpenAI-compatible chat-completions URL |
+| `LLM_API_KEY` | no | *(empty)* | API key — leave blank for anonymous endpoints (e.g., the internal Llama Stack) |
+| `LLM_WRITER_MODEL` | no | `oci/openai.gpt-5.4` | Writer model used by agent runtime |
+| `LLM_REVIEWER_MODEL` | no | `oci/openai.gpt-5.4-mini` | Reviewer model used by agent runtime |
+| `LLM_ORCHESTRATOR_MODEL` | no | `oci/openai.gpt-5.4` | *(reserved — orchestrator is Python today; no LLM call)* |
+| `JWT_SECRET` | **yes** | `change-me-in-production` | Secret for JWT signing — `openssl rand -hex 32` |
+| `JWT_EXPIRE_MINUTES` | no | `1440` | JWT TTL (24h) |
+
+Every `LLM_*` var is also editable at runtime through the Settings page — the
+chosen values are persisted to the `system_settings` DB table and take effect
+on the next LLM call without a backend restart.
+
+The writer + reviewer models are user-picked from a dropdown populated by a
+live probe of `/v1/models` on the configured endpoint. See
+[`docs/llm-models.md`](docs/llm-models.md) for the catalog of models that
+actually work.
+
+## 4. Frontend
 
 ```bash
-cd /home/ubuntu/oci-iaas-migration/frontend
-npm install   # first time only
+cd frontend
+npm install          # first time only
 npm run dev
 ```
 
-Frontend runs at http://localhost:5173
-
-## 6. (Optional) Start ARQ Worker
+## 5. *(Optional)* ARQ worker
 
 For background job processing via Redis:
 
 ```bash
-cd /home/ubuntu/oci-iaas-migration/backend
+cd backend
 arq app.services.job_runner.WorkerSettings
 ```
 
-Without the ARQ worker, jobs run in child processes (works fine for development).
+Without the ARQ worker, jobs run in child processes per request — fine for dev.
 
-## Access Points
+## 6. Access
 
 | Service | URL |
-|---------|-----|
+|---|---|
 | Frontend | http://localhost:5173 |
 | Backend API | http://localhost:8001 |
-| Swagger Docs | http://localhost:8001/docs |
-| Health Check | http://localhost:8001/health |
+| Swagger | http://localhost:8001/docs |
+| Health | http://localhost:8001/health |
 
-## First-Time Usage
+## First-time usage
 
-1. **Register** — Create an account at the login page
-2. **Settings** — Add an AWS connection (access key or IAM role)
-3. **Create Migration** — Name your migration project, link AWS connection
-4. **Extract Resources** — Click "Extract" to discover AWS resources via boto3
-5. **Run Assessment** — Click "Run Assessment" on the migration detail page
-   - Collects CloudWatch metrics
-   - Rightsizes to OCI shapes
-   - Checks OS compatibility
-   - Maps dependencies
-   - Groups into applications
-   - Classifies 6R strategy (via Claude)
-   - Scores migration readiness
-   - Calculates TCO comparison
-6. **View Results** — Assessment detail page with 5 tabs: Overview, Resources, Applications, Dependencies, OS Compatibility
+1. **Register** an account at the login page.
+2. **Settings → LLM Endpoint** — the default points at the Oracle Llama Stack; swap if you need a different backend.
+3. **Settings → LLM Models** — pick writer + reviewer models (defaults to `gpt-5.4` / `gpt-5.4-mini`).
+4. Add an **AWS connection** (IAM access key or an existing local AWS profile).
+5. **Create a migration**, extract resources, run the assessment.
+6. **Generate plan** — the Migration Orchestrator dispatches writer+reviewer agent pairs across dependency waves, self-validating Terraform as it goes. See [`docs/agent-architecture.md`](docs/agent-architecture.md) for the full flow.
 
 ## Troubleshooting
 
-- **Port in use**: `lsof -i :8001` or `lsof -i :5173` to find and kill conflicting processes
-- **DB connection refused**: Ensure PostgreSQL is running: `sudo systemctl status postgresql`
-- **Missing tables**: Tables auto-create on backend startup via `Base.metadata.create_all()`
-- **Frontend can't reach backend**: Check VITE_API_URL in frontend (defaults to http://localhost:8001)
+| Symptom | Likely cause / fix |
+|---|---|
+| Port already in use | `kill $(lsof -t -i:8001)` (or `:5173`) |
+| `DB connection refused` | `sudo systemctl status postgresql` |
+| LLM calls 504 on large prompts | Upstream gateway timeout. Client retry is configured (5 tries, 300s read timeout). If it still fails, switch to a smaller writer (e.g., `gpt-4.1` instead of reasoning `gpt-5.4`). |
+| `terraform: command not found` in agent logs | Install terraform, or accept that `terraform_validate` will skip-with-warning (the agent handles this gracefully). |
+| Dropdown shows "— unknown —" model | Run `python3 scripts/probe_llm_models.py` to refresh the catalog from the live endpoint. |
+| Frontend can't reach backend | Check `VITE_API_URL` in `frontend/.env`; defaults to `http://localhost:8001`. Behind nginx, use the vhost URL. |
+
+## Re-probing the model catalog
+
+```bash
+python3 scripts/probe_llm_models.py
+```
+
+Writes `docs/llm-models.md` + `docs/llm-models.json` with the current
+availability of every model on the endpoint. The Settings dropdown reads
+from the JSON sidecar.
+
+## Regenerating agent architecture docs
+
+```bash
+python3 scripts/render_agent_docs.py
+```
+
+Rebuilds `docs/agent-architecture.md` from the machine-readable registry
+at `backend/app/agents/registry.py`. Run this whenever a tool, skill, or
+dependency wave changes.

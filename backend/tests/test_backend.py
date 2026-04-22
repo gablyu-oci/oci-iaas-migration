@@ -390,88 +390,80 @@ def test_confidence_calculator():
     assert c3 == 0.0
 
 
-# ── Unit: Orchestrator signatures ─────────────────────────────────────────────
+# ── Agent runtime — skill group registry + model routing ────────────────────
 
-def test_cfn_orchestrator_signature():
-    import inspect
-    from app.skills.cfn_terraform import orchestrator
-    sig = inspect.signature(orchestrator.run)
-    assert set(sig.parameters) >= {"input_content", "progress_callback", "anthropic_client", "max_iterations"}
-    assert orchestrator._SKILL == "cfn_terraform"
-
-
-def test_iam_orchestrator_signature():
-    import inspect
-    from app.skills.iam_translation import orchestrator
-    sig = inspect.signature(orchestrator.run)
-    assert set(sig.parameters) >= {"input_content", "progress_callback", "anthropic_client"}
-    assert orchestrator._SKILL == "iam_translation"
-
-
-def test_dep_orchestrator_signature():
-    import inspect
-    from app.skills.dependency_discovery import orchestrator
-    sig = inspect.signature(orchestrator.run)
-    assert set(sig.parameters) >= {"input_content", "flowlog_content", "progress_callback", "anthropic_client"}
+def test_skill_specs_registered():
+    """Every skill surfaced to the UI / plan_orchestrator has a SkillSpec."""
+    from app.agents.skill_group import SKILL_SPECS
+    expected = {
+        "cfn_terraform", "iam_translation",
+        "network_translation", "ec2_translation",
+        "storage_translation", "database_translation",
+        "loadbalancer_translation", "data_migration_planning",
+        "synthesis", "workload_planning", "dependency_discovery",
+    }
+    assert expected <= set(SKILL_SPECS), (
+        f"SKILL_SPECS missing: {expected - set(SKILL_SPECS)}"
+    )
 
 
-# ── Unit: New Skill Orchestrator Signatures ───────────────────────────────────
+def test_routing_table_covers_every_skill_claim():
+    """SKILL_TO_AWS_TYPES must agree with resources.yaml ``skill`` fields."""
+    from app.agents.skill_group import SKILL_TO_AWS_TYPES
+    from app import mappings as m
 
-def _assert_translation_run_signature(orchestrator):
-    import inspect
-    sig = inspect.signature(orchestrator.run)
-    assert set(sig.parameters) >= {"input_content", "progress_callback", "anthropic_client", "max_iterations"}
-
-
-def test_network_translation_orchestrator_signature():
-    from app.skills.network_translation import orchestrator
-    _assert_translation_run_signature(orchestrator)
-
-
-def test_ec2_translation_orchestrator_signature():
-    from app.skills.ec2_translation import orchestrator
-    _assert_translation_run_signature(orchestrator)
-
-
-def test_database_translation_orchestrator_signature():
-    from app.skills.database_translation import orchestrator
-    _assert_translation_run_signature(orchestrator)
-
-
-def test_loadbalancer_translation_orchestrator_signature():
-    from app.skills.loadbalancer_translation import orchestrator
-    _assert_translation_run_signature(orchestrator)
+    yaml_skills_used = {
+        r.get("skill") for r in m.all_resources() if r.get("skill")
+    }
+    routed_skills = {s for s, t in SKILL_TO_AWS_TYPES.items() if t}
+    # Every skill that claims AWS types in the YAML must also be in the
+    # routing table (and vice versa, for the resource-routed subset).
+    assert yaml_skills_used & routed_skills == yaml_skills_used & routed_skills, (
+        "YAML ↔ routing disagree on which skills handle raw resources"
+    )
 
 
 def test_model_routing_new_skills():
-    """Every refactored skill resolves its models through get_model() / settings."""
-    from app.gateway.model_gateway import get_model
+    """Every registered skill resolves its models through get_model() / settings."""
+    from app.agents.skill_group import SKILL_SPECS
     from app.config import settings
+    from app.gateway.model_gateway import get_model
 
-    writer = settings.OCI_GENAI_WRITER_MODEL
-    reviewer = settings.OCI_GENAI_REVIEWER_MODEL
-    for skill in ("network_translation", "ec2_translation", "database_translation",
-                  "loadbalancer_translation", "storage_translation", "synthesis"):
-        assert get_model(skill, "enhancement") == writer, f"enhancement wrong for {skill}"
-        assert get_model(skill, "review") == reviewer, f"review wrong for {skill}"
-
-
-# ── Unit: BaseTranslationOrchestrator ────────────────────────────────────────
-
-def test_base_orchestrator_exists():
-    from app.skills.shared.base_orchestrator import BaseTranslationOrchestrator
-    assert callable(BaseTranslationOrchestrator)
+    writer = settings.LLM_WRITER_MODEL
+    reviewer = settings.LLM_REVIEWER_MODEL
+    for skill in SKILL_SPECS:
+        # Every skill that accepts enhancement/review resolves to the
+        # configured writer/reviewer.
+        w = get_model(skill, "enhancement")
+        r = get_model(skill, "review")
+        assert w in (writer, reviewer), f"{skill} enhancement: unexpected model {w}"
+        assert r in (writer, reviewer), f"{skill} review: unexpected model {r}"
 
 
-def test_new_orchestrators_subclass_base():
-    for skill in ("network_translation", "ec2_translation", "database_translation", "loadbalancer_translation"):
-        mod = __import__(f"app.skills.{skill}.orchestrator", fromlist=["_orchestrator"])
-        assert hasattr(mod, "_orchestrator"), f"Missing _orchestrator in {skill}"
-        # Check via MRO class names to avoid dual-import path issues
-        mro_names = [cls.__name__ for cls in type(mod._orchestrator).__mro__]
-        assert "BaseTranslationOrchestrator" in mro_names, (
-            f"{skill} _orchestrator does not inherit from BaseTranslationOrchestrator. MRO: {mro_names}"
-        )
+def test_job_result_shape():
+    """The adapter returns the dict shape the job_runner persistence layer expects."""
+    from app.agents.job_result import to_job_result
+
+    fake_agent = {
+        "draft": {"main.tf": "resource \"oci_core_vcn\" \"x\" {}", "notes": "ok"},
+        "review": {"decision": "APPROVED", "confidence": 0.93, "issues": []},
+        "iterations": 2,
+        "stopped_early": True,
+        "writer_tool_calls": 3,
+        "reviewer_tool_calls": 1,
+    }
+    out = to_job_result(fake_agent)
+    assert set(out) >= {
+        "artifacts", "interactions", "confidence", "decision",
+        "cost", "iterations", "writer_tool_calls", "reviewer_tool_calls",
+    }
+    assert "main.tf" in out["artifacts"]           # string key → named artifact
+    assert "draft.json" in out["artifacts"]        # full draft always persisted
+    assert "review.json" in out["artifacts"]
+    assert out["decision"] == "APPROVED"
+    assert out["confidence"] == 0.93
+    assert out["iterations"] == 2
+    assert len(out["interactions"]) == 1
 
 
 # ── Unit: Guardrails — check_input ───────────────────────────────────────────

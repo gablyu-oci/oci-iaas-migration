@@ -284,7 +284,11 @@ function ModelsSection() {
   }
 
   const dirty = writer !== data.writer_model || reviewer !== data.reviewer_model;
-  const save = () => update.mutate({ writer_model: writer, reviewer_model: reviewer });
+
+  const save = () => update.mutate({
+    writer_model: writer,
+    reviewer_model: reviewer,
+  });
 
   return (
     <div className="space-y-4">
@@ -320,6 +324,19 @@ function ModelsSection() {
             onChange={setReviewer}
             models={data.available}
           />
+        </div>
+
+        <div
+          className="rounded-lg p-3 mb-4"
+          style={{ background: 'var(--color-well)', border: '1px dashed var(--color-fence)' }}
+        >
+          <div className="text-xs" style={{ color: 'var(--color-text-dim)' }}>
+            <strong style={{ color: 'var(--color-text-bright)' }}>Runtime:</strong>{' '}
+            all skills run through the agent runtime (<code style={{ fontFamily: 'var(--font-mono)' }}>openai-agents</code> SDK)
+            with a bounded writer→reviewer loop. Max iterations is picked per job on the skill-run form.
+            See <a href="https://github.com/gablyu-oci/oci-iaas-migration/blob/main/docs/agent-architecture.md" target="_blank" rel="noreferrer" style={{ color: 'var(--color-ember)' }}>docs/agent-architecture.md</a> for
+            the tool registry + workflow reference.
+          </div>
         </div>
 
         <div className="flex items-center gap-3">

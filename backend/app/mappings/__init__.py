@@ -65,6 +65,13 @@ def rds_engine_mapping() -> dict[str, dict[str, Any]]:
     return _load("resources").get("database", {}).get("rds_engine", {}) or {}
 
 
+def non_rds_engine_mapping() -> dict[str, dict[str, Any]]:
+    """Managed-DB engines we encounter outside RDS (Redis, Mongo, OpenSearch,
+    Kafka, Cassandra, etc.). Consumed by database_translation when input
+    originates from ElastiCache / DocumentDB / OpenSearch / MSK / etc."""
+    return _load("resources").get("database", {}).get("non_rds_engine", {}) or {}
+
+
 def local_db_keywords() -> dict[str, dict[str, Any]]:
     return _load("resources").get("database", {}).get("local_db_keywords", {}) or {}
 
@@ -77,6 +84,19 @@ def aws_instance_specs() -> dict[str, dict[str, Any]]:
 
 def oci_flex_shapes() -> dict[str, dict[str, Any]]:
     return _load("instance_shapes").get("oci_flex_shapes", {}) or {}
+
+
+def oci_fixed_shapes() -> dict[str, dict[str, Any]]:
+    """OCI non-flex shapes (GPU + bare metal). Billed per-shape-per-hour
+    instead of per-OCPU/per-GB like flex shapes."""
+    return _load("instance_shapes").get("oci_fixed_shapes", {}) or {}
+
+
+def aws_family_to_oci_shape() -> dict[str, str]:
+    """AWS family prefix ('m7i', 't4g', 'p5', …) → preferred OCI shape name.
+    Used by rightsizing to pick an arch-appropriate OCI target before falling
+    back to a default general-purpose shape."""
+    return _load("instance_shapes").get("aws_family_to_oci", {}) or {}
 
 
 def hours_per_month() -> float:
@@ -118,6 +138,48 @@ def oci_annual_flex_discount() -> float:
 
 def oci_monthly_flex_discount() -> float:
     return float(_load("pricing").get("oci_commitment_discounts", {}).get("monthly_flex", 0.17))
+
+
+def oci_four_year_discount() -> float:
+    return float(_load("pricing").get("oci_commitment_discounts", {}).get("four_year_flex", 0.50))
+
+
+# New-section accessors. These return the whole sub-dict so callers can pick
+# the specific rate they need without a thicket of individual getters.
+
+def load_balancer_pricing() -> dict[str, float]:
+    """Hourly LB rates (ALB/NLB/OCI LB shapes, OCI NLB per-GB)."""
+    return _load("pricing").get("load_balancer", {}) or {}
+
+
+def kms_pricing() -> dict[str, float]:
+    """KMS / Vault key monthly + API request rates."""
+    return _load("pricing").get("kms", {}) or {}
+
+
+def secrets_pricing() -> dict[str, float]:
+    """Secrets Manager / OCI Vault Secret monthly + API rates."""
+    return _load("pricing").get("secrets", {}) or {}
+
+
+def compute_discounts() -> dict[str, float]:
+    """Spot / preemptible discount multipliers."""
+    return _load("pricing").get("compute", {}) or {}
+
+
+def database_markups() -> dict[str, float]:
+    """Managed-DB markup multipliers (RDS, OCI DB, Autonomous)."""
+    return _load("pricing").get("database", {}) or {}
+
+
+def network_pricing() -> dict[str, float]:
+    """Full network pricing section (NAT Gateway, TGW/DRG, VPN, DirectConnect/FastConnect)."""
+    return _load("pricing").get("network", {}) or {}
+
+
+def storage_pricing() -> dict[str, float]:
+    """Full storage pricing section (EBS tiers, S3 tiers, EFS, FSS, request rates)."""
+    return _load("pricing").get("storage", {}) or {}
 
 
 # ─── Prompt injection helpers ─────────────────────────────────────────────────

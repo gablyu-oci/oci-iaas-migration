@@ -16,6 +16,12 @@ class Settings(BaseSettings):
     LLM_WRITER_MODEL: str = "oci/openai.gpt-5.4"
     LLM_REVIEWER_MODEL: str = "oci/openai.gpt-5.4-mini"
 
+    # Orchestrator model reserved for future use — today the
+    # ``MigrationOrchestrator`` is Python code and doesn't call the LLM
+    # directly. Kept here so the Settings-stored value still deserializes
+    # cleanly if it was set previously.
+    LLM_ORCHESTRATOR_MODEL: str = "oci/openai.gpt-5.4"
+
     JWT_SECRET: str = "change-me-in-production"
     JWT_EXPIRE_MINUTES: int = 1440
     model_config = {"env_file": ".env", "extra": "ignore"}

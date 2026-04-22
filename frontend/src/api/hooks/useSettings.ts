@@ -11,7 +11,14 @@ export interface ModelInfo {
 export interface ModelSettings {
   writer_model: string;
   reviewer_model: string;
+  orchestrator_model?: string;   // reserved — orchestrator is Python today
   available: ModelInfo[];
+}
+
+export interface ModelSettingsUpdate {
+  writer_model: string;
+  reviewer_model: string;
+  orchestrator_model?: string;
 }
 
 export interface Credentials {
@@ -42,7 +49,7 @@ export function useModelSettings() {
 export function useUpdateModelSettings() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (body: { writer_model: string; reviewer_model: string }) =>
+    mutationFn: async (body: ModelSettingsUpdate) =>
       (await client.put('/api/settings/models', body)).data as ModelSettings,
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['settings', 'models'] }); },
   });

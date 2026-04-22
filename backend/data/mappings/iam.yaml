@@ -15,55 +15,186 @@
 # per-service discussion the LLM needs beyond the table rows.
 
 actions:
-  # EC2
-  ec2:RunInstances:        {oci_verb: manage, oci_resource: instances,    oci_service: compute}
-  ec2:DescribeInstances:   {oci_verb: inspect, oci_resource: instances,   oci_service: compute}
-  ec2:StopInstances:       {oci_verb: use,    oci_resource: instances,    oci_service: compute}
-  ec2:StartInstances:      {oci_verb: use,    oci_resource: instances,    oci_service: compute}
-  ec2:TerminateInstances:  {oci_verb: manage, oci_resource: instances,    oci_service: compute}
-  ec2:RebootInstances:     {oci_verb: use,    oci_resource: instances,    oci_service: compute}
+  # ── EC2 ─────────────────────────────────────────────────────────────────
+  ec2:RunInstances:               {oci_verb: manage,  oci_resource: instances,     oci_service: compute}
+  ec2:DescribeInstances:          {oci_verb: inspect, oci_resource: instances,     oci_service: compute}
+  ec2:StopInstances:              {oci_verb: use,     oci_resource: instances,     oci_service: compute}
+  ec2:StartInstances:             {oci_verb: use,     oci_resource: instances,     oci_service: compute}
+  ec2:TerminateInstances:         {oci_verb: manage,  oci_resource: instances,     oci_service: compute}
+  ec2:RebootInstances:            {oci_verb: use,     oci_resource: instances,     oci_service: compute}
+  ec2:CreateVolume:               {oci_verb: manage,  oci_resource: volumes,       oci_service: compute}
+  ec2:AttachVolume:               {oci_verb: use,     oci_resource: volumes,       oci_service: compute}
+  ec2:CreateSnapshot:             {oci_verb: manage,  oci_resource: volume-backups, oci_service: compute}
+  ec2:CreateImage:                {oci_verb: manage,  oci_resource: custom-images, oci_service: compute}
+  ec2:DescribeImages:             {oci_verb: inspect, oci_resource: custom-images, oci_service: compute}
 
-  # S3 → Object Storage
-  s3:GetObject:            {oci_verb: read,    oci_resource: objects,     oci_service: object-storage}
-  s3:PutObject:            {oci_verb: manage,  oci_resource: objects,     oci_service: object-storage}
-  s3:DeleteObject:         {oci_verb: manage,  oci_resource: objects,     oci_service: object-storage}
-  s3:ListBucket:           {oci_verb: inspect, oci_resource: buckets,     oci_service: object-storage}
-  s3:CreateBucket:         {oci_verb: manage,  oci_resource: buckets,     oci_service: object-storage}
-  s3:DeleteBucket:         {oci_verb: manage,  oci_resource: buckets,     oci_service: object-storage}
+  # ── VPC / networking ────────────────────────────────────────────────────
+  ec2:CreateVpc:                  {oci_verb: manage,  oci_resource: vcns,          oci_service: virtual-network}
+  ec2:DescribeVpcs:               {oci_verb: inspect, oci_resource: vcns,          oci_service: virtual-network}
+  ec2:CreateSubnet:               {oci_verb: manage,  oci_resource: subnets,       oci_service: virtual-network}
+  ec2:CreateSecurityGroup:        {oci_verb: manage,  oci_resource: network-security-groups, oci_service: virtual-network}
+  ec2:AuthorizeSecurityGroupIngress: {oci_verb: manage, oci_resource: network-security-groups, oci_service: virtual-network}
 
-  # RDS → Database
-  rds:CreateDBInstance:    {oci_verb: manage,  oci_resource: db-systems,  oci_service: database}
-  rds:DescribeDBInstances: {oci_verb: inspect, oci_resource: db-systems,  oci_service: database}
-  rds:DeleteDBInstance:    {oci_verb: manage,  oci_resource: db-systems,  oci_service: database}
-  rds:ModifyDBInstance:    {oci_verb: manage,  oci_resource: db-systems,  oci_service: database}
+  # ── S3 → Object Storage ─────────────────────────────────────────────────
+  s3:GetObject:                   {oci_verb: read,    oci_resource: objects,       oci_service: object-storage}
+  s3:PutObject:                   {oci_verb: manage,  oci_resource: objects,       oci_service: object-storage}
+  s3:DeleteObject:                {oci_verb: manage,  oci_resource: objects,       oci_service: object-storage}
+  s3:ListBucket:                  {oci_verb: inspect, oci_resource: buckets,       oci_service: object-storage}
+  s3:CreateBucket:                {oci_verb: manage,  oci_resource: buckets,       oci_service: object-storage}
+  s3:DeleteBucket:                {oci_verb: manage,  oci_resource: buckets,       oci_service: object-storage}
+  s3:GetBucketPolicy:             {oci_verb: inspect, oci_resource: buckets,       oci_service: object-storage}
+  s3:PutBucketPolicy:             {oci_verb: manage,  oci_resource: buckets,       oci_service: object-storage,
+                                   notes: "Resource-based policies map to IAM policies on the bucket's compartment."}
 
-  # Lambda → Functions
-  lambda:InvokeFunction:   {oci_verb: use,     oci_resource: functions,   oci_service: functions}
-  lambda:CreateFunction:   {oci_verb: manage,  oci_resource: functions,   oci_service: functions}
-  lambda:DeleteFunction:   {oci_verb: manage,  oci_resource: functions,   oci_service: functions}
-  lambda:GetFunction:      {oci_verb: inspect, oci_resource: functions,   oci_service: functions}
+  # ── RDS → Database ──────────────────────────────────────────────────────
+  rds:CreateDBInstance:           {oci_verb: manage,  oci_resource: db-systems,    oci_service: database}
+  rds:DescribeDBInstances:        {oci_verb: inspect, oci_resource: db-systems,    oci_service: database}
+  rds:DeleteDBInstance:           {oci_verb: manage,  oci_resource: db-systems,    oci_service: database}
+  rds:ModifyDBInstance:           {oci_verb: manage,  oci_resource: db-systems,    oci_service: database}
+  rds:CreateDBSnapshot:           {oci_verb: manage,  oci_resource: db-backups,    oci_service: database}
+  rds:RestoreDBInstanceFromDBSnapshot: {oci_verb: manage, oci_resource: db-systems, oci_service: database}
 
-  # IAM → Identity (tricky — AWS roles/policies don't map 1:1 to OCI concepts)
-  iam:CreateRole:          {oci_verb: manage,  oci_resource: dynamic-groups, oci_service: identity,
-                            notes: "AWS roles map to OCI dynamic groups"}
-  iam:AttachRolePolicy:    {oci_verb: manage,  oci_resource: policies,    oci_service: identity}
-  iam:PassRole:            {oci_verb: use,     oci_resource: dynamic-groups, oci_service: identity,
-                            notes: "OCI doesn't have PassRole — authorization is via dynamic group matching"}
+  # ── Lambda → Functions ──────────────────────────────────────────────────
+  lambda:InvokeFunction:          {oci_verb: use,     oci_resource: functions,     oci_service: functions}
+  lambda:CreateFunction:          {oci_verb: manage,  oci_resource: functions,     oci_service: functions}
+  lambda:DeleteFunction:          {oci_verb: manage,  oci_resource: functions,     oci_service: functions}
+  lambda:GetFunction:             {oci_verb: inspect, oci_resource: functions,     oci_service: functions}
+  lambda:UpdateFunctionCode:      {oci_verb: manage,  oci_resource: functions,     oci_service: functions}
 
-  # DynamoDB → NoSQL
-  dynamodb:PutItem:        {oci_verb: manage,  oci_resource: tables,      oci_service: nosql}
-  dynamodb:GetItem:        {oci_verb: read,    oci_resource: tables,      oci_service: nosql}
-  dynamodb:Query:          {oci_verb: read,    oci_resource: tables,      oci_service: nosql}
-  dynamodb:Scan:           {oci_verb: read,    oci_resource: tables,      oci_service: nosql}
+  # ── IAM → Identity (tricky — AWS roles/policies don't map 1:1 to OCI concepts) ─
+  iam:CreateRole:                 {oci_verb: manage,  oci_resource: dynamic-groups, oci_service: identity,
+                                   notes: "AWS roles map to OCI dynamic groups"}
+  iam:AttachRolePolicy:           {oci_verb: manage,  oci_resource: policies,      oci_service: identity}
+  iam:PassRole:                   {oci_verb: use,     oci_resource: dynamic-groups, oci_service: identity,
+                                   notes: "OCI doesn't have PassRole — authorization is via dynamic group matching"}
+  iam:CreateUser:                 {oci_verb: manage,  oci_resource: users,         oci_service: identity}
+  iam:CreateGroup:                {oci_verb: manage,  oci_resource: groups,        oci_service: identity}
+  iam:CreatePolicy:               {oci_verb: manage,  oci_resource: policies,      oci_service: identity}
+  iam:CreateAccessKey:            {oci_verb: manage,  oci_resource: users,         oci_service: identity,
+                                   notes: "OCI uses API keys or auth tokens — no long-lived access keys"}
 
-  # SQS → Queue
-  sqs:SendMessage:         {oci_verb: use,     oci_resource: queues,      oci_service: queue}
-  sqs:ReceiveMessage:      {oci_verb: use,     oci_resource: queues,      oci_service: queue}
+  # ── STS → Identity ──────────────────────────────────────────────────────
+  sts:AssumeRole:                 {oci_verb: use,     oci_resource: dynamic-groups, oci_service: identity,
+                                   notes: "OCI uses federation + dynamic groups instead of AssumeRole."}
+  sts:GetCallerIdentity:          {oci_verb: inspect, oci_resource: users,         oci_service: identity}
 
-  # SNS → Notifications
-  sns:Publish:             {oci_verb: use,     oci_resource: topics,      oci_service: notifications}
-  sns:Subscribe:           {oci_verb: use,     oci_resource: topics,      oci_service: notifications}
+  # ── DynamoDB → NoSQL ────────────────────────────────────────────────────
+  dynamodb:PutItem:               {oci_verb: manage,  oci_resource: tables,        oci_service: nosql}
+  dynamodb:GetItem:               {oci_verb: read,    oci_resource: tables,        oci_service: nosql}
+  dynamodb:Query:                 {oci_verb: read,    oci_resource: tables,        oci_service: nosql}
+  dynamodb:Scan:                  {oci_verb: read,    oci_resource: tables,        oci_service: nosql}
+  dynamodb:DeleteItem:            {oci_verb: manage,  oci_resource: tables,        oci_service: nosql}
+  dynamodb:UpdateItem:            {oci_verb: manage,  oci_resource: tables,        oci_service: nosql}
+  dynamodb:CreateTable:           {oci_verb: manage,  oci_resource: tables,        oci_service: nosql}
 
-  # CloudFront → WAA (partial coverage)
-  cloudfront:GetDistribution:    {oci_verb: inspect, oci_resource: web-app-accelerations, oci_service: waa}
-  cloudfront:UpdateDistribution: {oci_verb: manage,  oci_resource: web-app-accelerations, oci_service: waa}
+  # ── SQS → Queue ─────────────────────────────────────────────────────────
+  sqs:SendMessage:                {oci_verb: use,     oci_resource: queues,        oci_service: queue}
+  sqs:ReceiveMessage:             {oci_verb: use,     oci_resource: queues,        oci_service: queue}
+  sqs:DeleteMessage:              {oci_verb: use,     oci_resource: queues,        oci_service: queue}
+  sqs:CreateQueue:                {oci_verb: manage,  oci_resource: queues,        oci_service: queue}
+
+  # ── SNS → Notifications ─────────────────────────────────────────────────
+  sns:Publish:                    {oci_verb: use,     oci_resource: topics,        oci_service: notifications}
+  sns:Subscribe:                  {oci_verb: use,     oci_resource: topics,        oci_service: notifications}
+  sns:CreateTopic:                {oci_verb: manage,  oci_resource: topics,        oci_service: notifications}
+
+  # ── CloudFront → WAA (partial coverage) ─────────────────────────────────
+  cloudfront:GetDistribution:     {oci_verb: inspect, oci_resource: web-app-accelerations, oci_service: waa}
+  cloudfront:UpdateDistribution:  {oci_verb: manage,  oci_resource: web-app-accelerations, oci_service: waa}
+
+  # ── KMS → Vault ─────────────────────────────────────────────────────────
+  kms:Encrypt:                    {oci_verb: use,     oci_resource: keys,          oci_service: kms}
+  kms:Decrypt:                    {oci_verb: use,     oci_resource: keys,          oci_service: kms}
+  kms:GenerateDataKey:            {oci_verb: use,     oci_resource: keys,          oci_service: kms,
+                                   notes: "OCI equivalent is generate-data-encryption-key on the key."}
+  kms:DescribeKey:                {oci_verb: inspect, oci_resource: keys,          oci_service: kms}
+  kms:CreateKey:                  {oci_verb: manage,  oci_resource: keys,          oci_service: kms,
+                                   notes: "Keys live under a vault — grant `manage vaults` to provision new keys."}
+  kms:ScheduleKeyDeletion:        {oci_verb: manage,  oci_resource: keys,          oci_service: kms}
+  kms:DisableKey:                 {oci_verb: use,     oci_resource: keys,          oci_service: kms}
+  kms:ListKeys:                   {oci_verb: inspect, oci_resource: keys,          oci_service: kms}
+  kms:CreateAlias:                {oci_verb: manage,  oci_resource: keys,          oci_service: kms,
+                                   notes: "OCI keys are identified by OCID + display_name; no alias concept."}
+
+  # ── Secrets Manager → Vault Secret ──────────────────────────────────────
+  secretsmanager:GetSecretValue:  {oci_verb: read,    oci_resource: secrets,       oci_service: vault-secrets,
+                                   notes: "OCI verb 'read' on secret-bundles."}
+  secretsmanager:CreateSecret:    {oci_verb: manage,  oci_resource: secrets,       oci_service: vault-secrets}
+  secretsmanager:UpdateSecret:    {oci_verb: manage,  oci_resource: secrets,       oci_service: vault-secrets}
+  secretsmanager:DeleteSecret:    {oci_verb: manage,  oci_resource: secrets,       oci_service: vault-secrets}
+  secretsmanager:PutSecretValue:  {oci_verb: manage,  oci_resource: secrets,       oci_service: vault-secrets,
+                                   notes: "OCI creates a new secret-version for each put."}
+  secretsmanager:ListSecrets:     {oci_verb: inspect, oci_resource: secrets,       oci_service: vault-secrets}
+  secretsmanager:RotateSecret:    {oci_verb: manage,  oci_resource: secrets,       oci_service: vault-secrets,
+                                   notes: "OCI rotation is manual or invokes a Function — no built-in Lambda rotator."}
+
+  # ── SSM → Vault / App Config ────────────────────────────────────────────
+  ssm:GetParameter:               {oci_verb: read,    oci_resource: secrets,       oci_service: vault-secrets,
+                                   notes: "SecureString → Vault Secret; String/StringList → App Config."}
+  ssm:GetParameters:              {oci_verb: read,    oci_resource: secrets,       oci_service: vault-secrets}
+  ssm:PutParameter:               {oci_verb: manage,  oci_resource: secrets,       oci_service: vault-secrets}
+  ssm:DeleteParameter:            {oci_verb: manage,  oci_resource: secrets,       oci_service: vault-secrets}
+  ssm:SendCommand:                {oci_verb: use,     oci_resource: instance-agent-command-family, oci_service: compute,
+                                   notes: "AWS Systems Manager Run Command → OCI Instance Agent run-command."}
+  ssm:GetCommandInvocation:       {oci_verb: inspect, oci_resource: instance-agent-command-family, oci_service: compute}
+
+  # ── CloudWatch Logs → Logging ───────────────────────────────────────────
+  logs:CreateLogGroup:            {oci_verb: manage,  oci_resource: log-groups,    oci_service: logging}
+  logs:CreateLogStream:           {oci_verb: manage,  oci_resource: log-content,   oci_service: logging}
+  logs:PutLogEvents:              {oci_verb: use,     oci_resource: log-content,   oci_service: logging}
+  logs:DescribeLogGroups:         {oci_verb: inspect, oci_resource: log-groups,    oci_service: logging}
+  logs:GetLogEvents:              {oci_verb: read,    oci_resource: log-content,   oci_service: logging}
+  logs:FilterLogEvents:           {oci_verb: read,    oci_resource: log-content,   oci_service: logging,
+                                   notes: "Use OCI Logging Search / Analytics for filtered queries."}
+
+  # ── CloudWatch metrics → Monitoring ─────────────────────────────────────
+  cloudwatch:PutMetricData:       {oci_verb: use,     oci_resource: metrics,       oci_service: monitoring}
+  cloudwatch:GetMetricStatistics: {oci_verb: read,    oci_resource: metrics,       oci_service: monitoring}
+  cloudwatch:GetMetricData:       {oci_verb: read,    oci_resource: metrics,       oci_service: monitoring}
+  cloudwatch:PutMetricAlarm:      {oci_verb: manage,  oci_resource: alarms,        oci_service: monitoring}
+  cloudwatch:DescribeAlarms:      {oci_verb: inspect, oci_resource: alarms,        oci_service: monitoring}
+
+  # ── CloudTrail → Audit ──────────────────────────────────────────────────
+  cloudtrail:LookupEvents:        {oci_verb: read,    oci_resource: audit-events,  oci_service: audit}
+  cloudtrail:CreateTrail:         {oci_verb: manage,  oci_resource: audit-events,  oci_service: audit,
+                                   notes: "OCI Audit is always-on — configure retention, not trail creation."}
+
+  # ── EventBridge → Events ────────────────────────────────────────────────
+  events:PutEvents:               {oci_verb: use,     oci_resource: rules,         oci_service: events}
+  events:PutRule:                 {oci_verb: manage,  oci_resource: rules,         oci_service: events}
+  events:DeleteRule:              {oci_verb: manage,  oci_resource: rules,         oci_service: events}
+  events:ListRules:               {oci_verb: inspect, oci_resource: rules,         oci_service: events}
+
+  # ── Kinesis → Streaming ─────────────────────────────────────────────────
+  kinesis:PutRecord:              {oci_verb: use,     oci_resource: streams,       oci_service: streaming}
+  kinesis:GetRecords:             {oci_verb: read,    oci_resource: streams,       oci_service: streaming}
+  kinesis:CreateStream:           {oci_verb: manage,  oci_resource: streams,       oci_service: streaming}
+
+  # ── ECR → OCIR ──────────────────────────────────────────────────────────
+  ecr:GetAuthorizationToken:      {oci_verb: read,    oci_resource: repos,         oci_service: artifacts-repositories,
+                                   notes: "OCIR auth is via auth token on user, not a separate call."}
+  ecr:BatchGetImage:              {oci_verb: read,    oci_resource: repos,         oci_service: artifacts-repositories}
+  ecr:PutImage:                   {oci_verb: manage,  oci_resource: repos,         oci_service: artifacts-repositories}
+  ecr:InitiateLayerUpload:        {oci_verb: manage,  oci_resource: repos,         oci_service: artifacts-repositories}
+  ecr:DescribeRepositories:       {oci_verb: inspect, oci_resource: repos,         oci_service: artifacts-repositories}
+
+  # ── EKS → OKE ───────────────────────────────────────────────────────────
+  eks:DescribeCluster:            {oci_verb: inspect, oci_resource: cluster-family, oci_service: container-engine}
+  eks:ListClusters:               {oci_verb: inspect, oci_resource: cluster-family, oci_service: container-engine}
+  eks:CreateCluster:              {oci_verb: manage,  oci_resource: cluster-family, oci_service: container-engine}
+  eks:DeleteCluster:              {oci_verb: manage,  oci_resource: cluster-family, oci_service: container-engine}
+  eks:UpdateClusterConfig:        {oci_verb: manage,  oci_resource: cluster-family, oci_service: container-engine}
+
+  # ── CloudFormation → Resource Manager ───────────────────────────────────
+  cloudformation:CreateStack:     {oci_verb: manage,  oci_resource: orm-stacks,    oci_service: resource-manager}
+  cloudformation:UpdateStack:     {oci_verb: manage,  oci_resource: orm-stacks,    oci_service: resource-manager}
+  cloudformation:DeleteStack:     {oci_verb: manage,  oci_resource: orm-stacks,    oci_service: resource-manager}
+  cloudformation:DescribeStacks:  {oci_verb: inspect, oci_resource: orm-stacks,    oci_service: resource-manager}
+
+  # ── ElastiCache → OCI Cache ─────────────────────────────────────────────
+  elasticache:CreateCacheCluster: {oci_verb: manage,  oci_resource: redis-cluster, oci_service: redis}
+  elasticache:DescribeCacheClusters: {oci_verb: inspect, oci_resource: redis-cluster, oci_service: redis}
+
+  # ── Route53 → DNS ───────────────────────────────────────────────────────
+  route53:ChangeResourceRecordSets: {oci_verb: manage, oci_resource: dns-zones,    oci_service: dns}
+  route53:ListHostedZones:        {oci_verb: inspect, oci_resource: dns-zones,     oci_service: dns}

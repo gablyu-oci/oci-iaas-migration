@@ -14,7 +14,9 @@ against the configured endpoint. Re-probe it if the upstream catalog changes.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -30,86 +32,83 @@ from app.db.models import SystemSetting, Tenant
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
-# Verified live against the Oracle internal Llama Stack gateway
-# (https://llama-stack.ai-apps-ord.oci-incubations.com/v1) on 2026-04-21.
-# 63 of the catalog's 95 models responded OK to a substantive probe.
-# Reasoning models require max_completion_tokens — the client detects that
-# by model-name prefix (see app.gateway.llm_client._is_reasoning_model).
-AVAILABLE_MODELS: list[dict] = [
-    # OpenAI GPT-5.4 family (reasoning)
-    {"id": "oci/openai.gpt-5.4",                "family": "openai",  "label": "GPT-5.4",                 "reasoning": True},
-    {"id": "oci/openai.gpt-5.4-mini",           "family": "openai",  "label": "GPT-5.4 mini",            "reasoning": True},
-    {"id": "oci/openai.gpt-5.4-nano",           "family": "openai",  "label": "GPT-5.4 nano",            "reasoning": True},
-    {"id": "oci/openai.gpt-5.4-2026-03-05",     "family": "openai",  "label": "GPT-5.4 (2026-03-05)",    "reasoning": True},
-    {"id": "oci/openai.gpt-5.4-mini-2026-03-17","family": "openai",  "label": "GPT-5.4 mini (2026-03-17)","reasoning": True},
-    {"id": "oci/openai.gpt-5.4-nano-2026-03-17","family": "openai",  "label": "GPT-5.4 nano (2026-03-17)","reasoning": True},
-    # OpenAI GPT-5.2 / 5.1
-    {"id": "oci/openai.gpt-5.2",                "family": "openai",  "label": "GPT-5.2",                 "reasoning": True},
-    {"id": "oci/openai.gpt-5.2-chat-latest",    "family": "openai",  "label": "GPT-5.2 chat-latest"},
-    {"id": "oci/openai.gpt-5.2-2025-12-11",     "family": "openai",  "label": "GPT-5.2 (2025-12-11)",    "reasoning": True},
-    {"id": "oci/openai.gpt-5.1",                "family": "openai",  "label": "GPT-5.1",                 "reasoning": True},
-    {"id": "oci/openai.gpt-5.1-chat-latest",    "family": "openai",  "label": "GPT-5.1 chat-latest"},
-    {"id": "oci/openai.gpt-5.1-2025-11-13",     "family": "openai",  "label": "GPT-5.1 (2025-11-13)",    "reasoning": True},
-    # OpenAI GPT-5 (original family)
-    {"id": "oci/openai.gpt-5",                  "family": "openai",  "label": "GPT-5",                   "reasoning": True},
-    {"id": "oci/openai.gpt-5-mini",             "family": "openai",  "label": "GPT-5 mini",              "reasoning": True},
-    {"id": "oci/openai.gpt-5-nano",             "family": "openai",  "label": "GPT-5 nano",              "reasoning": True},
-    {"id": "oci/openai.gpt-5-2025-08-07",       "family": "openai",  "label": "GPT-5 (2025-08-07)",      "reasoning": True},
-    {"id": "oci/openai.gpt-5-mini-2025-08-07",  "family": "openai",  "label": "GPT-5 mini (2025-08-07)", "reasoning": True},
-    {"id": "oci/openai.gpt-5-nano-2025-08-07",  "family": "openai",  "label": "GPT-5 nano (2025-08-07)", "reasoning": True},
-    # OpenAI o-series (reasoning)
-    {"id": "oci/openai.o1",                     "family": "openai",  "label": "o1",                      "reasoning": True},
-    {"id": "oci/openai.o1-2024-12-17",          "family": "openai",  "label": "o1 (2024-12-17)",         "reasoning": True},
-    {"id": "oci/openai.o3",                     "family": "openai",  "label": "o3",                      "reasoning": True},
-    {"id": "oci/openai.o3-2025-04-16",          "family": "openai",  "label": "o3 (2025-04-16)",         "reasoning": True},
-    {"id": "oci/openai.o3-mini-2025-01-31",     "family": "openai",  "label": "o3-mini (2025-01-31)",    "reasoning": True},
-    {"id": "oci/openai.o4-mini",                "family": "openai",  "label": "o4-mini",                 "reasoning": True},
-    {"id": "oci/openai.o4-mini-2025-04-16",     "family": "openai",  "label": "o4-mini (2025-04-16)",    "reasoning": True},
-    # OpenAI GPT-4.1 / 4o (chat)
-    {"id": "oci/openai.gpt-4.1",                "family": "openai",  "label": "GPT-4.1"},
-    {"id": "oci/openai.gpt-4.1-mini",           "family": "openai",  "label": "GPT-4.1 mini"},
-    {"id": "oci/openai.gpt-4.1-nano",           "family": "openai",  "label": "GPT-4.1 nano"},
-    {"id": "oci/openai.gpt-4.1-2025-04-14",     "family": "openai",  "label": "GPT-4.1 (2025-04-14)"},
-    {"id": "oci/openai.gpt-4.1-mini-2025-04-14","family": "openai",  "label": "GPT-4.1 mini (2025-04-14)"},
-    {"id": "oci/openai.gpt-4.1-nano-2025-04-14","family": "openai",  "label": "GPT-4.1 nano (2025-04-14)"},
-    {"id": "oci/openai.gpt-4o",                 "family": "openai",  "label": "GPT-4o"},
-    {"id": "oci/openai.gpt-4o-mini",            "family": "openai",  "label": "GPT-4o mini"},
-    {"id": "oci/openai.gpt-4o-2024-08-06",      "family": "openai",  "label": "GPT-4o (2024-08-06)"},
-    {"id": "oci/openai.gpt-4o-2024-11-20",      "family": "openai",  "label": "GPT-4o (2024-11-20)"},
-    {"id": "oci/openai.gpt-4o-mini-2024-07-18", "family": "openai",  "label": "GPT-4o mini (2024-07-18)"},
-    {"id": "oci/openai.gpt-4o-search-preview",  "family": "openai",  "label": "GPT-4o search-preview"},
-    {"id": "oci/openai.gpt-4o-mini-search-preview","family": "openai","label": "GPT-4o mini search-preview"},
-    # OpenAI open-weight
-    {"id": "oci/openai.gpt-oss-120b",           "family": "openai",  "label": "GPT-OSS 120B"},
-    {"id": "oci/openai.gpt-oss-20b",            "family": "openai",  "label": "GPT-OSS 20B"},
-    # Google Gemini 2.5
-    {"id": "oci/google.gemini-2.5-pro",         "family": "google",  "label": "Gemini 2.5 Pro"},
-    {"id": "oci/google.gemini-2.5-flash",       "family": "google",  "label": "Gemini 2.5 Flash"},
-    {"id": "oci/google.gemini-2.5-flash-lite",  "family": "google",  "label": "Gemini 2.5 Flash Lite"},
-    # xAI Grok 4.20
-    {"id": "oci/xai.grok-4.20-reasoning",       "family": "xai",     "label": "Grok 4.20 (reasoning)",   "reasoning": True},
-    {"id": "oci/xai.grok-4.20-non-reasoning",   "family": "xai",     "label": "Grok 4.20 (non-reasoning)"},
-    {"id": "oci/xai.grok-4.20-0309-reasoning",  "family": "xai",     "label": "Grok 4.20 0309 (reasoning)","reasoning": True},
-    {"id": "oci/xai.grok-4.20-0309-non-reasoning","family": "xai",   "label": "Grok 4.20 0309 (non-reasoning)"},
-    # xAI Grok 4
-    {"id": "oci/xai.grok-4",                    "family": "xai",     "label": "Grok 4"},
-    {"id": "oci/xai.grok-4-fast-reasoning",     "family": "xai",     "label": "Grok 4 fast (reasoning)", "reasoning": True},
-    {"id": "oci/xai.grok-4-fast-non-reasoning", "family": "xai",     "label": "Grok 4 fast (non-reasoning)"},
-    {"id": "oci/xai.grok-4-1-fast-reasoning",   "family": "xai",     "label": "Grok 4.1 fast (reasoning)","reasoning": True},
-    {"id": "oci/xai.grok-4-1-fast-non-reasoning","family": "xai",    "label": "Grok 4.1 fast (non-reasoning)"},
-    # xAI Grok 3
-    {"id": "oci/xai.grok-3",                    "family": "xai",     "label": "Grok 3"},
-    {"id": "oci/xai.grok-3-fast",               "family": "xai",     "label": "Grok 3 fast"},
-    {"id": "oci/xai.grok-3-mini",               "family": "xai",     "label": "Grok 3 mini"},
-    {"id": "oci/xai.grok-3-mini-fast",          "family": "xai",     "label": "Grok 3 mini fast"},
-    # xAI Grok Code
-    {"id": "oci/xai.grok-code-fast-1",          "family": "xai",     "label": "Grok Code Fast 1"},
-    # Meta Llama
-    {"id": "oci/meta.llama-3.1-405b-instruct",  "family": "meta",    "label": "Llama 3.1 405B"},
-    {"id": "oci/meta.llama-3.3-70b-instruct",   "family": "meta",    "label": "Llama 3.3 70B"},
-    {"id": "oci/meta.llama-4-scout-17b-16e-instruct",   "family": "meta", "label": "Llama 4 Scout 17B×16E"},
-    {"id": "oci/meta.llama-4-maverick-17b-128e-instruct-fp8","family": "meta","label": "Llama 4 Maverick 17B×128E (fp8)"},
-]
+# Available-model catalog
+# ----------------------------------------------------------------------------
+# Source of truth is ``docs/llm-models.json``, regenerated by
+# ``scripts/probe_llm_models.py`` — it posts a real request to every model in
+# the endpoint's ``/v1/models`` list and marks each ``ok: true/false``. We
+# expose all working entries. Re-probe whenever the upstream catalog drifts.
+#
+# The in-module fallback list below is used if the sidecar is missing or
+# malformed (e.g. fresh clone before anyone's run the probe yet).
+
+_PROBE_SIDECAR = (
+    Path(__file__).resolve().parent.parent.parent.parent
+    / "docs"
+    / "llm-models.json"
+)
+
+
+def _family_from_id(model_id: str) -> str:
+    """``oci/openai.gpt-5.4`` → ``openai``; first token after optional namespace."""
+    stripped = model_id.split("/", 1)[-1]
+    return stripped.split(".", 1)[0] if "." in stripped else stripped
+
+
+def _is_reasoning(model_id: str) -> bool:
+    """Reasoning-family models need ``max_completion_tokens``.
+
+    Mirrors the classifier in ``app.gateway.llm_client._is_reasoning_model``
+    with broader coverage for Llama Stack's ``-reasoning`` suffix convention
+    (e.g. xAI's ``grok-4.20-reasoning`` / ``grok-4.20-non-reasoning`` split).
+    """
+    mid = model_id.lower()
+    if "-non-reasoning" in mid:
+        return False
+    if "-reasoning" in mid:
+        return True
+    return any(tok in mid for tok in (".gpt-5", ".o1", ".o3", ".o4"))
+
+
+def _label_from_id(model_id: str) -> str:
+    """Best-effort human label from the model ID."""
+    short = model_id.split("/", 1)[-1].split(".", 1)[-1]
+    return short  # raw ID is already readable for these names
+
+
+def _load_available_models() -> list[dict]:
+    """Read the working-model list from the probe sidecar; fall back to a
+    small curated default if the file isn't present yet."""
+    if _PROBE_SIDECAR.exists():
+        try:
+            raw = json.loads(_PROBE_SIDECAR.read_text())
+            out: list[dict] = []
+            for r in raw:
+                if not r.get("ok"):
+                    continue
+                mid = r["id"]
+                out.append({
+                    "id": mid,
+                    "family": _family_from_id(mid),
+                    "label": _label_from_id(mid),
+                    "reasoning": _is_reasoning(mid),
+                })
+            # Keep deterministic order: family → label
+            out.sort(key=lambda m: (m["family"], m["label"]))
+            return out
+        except Exception:  # noqa: BLE001 — fall back to curated list
+            pass
+
+    # Conservative fallback (covers the writer/reviewer defaults in config.py)
+    return [
+        {"id": "oci/openai.gpt-5.4",       "family": "openai", "label": "gpt-5.4",       "reasoning": True},
+        {"id": "oci/openai.gpt-5.4-mini",  "family": "openai", "label": "gpt-5.4-mini",  "reasoning": True},
+        {"id": "oci/openai.gpt-4.1",       "family": "openai", "label": "gpt-4.1"},
+        {"id": "oci/openai.gpt-4.1-mini",  "family": "openai", "label": "gpt-4.1-mini"},
+    ]
+
+
+AVAILABLE_MODELS: list[dict] = _load_available_models()
 _AVAILABLE_IDS = {m["id"] for m in AVAILABLE_MODELS}
 
 # Keys persisted in the system_settings table. Mirrored onto ``settings`` in
@@ -120,6 +119,7 @@ _PERSISTED_KEYS = (
     "LLM_BASE_URL",
     "LLM_WRITER_MODEL",
     "LLM_REVIEWER_MODEL",
+    "LLM_ORCHESTRATOR_MODEL",
 )
 
 
@@ -168,6 +168,9 @@ async def _load_persisted_overrides(db: AsyncSession) -> None:
 class ModelSettings(BaseModel):
     writer_model: str
     reviewer_model: str
+    # Reserved for future use — today the orchestrator is Python code, not
+    # an LLM. Kept so saved DB values still round-trip.
+    orchestrator_model: str | None = None
 
 
 class ModelSettingsResponse(ModelSettings):
@@ -183,6 +186,7 @@ async def get_model_settings(
     return ModelSettingsResponse(
         writer_model=settings.LLM_WRITER_MODEL,
         reviewer_model=settings.LLM_REVIEWER_MODEL,
+        orchestrator_model=settings.LLM_ORCHESTRATOR_MODEL,
         available=AVAILABLE_MODELS,
     )
 
@@ -200,9 +204,17 @@ async def update_model_settings(
                 status_code=400,
                 detail=f"{name} {val!r} is not in the list of available models",
             )
+    if body.orchestrator_model is not None and body.orchestrator_model not in _AVAILABLE_IDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"orchestrator_model {body.orchestrator_model!r} is not available",
+        )
 
     await _persist(db, "LLM_WRITER_MODEL", body.writer_model)
     await _persist(db, "LLM_REVIEWER_MODEL", body.reviewer_model)
+    if body.orchestrator_model is not None:
+        await _persist(db, "LLM_ORCHESTRATOR_MODEL", body.orchestrator_model)
+        settings.LLM_ORCHESTRATOR_MODEL = body.orchestrator_model
     await db.commit()
 
     settings.LLM_WRITER_MODEL = body.writer_model
@@ -211,6 +223,7 @@ async def update_model_settings(
     return ModelSettingsResponse(
         writer_model=settings.LLM_WRITER_MODEL,
         reviewer_model=settings.LLM_REVIEWER_MODEL,
+        orchestrator_model=settings.LLM_ORCHESTRATOR_MODEL,
         available=AVAILABLE_MODELS,
     )
 

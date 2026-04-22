@@ -485,8 +485,12 @@ def _run_pipeline(
         _progress("data_migration", f"Running Data Migration Planning (max {max_iterations} rounds)")
         try:
             dm_input = _build_data_migration_input(ag.name, resources, software_inventory)
-            from app.skills.data_migration.orchestrator import run as run_dm
-            result = run_dm(dm_input, _progress_cb, anthropic_client, max_iterations)
+            from app.agents.job_result import run_skill_sync
+            result = run_skill_sync(
+                "data_migration_planning", dm_input,
+                max_iterations=max_iterations,
+                migration_id=str(ag.assessment_id) if ag.assessment_id else None,
+            )
             if result:
                 for name, content in result.get("artifacts", {}).items():
                     completed_artifacts[f"data_migration/{name}"] = content
@@ -524,8 +528,12 @@ def _run_pipeline(
         wp_input = _build_workload_planning_input(
             ag.name, resources, resource_mapping, dep_edges, completed_artifacts,
         )
-        from app.skills.workload_planning.orchestrator import run as run_wp
-        result = run_wp(wp_input, _progress_cb, anthropic_client, 3)
+        from app.agents.job_result import run_skill_sync
+        result = run_skill_sync(
+            "workload_planning", wp_input,
+            max_iterations=3,
+            migration_id=str(ag.assessment_id) if ag.assessment_id else None,
+        )
         if result:
             for name, content in result.get("artifacts", {}).items():
                 completed_artifacts[f"workload_planning/{name}"] = content
@@ -562,8 +570,12 @@ def _run_pipeline(
                 "jobs": translation_jobs,
             }, indent=2)
 
-            from app.skills.synthesis.orchestrator import run as run_synthesis
-            result = run_synthesis(synthesis_input, _progress_cb, anthropic_client, max_iterations)
+            from app.agents.job_result import run_skill_sync
+            result = run_skill_sync(
+                "synthesis", synthesis_input,
+                max_iterations=max_iterations,
+                migration_id=str(ag.assessment_id) if ag.assessment_id else None,
+            )
             if result:
                 for name, content in result.get("artifacts", {}).items():
                     completed_artifacts[f"synthesis/{name}"] = content
@@ -620,27 +632,31 @@ def _run_pipeline(
 def _run_skill(
     skill_type: str,
     input_content: str,
-    progress_callback,
-    anthropic_client,
+    progress_callback,      # kept for signature compatibility; unused below
+    anthropic_client,       # kept for signature compatibility; unused below
     max_iterations: int = 3,
+    migration_id: str | None = None,
 ) -> dict | None:
-    """Run a single translation skill and return its result dict."""
-    if skill_type == "ec2_translation":
-        from app.skills.ec2_translation.orchestrator import run
-    elif skill_type == "network_translation":
-        from app.skills.network_translation.orchestrator import run
-    elif skill_type == "database_translation":
-        from app.skills.database_translation.orchestrator import run
-    elif skill_type == "storage_translation":
-        from app.skills.storage_translation.orchestrator import run
-    elif skill_type == "loadbalancer_translation":
-        from app.skills.loadbalancer_translation.orchestrator import run
-    elif skill_type == "cfn_terraform":
-        from app.skills.cfn_terraform.orchestrator import run
-    elif skill_type == "iam_translation":
-        from app.skills.iam_translation.orchestrator import run
-    else:
-        logger.warning("Unknown skill type: %s", skill_type)
+    """Run a single translation skill via the agent runtime.
+
+    Thin wrapper over ``app.agents.job_result.run_skill_sync`` so this
+    module's original sync call site keeps working. The ``progress_callback``
+    / ``anthropic_client`` args are accepted but ignored — the agent runtime
+    has its own logging and its own client.
+    """
+    try:
+        from app.agents.job_result import run_skill_sync
+        from app.agents.skill_group import SKILL_SPECS
+    except ImportError as exc:  # pragma: no cover — indicates a bad deployment
+        logger.error("Agent runtime not importable: %s", exc)
         return None
 
-    return run(input_content, progress_callback, anthropic_client, max_iterations)
+    if skill_type not in SKILL_SPECS:
+        logger.warning("Unknown skill type: %s (not in SKILL_SPECS)", skill_type)
+        return None
+
+    return run_skill_sync(
+        skill_type, input_content,
+        max_iterations=max_iterations,
+        migration_id=migration_id,
+    )

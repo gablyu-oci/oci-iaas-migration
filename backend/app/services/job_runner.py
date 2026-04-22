@@ -395,69 +395,45 @@ async def run_translation_job(ctx, translation_job_id: str):
                 config = job.config or {}
                 max_iterations = config.get("max_iterations", 3)
 
-                # 6. Route to skill
-                if job.skill_type == "cfn_terraform":
-                    from app.skills.cfn_terraform.orchestrator import run as run_cfn
-                    result_data = run_cfn(
-                        input_content, progress_callback, client, max_iterations
+                # 6. Route every skill through the agent runtime.
+                # ``run_skill_sync`` sets up a fresh event loop, spawns the
+                # writer+reviewer agents, runs the bounded iteration loop, and
+                # maps the result back to the legacy ``{artifacts, interactions,
+                # confidence, decision, ...}`` shape the downstream persistence
+                # code expects. Single source of truth for the adaptation lives
+                # in ``app.agents.job_result``.
+                from app.agents.job_result import run_skill_sync
+                from app.agents.skill_group import SKILL_SPECS
+
+                # ``migration_synthesis`` is the historical skill name; it maps
+                # to the agent-side ``synthesis`` skill and gets its input built
+                # from prior job artifacts when the caller didn't supply one.
+                skill = "synthesis" if job.skill_type == "migration_synthesis" else job.skill_type
+                if skill == "synthesis" and not input_content and job.migration_id:
+                    input_content = await _build_synthesis_input_async(db, job.migration_id)
+                if skill == "synthesis" and not input_content:
+                    raise ValueError(
+                        "No completed translation job artifacts found to synthesize"
                     )
-                elif job.skill_type == "iam_translation":
-                    from app.skills.iam_translation.orchestrator import run as run_iam
-                    result_data = run_iam(
-                        input_content, progress_callback, client, max_iterations
+                if skill not in SKILL_SPECS:
+                    raise ValueError(
+                        f"Unknown skill type: {job.skill_type}. "
+                        f"Registered agent skills: {sorted(SKILL_SPECS)}"
                     )
-                elif job.skill_type == "dependency_discovery":
-                    from app.skills.dependency_discovery.orchestrator import run as run_dd
-                    flowlog = config.get("flowlog_content")
-                    result_data = run_dd(
-                        input_content, flowlog, progress_callback, client, max_iterations
-                    )
-                elif job.skill_type == "network_translation":
-                    from app.skills.network_translation.orchestrator import run as run_net
-                    result_data = run_net(
-                        input_content, progress_callback, client, max_iterations
-                    )
-                elif job.skill_type == "ec2_translation":
-                    from app.skills.ec2_translation.orchestrator import run as run_ec2
-                    result_data = run_ec2(
-                        input_content, progress_callback, client, max_iterations
-                    )
-                elif job.skill_type == "database_translation":
-                    from app.skills.database_translation.orchestrator import run as run_db
-                    result_data = run_db(
-                        input_content, progress_callback, client, max_iterations
-                    )
-                elif job.skill_type == "loadbalancer_translation":
-                    from app.skills.loadbalancer_translation.orchestrator import run as run_lb
-                    result_data = run_lb(
-                        input_content, progress_callback, client, max_iterations
-                    )
-                elif job.skill_type == "storage_translation":
-                    from app.skills.storage_translation.orchestrator import run as run_storage
-                    result_data = run_storage(
-                        input_content, progress_callback, client, max_iterations
-                    )
-                elif job.skill_type == "data_migration_planning":
-                    from app.skills.data_migration.orchestrator import run as run_data_mig
-                    result_data = run_data_mig(
-                        input_content, progress_callback, client, max_iterations
-                    )
-                elif job.skill_type == "workload_planning":
-                    from app.skills.workload_planning.orchestrator import run as run_wp
-                    result_data = run_wp(
-                        input_content, progress_callback, client, max_iterations
-                    )
-                elif job.skill_type == "migration_synthesis":
-                    if not input_content and job.migration_id:
-                        input_content = await _build_synthesis_input_async(db, job.migration_id)
-                    if not input_content:
-                        raise ValueError("No completed translation job artifacts found to synthesize")
-                    from app.skills.synthesis.orchestrator import run as run_synthesis
-                    result_data = run_synthesis(
-                        input_content, progress_callback, client, max_iterations
-                    )
-                else:
-                    raise ValueError(f"Unknown skill type: {job.skill_type}")
+
+                progress_callback("agent_running", 1, 0.0, None)
+                result_data = run_skill_sync(
+                    skill,
+                    input_content,
+                    max_iterations=max_iterations,
+                    migration_id=str(job.migration_id) if job.migration_id else None,
+                )
+                progress_callback(
+                    "agent_running",
+                    result_data["iterations"],
+                    result_data["confidence"],
+                    result_data["decision"],
+                )
 
                 # 7. Store interaction records
                 interaction_records = result_data.get("interactions", [])

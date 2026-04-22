@@ -1,4 +1,4 @@
-# Storage, network, and discount rates used by the TCO calculator.
+# Storage, network, LB, gateway, KMS, and discount rates used by the TCO calculator.
 #
 # All monthly figures are USD, us-east-1 for AWS and Ashburn for OCI.
 # Per-GB rates are monthly unless noted; per-hour rates are, well, hourly.
@@ -12,15 +12,92 @@
 # comparisons. Flag: do not present these as authoritative costs to customers.
 
 storage:
-  aws_ebs_per_gb_month:         0.10    # gp3 baseline
-  oci_block_per_gb_month:       0.0255  # balanced performance (vpus_per_gb=10)
+  aws_ebs_per_gb_month:          0.10    # gp3 baseline
+  oci_block_per_gb_month:        0.0255  # balanced performance (vpus_per_gb=10)
+  # Tier rates (per-GB-month)
+  aws_ebs_gp3_per_gb:            0.08
+  aws_ebs_io1_per_gb:            0.125
+  aws_ebs_st1_per_gb:            0.045
+  aws_ebs_sc1_per_gb:            0.015
+  oci_block_lower_cost_per_gb:   0.0255   # vpus_per_gb=0 (Lower Cost)
+  oci_block_balanced_per_gb:     0.0425   # vpus_per_gb=10 (Balanced)
+  oci_block_high_perf_per_gb:    0.0765   # vpus_per_gb=20 (High Perf)
+  oci_block_ultra_high_perf:     0.1955   # vpus_per_gb=120 (UHP)
+
+  # Object storage
+  aws_s3_standard_per_gb:        0.023
+  aws_s3_ia_per_gb:              0.0125
+  aws_s3_glacier_instant_per_gb: 0.004
+  oci_object_standard_per_gb:    0.0255
+  oci_object_infrequent_per_gb:  0.0102
+  oci_object_archive_per_gb:     0.0026
+
+  # File storage
+  aws_efs_standard_per_gb:       0.30
+  oci_fss_per_gb:                0.30    # OCI File Storage
+
+  # S3 / Object Storage request prices (per 10,000)
+  aws_s3_put_per_10k:            0.05
+  aws_s3_get_per_10k:            0.004
+  oci_object_put_per_10k:        0.0034
+  oci_object_get_per_10k:        0.0034
 
 network:
-  aws_egress_per_gb:            0.09    # standard data-out, us-east-1
-  oci_egress_per_gb:            0.0085  # OCI outbound (first 10 TB free, then this)
+  aws_egress_per_gb:             0.09    # standard data-out, us-east-1
+  oci_egress_per_gb:             0.0085  # OCI outbound (first 10 TB free, then this)
+  aws_nat_gateway_per_hour:      0.045
+  aws_nat_gateway_per_gb:        0.045
+  oci_nat_gateway_per_hour:      0.0     # NAT Gateway in OCI is free; data processing charged
+  oci_nat_gateway_per_gb:        0.0
+  aws_transit_gateway_per_hour:  0.05
+  aws_transit_gateway_per_gb:    0.02
+  oci_drg_per_hour:              0.0     # DRG itself is free; cross-region peering charged separately
+  aws_vpn_per_hour:              0.05
+  oci_vpn_per_hour:              0.0     # Site-to-site VPN is free on OCI (up to 10 Gbps)
+  aws_direct_connect_per_hour:   0.30    # 1 Gbps dedicated port
+  oci_fastconnect_per_hour:      0.0     # Port is free; egress and cross-region priced separately
+
+load_balancer:
+  # AWS ALB — hourly + LCU-hour (we use a conservative LCU estimate)
+  aws_alb_per_hour:              0.0225
+  aws_alb_per_lcu_hour:          0.008
+  aws_nlb_per_hour:              0.0225
+  aws_nlb_per_lcu_hour:          0.006
+  # OCI Load Balancer — priced by "shape" bandwidth tier
+  oci_lb_10mbps_per_hour:        0.0032
+  oci_lb_100mbps_per_hour:       0.0243
+  oci_lb_400mbps_per_hour:       0.0972
+  oci_lb_8000mbps_per_hour:      1.9444
+  oci_network_lb_per_hour:       0.0     # NLB in OCI is free; per-GB charged on data processed
+  oci_network_lb_per_gb:         0.0175
+
+kms:
+  aws_kms_key_per_month:         1.00
+  aws_kms_request_per_10k:       0.03
+  oci_vault_key_per_month:       0.034   # Software-protected key; HSM-protected is higher
+  oci_vault_hsm_key_per_month:   3.00    # Approximate HSM-protected rate
+  oci_kms_request_per_10k:       0.0
+
+secrets:
+  aws_secret_per_month:          0.40
+  aws_secret_api_per_10k:        0.05
+  oci_vault_secret_per_month:    0.0     # Secrets themselves free; pay for vault + key
+
+compute:
+  # Spot / preemptible discount multiplier (fraction of on-demand)
+  aws_spot_discount_fraction:    0.30    # ~70% off on-demand
+  oci_preemptible_discount_fraction: 0.50  # Fixed 50% off on OCI preemptibles
+
+database:
+  # Managed DB markup multipliers over equivalent compute+storage.
+  # Used when we can't look up a specific per-shape DB price.
+  aws_rds_markup:                1.40    # ~40% over EC2+EBS equivalent
+  oci_db_markup:                 1.20    # OCI Database slightly less expensive markup
+  oci_autonomous_markup:         1.10    # Autonomous has lower incremental cost vs VM DB
 
 # OCI commitment tiers off pay-as-you-go. Annual flex = annual universal credits,
 # monthly flex = monthly universal credits.
 oci_commitment_discounts:
-  annual_flex:                  0.33    # 33% off
-  monthly_flex:                 0.17    # 17% off
+  annual_flex:                   0.33    # 33% off
+  monthly_flex:                  0.17    # 17% off
+  four_year_flex:                0.50    # 50% off on 4-year commits

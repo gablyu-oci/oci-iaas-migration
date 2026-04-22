@@ -1,0 +1,762 @@
+[
+  {
+    "id": "oci/openai.gpt-5.4-mini-2026-03-17",
+    "ok": true,
+    "latency_s": 2.0,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/xai.grok-4.20-reasoning",
+    "ok": true,
+    "latency_s": 2.2,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-5.4-pro-2026-03-05",
+    "ok": false,
+    "latency_s": 1.0,
+    "token_field": null,
+    "text": "",
+    "error": "{\\\\n  \\\"error\\\": {\\\\n    \\\"message\\\": \\\"This is not a chat model and thus not supported in the v1/chat/completions endpoint. Did you mean to use v1/completions?\\\",\\\\n    \\\"type\\\": \\\"invalid_request_error\\\",\\\\n    \\\"param\\\": \\\"model\\\",\\\\n    \\\"code\\\": null\\\\n  }\\\\n}"
+  },
+  {
+    "id": "oci/openai.gpt-5.4-mini",
+    "ok": true,
+    "latency_s": 1.8,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/xai.grok-4.20-0309-reasoning",
+    "ok": true,
+    "latency_s": 2.3,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/xai.grok-4.20-multi-agent-0309",
+    "ok": false,
+    "latency_s": 0.9,
+    "token_field": null,
+    "text": "",
+    "error": "\\\"Multi Agent requests are not allowed on chat completions\\\""
+  },
+  {
+    "id": "oci/openai.gpt-5.4-nano",
+    "ok": true,
+    "latency_s": 1.5,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-5.4-2026-03-05",
+    "ok": true,
+    "latency_s": 1.1,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/xai.grok-4.20-multi-agent",
+    "ok": false,
+    "latency_s": 0.5,
+    "token_field": null,
+    "text": "",
+    "error": "\\\"Multi Agent requests are not allowed on chat completions\\\""
+  },
+  {
+    "id": "oci/xai.grok-4.20-0309-non-reasoning",
+    "ok": true,
+    "latency_s": 0.7,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/xai.grok-4.20-non-reasoning",
+    "ok": true,
+    "latency_s": 1.3,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-5.4-pro",
+    "ok": false,
+    "latency_s": 0.6,
+    "token_field": null,
+    "text": "",
+    "error": "{\\\\n  \\\"error\\\": {\\\\n    \\\"message\\\": \\\"This is not a chat model and thus not supported in the v1/chat/completions endpoint. Did you mean to use v1/completions?\\\",\\\\n    \\\"type\\\": \\\"invalid_request_error\\\",\\\\n    \\\"param\\\": \\\"model\\\",\\\\n    \\\"code\\\": null\\\\n  }\\\\n}"
+  },
+  {
+    "id": "oci/openai.gpt-5.4-nano-2026-03-17",
+    "ok": true,
+    "latency_s": 1.6,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-5.4",
+    "ok": true,
+    "latency_s": 1.3,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/cohere.command-r-plus-08-2024",
+    "ok": false,
+    "latency_s": 0.4,
+    "token_field": null,
+    "text": "",
+    "error": "Unsupported OpenAI operation"
+  },
+  {
+    "id": "oci/cohere.command-r-08-2024",
+    "ok": false,
+    "latency_s": 0.4,
+    "token_field": null,
+    "text": "",
+    "error": "Unsupported OpenAI operation"
+  },
+  {
+    "id": "oci/openai.gpt-5.2-codex",
+    "ok": false,
+    "latency_s": 0.8,
+    "token_field": null,
+    "text": "",
+    "error": "{\\\\n  \\\"error\\\": {\\\\n    \\\"message\\\": \\\"This is not a chat model and thus not supported in the v1/chat/completions endpoint. Did you mean to use v1/completions?\\\",\\\\n    \\\"type\\\": \\\"invalid_request_error\\\",\\\\n    \\\"param\\\": \\\"model\\\",\\\\n    \\\"code\\\": null\\\\n  }\\\\n}"
+  },
+  {
+    "id": "oci/openai.gpt-5.3-codex",
+    "ok": false,
+    "latency_s": 1.6,
+    "token_field": null,
+    "text": "",
+    "error": "{\\\\n  \\\"error\\\": {\\\\n    \\\"message\\\": \\\"This is not a chat model and thus not supported in the v1/chat/completions endpoint. Did you mean to use v1/completions?\\\",\\\\n    \\\"type\\\": \\\"invalid_request_error\\\",\\\\n    \\\"param\\\": \\\"model\\\",\\\\n    \\\"code\\\": null\\\\n  }\\\\n}"
+  },
+  {
+    "id": "oci/cohere.command-a-vision",
+    "ok": false,
+    "latency_s": 0.9,
+    "token_field": null,
+    "text": "",
+    "error": "Unsupported OpenAI operation"
+  },
+  {
+    "id": "oci/xai.grok-4-1-fast-reasoning",
+    "ok": true,
+    "latency_s": 2.1,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/xai.grok-4-1-fast-non-reasoning",
+    "ok": true,
+    "latency_s": 0.7,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-5.2-pro-2025-12-11",
+    "ok": false,
+    "latency_s": 0.5,
+    "token_field": null,
+    "text": "",
+    "error": "{\\\\n  \\\"error\\\": {\\\\n    \\\"message\\\": \\\"This is not a chat model and thus not supported in the v1/chat/completions endpoint. Did you mean to use v1/completions?\\\",\\\\n    \\\"type\\\": \\\"invalid_request_error\\\",\\\\n    \\\"param\\\": \\\"model\\\",\\\\n    \\\"code\\\": null\\\\n  }\\\\n}"
+  },
+  {
+    "id": "oci/openai.gpt-audio",
+    "ok": false,
+    "latency_s": 1.2,
+    "token_field": null,
+    "text": "",
+    "error": "{\\\\n  \\\"error\\\": {\\\\n    \\\"message\\\": \\\"This model requires that either input content or output modality contain audio.\\\",\\\\n    \\\"type\\\": \\\"invalid_request_error\\\",\\\\n    \\\"param\\\": \\\"model\\\",\\\\n    \\\"code\\\": \\\"invalid_value\\\"\\\\n  }\\\\n}"
+  },
+  {
+    "id": "oci/openai.gpt-5.1-chat-latest",
+    "ok": true,
+    "latency_s": 1.6,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-5.1-codex-max",
+    "ok": false,
+    "latency_s": 0.7,
+    "token_field": null,
+    "text": "",
+    "error": "{\\\\n  \\\"error\\\": {\\\\n    \\\"message\\\": \\\"This is not a chat model and thus not supported in the v1/chat/completions endpoint. Did you mean to use v1/completions?\\\",\\\\n    \\\"type\\\": \\\"invalid_request_error\\\",\\\\n    \\\"param\\\": \\\"model\\\",\\\\n    \\\"code\\\": null\\\\n  }\\\\n}"
+  },
+  {
+    "id": "oci/openai.gpt-image-1",
+    "ok": false,
+    "latency_s": 1.0,
+    "token_field": null,
+    "text": "",
+    "error": "openai.gpt-image-1 does not support Chat"
+  },
+  {
+    "id": "oci/openai.gpt-5.1-codex",
+    "ok": false,
+    "latency_s": 0.7,
+    "token_field": null,
+    "text": "",
+    "error": "{\\\\n  \\\"error\\\": {\\\\n    \\\"message\\\": \\\"This is not a chat model and thus not supported in the v1/chat/completions endpoint. Did you mean to use v1/completions?\\\",\\\\n    \\\"type\\\": \\\"invalid_request_error\\\",\\\\n    \\\"param\\\": \\\"model\\\",\\\\n    \\\"code\\\": null\\\\n  }\\\\n}"
+  },
+  {
+    "id": "oci/openai.gpt-5.1-2025-11-13",
+    "ok": true,
+    "latency_s": 2.9,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-5.2-chat-latest",
+    "ok": true,
+    "latency_s": 1.2,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-5.2",
+    "ok": true,
+    "latency_s": 1.2,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-5.1-codex-mini",
+    "ok": false,
+    "latency_s": 0.5,
+    "token_field": null,
+    "text": "",
+    "error": "{\\\\n  \\\"error\\\": {\\\\n    \\\"message\\\": \\\"This model is only supported in v1/responses and not in v1/chat/completions.\\\",\\\\n    \\\"type\\\": \\\"invalid_request_error\\\",\\\\n    \\\"param\\\": \\\"model\\\",\\\\n    \\\"code\\\": null\\\\n  }\\\\n}"
+  },
+  {
+    "id": "oci/openai.gpt-5.1",
+    "ok": true,
+    "latency_s": 1.7,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-5.2-pro",
+    "ok": false,
+    "latency_s": 0.5,
+    "token_field": null,
+    "text": "",
+    "error": "{\\\\n  \\\"error\\\": {\\\\n    \\\"message\\\": \\\"This is not a chat model and thus not supported in the v1/chat/completions endpoint. Did you mean to use v1/completions?\\\",\\\\n    \\\"type\\\": \\\"invalid_request_error\\\",\\\\n    \\\"param\\\": \\\"model\\\",\\\\n    \\\"code\\\": null\\\\n  }\\\\n}"
+  },
+  {
+    "id": "oci/openai.gpt-image-1.5",
+    "ok": false,
+    "latency_s": 1.0,
+    "token_field": null,
+    "text": "",
+    "error": "openai.gpt-image-1.5 does not support Chat"
+  },
+  {
+    "id": "oci/openai.gpt-5.2-2025-12-11",
+    "ok": true,
+    "latency_s": 1.0,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-5-codex",
+    "ok": false,
+    "latency_s": 0.7,
+    "token_field": null,
+    "text": "",
+    "error": "{\\\\n  \\\"error\\\": {\\\\n    \\\"message\\\": \\\"This model is only supported in v1/responses and not in v1/chat/completions.\\\",\\\\n    \\\"type\\\": \\\"invalid_request_error\\\",\\\\n    \\\"param\\\": \\\"model\\\",\\\\n    \\\"code\\\": null\\\\n  }\\\\n}"
+  },
+  {
+    "id": "oci/xai.grok-4-fast-non-reasoning",
+    "ok": true,
+    "latency_s": 1.5,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/xai.grok-4-fast-reasoning",
+    "ok": true,
+    "latency_s": 1.2,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/xai.grok-code-fast-1",
+    "ok": true,
+    "latency_s": 2.3,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-oss-120b",
+    "ok": true,
+    "latency_s": 0.8,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-oss-20b",
+    "ok": true,
+    "latency_s": 0.6,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/google.gemini-2.5-flash",
+    "ok": true,
+    "latency_s": 1.1,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/google.gemini-2.5-pro",
+    "ok": true,
+    "latency_s": 2.9,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/google.gemini-2.5-flash-lite",
+    "ok": true,
+    "latency_s": 15.9,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-5",
+    "ok": true,
+    "latency_s": 2.0,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-5-nano-2025-08-07",
+    "ok": true,
+    "latency_s": 1.9,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-5-2025-08-07",
+    "ok": true,
+    "latency_s": 2.5,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-5-mini-2025-08-07",
+    "ok": true,
+    "latency_s": 1.5,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-5-mini",
+    "ok": true,
+    "latency_s": 1.8,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-5-nano",
+    "ok": true,
+    "latency_s": 2.4,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/xai.grok-4",
+    "ok": true,
+    "latency_s": 4.0,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/cohere.command-latest",
+    "ok": false,
+    "latency_s": 0.5,
+    "token_field": null,
+    "text": "",
+    "error": "Unsupported OpenAI operation"
+  },
+  {
+    "id": "oci/cohere.command-plus-latest",
+    "ok": false,
+    "latency_s": 0.6,
+    "token_field": null,
+    "text": "",
+    "error": "Unsupported OpenAI operation"
+  },
+  {
+    "id": "oci/openai.text-embedding-3-large",
+    "ok": false,
+    "latency_s": 0.2,
+    "token_field": null,
+    "text": "",
+    "error": "HTTP 500: {\"error\":{\"detail\":\"Internal server error: An unexpected error occurred.\"}}"
+  },
+  {
+    "id": "oci/openai.text-embedding-3-small",
+    "ok": false,
+    "latency_s": 0.8,
+    "token_field": null,
+    "text": "",
+    "error": "HTTP 500: {\"error\":{\"detail\":\"Internal server error: An unexpected error occurred.\"}}"
+  },
+  {
+    "id": "oci/cohere.embed-v4.0",
+    "ok": false,
+    "latency_s": 0.3,
+    "token_field": null,
+    "text": "",
+    "error": "HTTP 500: {\"error\":{\"detail\":\"Internal server error: An unexpected error occurred.\"}}"
+  },
+  {
+    "id": "oci/xai.grok-3-fast",
+    "ok": true,
+    "latency_s": 1.0,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/xai.grok-3",
+    "ok": true,
+    "latency_s": 0.7,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/xai.grok-3-mini-fast",
+    "ok": true,
+    "latency_s": 3.7,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/xai.grok-3-mini",
+    "ok": true,
+    "latency_s": 3.4,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.o3-2025-04-16",
+    "ok": true,
+    "latency_s": 1.4,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.o4-mini-2025-04-16",
+    "ok": true,
+    "latency_s": 1.8,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/meta.llama-4-maverick-17b-128e-instruct-fp8",
+    "ok": true,
+    "latency_s": 0.5,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-4o-mini-search-preview-2025-03-11",
+    "ok": true,
+    "latency_s": 1.9,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.o4-mini",
+    "ok": true,
+    "latency_s": 1.8,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-4o-search-preview",
+    "ok": true,
+    "latency_s": 2.4,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-4o-mini-search-preview",
+    "ok": true,
+    "latency_s": 1.2,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-4o-search-preview-2025-03-11",
+    "ok": true,
+    "latency_s": 2.4,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.o3",
+    "ok": true,
+    "latency_s": 1.6,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/meta.llama-4-scout-17b-16e-instruct",
+    "ok": true,
+    "latency_s": 0.5,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/cohere.embed-multilingual-image-v3.0",
+    "ok": false,
+    "latency_s": 0.2,
+    "token_field": null,
+    "text": "",
+    "error": "HTTP 500: {\"error\":{\"detail\":\"Internal server error: An unexpected error occurred.\"}}"
+  },
+  {
+    "id": "oci/cohere.command-a-03-2025",
+    "ok": false,
+    "latency_s": 0.6,
+    "token_field": null,
+    "text": "",
+    "error": "Unsupported OpenAI operation"
+  },
+  {
+    "id": "oci/openai.gpt-4.1-nano-2025-04-14",
+    "ok": true,
+    "latency_s": 0.6,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-4.1-2025-04-14",
+    "ok": true,
+    "latency_s": 0.9,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-4.1-mini-2025-04-14",
+    "ok": true,
+    "latency_s": 0.7,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-4.1-mini",
+    "ok": true,
+    "latency_s": 1.0,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-4.1-nano",
+    "ok": true,
+    "latency_s": 1.0,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-4.1",
+    "ok": true,
+    "latency_s": 1.9,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.o3-mini",
+    "ok": true,
+    "latency_s": 2.7,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.o3-mini-2025-01-31",
+    "ok": true,
+    "latency_s": 3.0,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.o1",
+    "ok": false,
+    "latency_s": 3.3,
+    "token_field": "max_completion_tokens",
+    "text": "",
+    "error": "empty response (finish=length)"
+  },
+  {
+    "id": "oci/openai.o1-2024-12-17",
+    "ok": true,
+    "latency_s": 2.3,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-4o",
+    "ok": true,
+    "latency_s": 1.6,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-4o-mini",
+    "ok": true,
+    "latency_s": 0.8,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-4o-mini-2024-07-18",
+    "ok": true,
+    "latency_s": 0.9,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-4o-2024-11-20",
+    "ok": true,
+    "latency_s": 0.9,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/openai.gpt-4o-2024-08-06",
+    "ok": true,
+    "latency_s": 0.8,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/meta.llama-3.3-70b-instruct",
+    "ok": true,
+    "latency_s": 0.6,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/meta.llama-3.2-11b-vision-instruct",
+    "ok": false,
+    "latency_s": 0.4,
+    "token_field": null,
+    "text": "",
+    "error": "Entity with key meta.llama-3.2-11b-vision-instruct not found"
+  },
+  {
+    "id": "oci/meta.llama-3.2-90b-vision-instruct",
+    "ok": true,
+    "latency_s": 1.0,
+    "token_field": "max_completion_tokens",
+    "text": "ready",
+    "error": null
+  },
+  {
+    "id": "oci/meta.llama-3.1-405b-instruct",
+    "ok": true,
+    "latency_s": 0.5,
+    "token_field": "max_completion_tokens",
+    "text": "Ready",
+    "error": null
+  },
+  {
+    "id": "oci/cohere.embed-english-light-v3.0",
+    "ok": false,
+    "latency_s": 0.2,
+    "token_field": null,
+    "text": "",
+    "error": "HTTP 500: {\"error\":{\"detail\":\"Internal server error: An unexpected error occurred.\"}}"
+  },
+  {
+    "id": "oci/cohere.embed-english-v3.0",
+    "ok": false,
+    "latency_s": 0.4,
+    "token_field": null,
+    "text": "",
+    "error": "HTTP 500: {\"error\":{\"detail\":\"Internal server error: An unexpected error occurred.\"}}"
+  },
+  {
+    "id": "oci/cohere.embed-multilingual-light-v3.0",
+    "ok": false,
+    "latency_s": 0.4,
+    "token_field": null,
+    "text": "",
+    "error": "HTTP 500: {\"error\":{\"detail\":\"Internal server error: An unexpected error occurred.\"}}"
+  },
+  {
+    "id": "oci/cohere.embed-multilingual-v3.0",
+    "ok": false,
+    "latency_s": 0.4,
+    "token_field": null,
+    "text": "",
+    "error": "502 Bad Gateway"
+  }
+]

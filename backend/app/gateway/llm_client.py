@@ -126,14 +126,28 @@ def _flatten_content(content: Any) -> str:
     return str(content)
 
 
-_REASONING_MODEL_PREFIXES = (
-    "openai.gpt-5", "openai.o1", "openai.o3", "openai.o4",
-)
-
-
 def _is_reasoning_model(model: str) -> bool:
-    """OpenAI reasoning models (o-series, gpt-5) use max_completion_tokens."""
-    return any(model.startswith(p) for p in _REASONING_MODEL_PREFIXES)
+    """Detect models that must be called with ``max_completion_tokens``.
+
+    Covers:
+      - OpenAI reasoning families (gpt-5.x, o1/o3/o4) — regardless of any
+        ``oci/`` or other namespace prefix the gateway prepends to the ID.
+      - xAI reasoning variants identified by the ``-reasoning`` suffix
+        (e.g., ``xai.grok-4.20-reasoning``), carefully excluding the
+        matching ``-non-reasoning`` variants which are plain chat models.
+
+    The client auto-corrects on the server's 400 error either way, but
+    doing this up-front saves a round trip on every call.
+    """
+    mid = model.lower()
+    if "-non-reasoning" in mid:
+        return False
+    if "-reasoning" in mid:
+        return True
+    # OpenAI reasoning families — match anywhere in the ID so namespace
+    # prefixes like ``oci/`` or ``openai/`` don't hide them.
+    needles = ("openai.gpt-5", "openai.o1", "openai.o3", "openai.o4")
+    return any(n in mid for n in needles)
 
 
 def _to_openai_messages(system: Any, messages: Iterable[dict] | None) -> list[dict]:
