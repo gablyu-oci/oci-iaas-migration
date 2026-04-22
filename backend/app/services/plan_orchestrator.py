@@ -466,6 +466,11 @@ def _run_pipeline(
     def _progress_cb(phase, iteration, confidence, decision):
         logger.info("  %s: iter=%d conf=%.2f", phase, iteration, confidence or 0)
 
+    # Defer cfn_terraform until after the per-resource skills have run —
+    # the chunked CFN writer reuses their already-generated HCL so it only
+    # has to translate what isn't already covered.
+    cfn_stacks = skill_resources.pop("cfn_terraform", None)
+
     for skill_type in skill_resources:
         skill_label = skill_type.replace("_", " ").title()
         _progress(skill_type, f"Running {skill_label} (max {max_iterations} rounds)")
@@ -479,6 +484,17 @@ def _run_pipeline(
         except Exception as exc:
             _progress(skill_type, f"{skill_label} failed: {exc}")
             logger.warning("Skill %s failed: %s", skill_type, exc)
+
+    # ── Step 3b: CFN stacks — chunked translation with prior-skill reuse ─
+    if cfn_stacks:
+        _run_cfn_chunked(
+            cfn_stacks=cfn_stacks,
+            completed_artifacts=completed_artifacts,
+            _progress=_progress,
+            _progress_cb=_progress_cb,
+            anthropic_client=anthropic_client,
+            max_iterations=max_iterations,
+        )
 
     # ── Step 4: Data migration planning (if needed) ────────────────────
     if needs_data_migration:
@@ -660,3 +676,95 @@ def _run_skill(
         max_iterations=max_iterations,
         migration_id=migration_id,
     )
+
+
+def _run_cfn_chunked(
+    cfn_stacks: list[dict],
+    completed_artifacts: dict[str, str],
+    _progress,
+    _progress_cb,
+    anthropic_client,
+    max_iterations: int,
+    migration_id: str | None = None,
+) -> None:
+    """Translate each CFN stack via chunked writer calls + prior-skill reuse.
+
+    Instead of handing the whole template to one writer call (which 504s on
+    the nginx gateway for templates with 20+ resources), split it into
+    chunks of ~8 resources, reuse already-translated HCL from earlier
+    skills as context, translate each chunk with ``max_iterations=1``
+    (small inputs don't need a review loop), and merge the outputs.
+
+    Failures are per-chunk, not per-stack — one 504 no longer wipes out
+    the whole CFN translation.
+    """
+    from app.services.cfn_chunker import (
+        DEFAULT_CHUNK_SIZE,
+        build_reference_library,
+        chunk_cfn_template,
+        merge_chunk_outputs,
+    )
+
+    for stack_idx, stack in enumerate(cfn_stacks):
+        raw = stack.get("raw_config") or {}
+        template = raw.get("template") or raw
+        stack_name = (
+            raw.get("stack_name")
+            or stack.get("name")
+            or f"stack-{stack_idx}"
+        )
+
+        chunks = chunk_cfn_template(template, chunk_size=DEFAULT_CHUNK_SIZE)
+        if not chunks:
+            _progress("cfn_terraform", f"CFN '{stack_name}': no Resources to translate; skipping")
+            continue
+
+        reference_hcl = build_reference_library(completed_artifacts)
+        total = len(chunks)
+        _progress(
+            "cfn_terraform",
+            f"CFN '{stack_name}': translating {total} chunk(s) of up to {DEFAULT_CHUNK_SIZE} resources "
+            f"(reusing HCL from {len(reference_hcl)} prior skills)",
+        )
+
+        chunk_outputs: list[dict] = []
+        for chunk in chunks:
+            chunk_input = chunk.to_input(reference_hcl=reference_hcl)
+            try:
+                # max_iterations=1: chunks are small, a full review/revise loop
+                # per chunk would 3x the LLM traffic for marginal gain.
+                result = _run_skill(
+                    "cfn_terraform",
+                    chunk_input,
+                    _progress_cb,
+                    anthropic_client,
+                    max_iterations=1,
+                    migration_id=migration_id,
+                )
+                if result:
+                    chunk_outputs.append(result.get("artifacts") or {})
+                    conf = result.get("confidence", 0)
+                    _progress(
+                        "cfn_terraform",
+                        f"CFN '{stack_name}' chunk {chunk.index + 1}/{total} — confidence {conf:.0%}",
+                    )
+            except Exception as exc:
+                logger.warning("CFN chunk %d/%d for '%s' failed: %s",
+                               chunk.index + 1, total, stack_name, exc)
+                _progress(
+                    "cfn_terraform",
+                    f"CFN '{stack_name}' chunk {chunk.index + 1}/{total} failed: {str(exc)[:200]}",
+                )
+
+        if not chunk_outputs:
+            _progress("cfn_terraform", f"CFN '{stack_name}' produced no output; moving on")
+            continue
+
+        merged = merge_chunk_outputs(chunk_outputs)
+        for name, content in merged.items():
+            completed_artifacts[f"cfn_terraform/{stack_name}/{name}"] = content
+        _progress(
+            "cfn_terraform",
+            f"CFN '{stack_name}' merged: {len(chunk_outputs)}/{total} chunks translated, "
+            f"{len(merged)} file(s) in final bundle",
+        )

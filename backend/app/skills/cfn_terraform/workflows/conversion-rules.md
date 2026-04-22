@@ -3,6 +3,63 @@
 ## Overview
 Systematic rules for converting AWS CloudFormation templates to OCI-compatible Terraform HCL.
 
+## Input shapes
+
+This skill receives one of two payload shapes:
+
+### 1. Whole-template mode (small templates)
+
+A single JSON/YAML CloudFormation template. Translate everything in one pass.
+
+### 2. Chunked mode (large templates)
+
+When the orchestrator detects a large template (> ~10 resources), it splits
+it and invokes this skill once per chunk. Input:
+
+```json
+{
+  "_chunked": true,
+  "chunk_index": 2,
+  "chunk_total": 5,
+  "description": "Multi-tier VPC infrastructure",
+  "resources": { "MyVPC": {...}, "MySubnetA": {...}, ... },
+  "all_logical_ids": ["MyVPC", "MySubnetA", "MySubnetB", "..."],
+  "parameters": {...},
+  "mappings": {...},
+  "conditions": {...},
+  "outputs": {...},                // only on the final chunk
+  "reference_hcl": {
+    "network_translation": { "main.tf": "...", "variables.tf": "..." },
+    "ec2_translation":      { "main.tf": "...", "variables.tf": "..." },
+    ...
+  }
+}
+```
+
+**Rules for chunked mode:**
+
+- **Translate ONLY the resources in `resources`** — do not re-emit HCL for
+  resources in other chunks. The orchestrator merges everything at the end.
+- `all_logical_ids` tells you which resource names will exist in sibling
+  chunks; if one of your resources references (`!Ref`) such a name, emit
+  the corresponding Terraform reference (e.g. `oci_core_vcn.my_vpc.id`)
+  assuming it exists elsewhere. The Terraform planner resolves cross-chunk
+  references at plan time.
+- **Reuse `reference_hcl` verbatim where it covers one of your chunk
+  resources.** Each per-resource skill (network/ec2/storage/…) already
+  produced HCL for the matching AWS resources in this stack. If a chunk
+  resource matches a prior skill's output (by logical ID, by AWS type, or
+  by any explicit mapping), lift that HCL into your chunk's `main.tf`
+  instead of regenerating. This is the whole point of the chunked path —
+  skip the reasoning + generation work when it's already been done.
+- Parameters, Mappings, Conditions, and Outputs are shared across chunks.
+  If your chunk uses any, emit them into `variables.tf` / `outputs.tf`.
+  The orchestrator deduplicates by name at merge time, so it's OK for
+  multiple chunks to declare the same `variable` or `output`.
+- Don't call `terraform_validate` per chunk unless the chunk is
+  self-contained — partial HCL fragments will fail validation. Save
+  validation for either whole-template mode or the final merged bundle.
+
 ## Key Differences: CloudFormation vs Terraform (OCI)
 
 ### 1. Syntax & Structure

@@ -3,6 +3,7 @@ Backend integration tests using in-memory SQLite (async) + HTTPX AsyncClient.
 Tests all API routes without requiring a live Postgres or Redis.
 """
 
+import json
 import pytest
 import pytest_asyncio
 import uuid
@@ -642,6 +643,148 @@ def test_resource_details_ec2_feeds_metrics_into_rightsizer():
     assert out["rightsizing"]["ocpus"] < 16
     # Confidence should be "high" since both CPU + memory metrics were supplied.
     assert out["rightsizing"]["confidence"] == "high"
+
+
+def test_cfn_chunker_parse_json():
+    """A JSON CFN template round-trips through parse_cfn_template."""
+    from app.services.cfn_chunker import parse_cfn_template
+
+    tpl = {
+        "Resources": {"A": {"Type": "AWS::EC2::VPC"}, "B": {"Type": "AWS::EC2::Subnet"}},
+        "Parameters": {"P": {"Type": "String"}},
+    }
+    # Dict passes through
+    assert parse_cfn_template(tpl) == tpl
+    # JSON string round-trips
+    assert parse_cfn_template(json.dumps(tpl)) == tpl
+    # None / empty is a safe empty dict
+    assert parse_cfn_template(None) == {}
+    assert parse_cfn_template("") == {}
+
+
+def test_cfn_chunker_parse_yaml_with_intrinsics():
+    """YAML short-forms like !Ref / !GetAtt become proper dicts."""
+    from app.services.cfn_chunker import parse_cfn_template
+
+    yaml_tpl = (
+        "Resources:\n"
+        "  MyVPC:\n"
+        "    Type: AWS::EC2::VPC\n"
+        "    Properties:\n"
+        "      CidrBlock: !Ref VpcCidr\n"
+        "  MySubnet:\n"
+        "    Type: AWS::EC2::Subnet\n"
+        "    Properties:\n"
+        "      VpcId: !GetAtt MyVPC.Id\n"
+    )
+    parsed = parse_cfn_template(yaml_tpl)
+    assert parsed.get("Resources", {}).get("MyVPC", {}).get("Properties", {}).get("CidrBlock") == {"Ref": "VpcCidr"}
+    get_att = parsed.get("Resources", {}).get("MySubnet", {}).get("Properties", {}).get("VpcId")
+    assert get_att == {"Fn::GetAtt": ["MyVPC", "Id"]}
+
+
+def test_cfn_chunker_splits_on_chunk_size():
+    """25 resources with chunk_size=8 → 4 chunks, sizes 8/8/8/1."""
+    from app.services.cfn_chunker import chunk_cfn_template
+
+    tpl = {
+        "Resources": {f"R{i}": {"Type": "AWS::EC2::Volume"} for i in range(25)},
+        "Parameters": {"CompartmentOcid": {"Type": "String"}},
+        "Outputs": {"FirstVol": {"Value": "x"}},
+    }
+    chunks = chunk_cfn_template(tpl, chunk_size=8)
+    sizes = [len(c.resources) for c in chunks]
+    assert sizes == [8, 8, 8, 1]
+    # all_logical_ids is the full set on every chunk
+    assert all(len(c.all_logical_ids) == 25 for c in chunks)
+    # Outputs are attached to the last chunk only
+    assert chunks[-1].outputs == {"FirstVol": {"Value": "x"}}
+    assert chunks[0].outputs == {}
+    # Parameters land on every chunk
+    assert all(c.parameters == {"CompartmentOcid": {"Type": "String"}} for c in chunks)
+    # Index + total are populated for progress reporting
+    assert chunks[0].index == 0 and chunks[0].total == 4
+    assert chunks[-1].index == 3 and chunks[-1].total == 4
+
+
+def test_cfn_chunker_empty_template_no_chunks():
+    """A template with no Resources produces no chunks (callers should skip)."""
+    from app.services.cfn_chunker import chunk_cfn_template
+
+    assert chunk_cfn_template({"Resources": {}}) == []
+    assert chunk_cfn_template({}) == []
+    assert chunk_cfn_template(None) == []
+
+
+def test_cfn_chunker_reference_library_pivots_completed_artifacts():
+    """Completed artifacts (keyed 'skill/file') pivot into a per-skill HCL map."""
+    from app.services.cfn_chunker import build_reference_library
+
+    completed = {
+        "network_translation/main.tf": "resource \"oci_core_vcn\" \"x\" {}",
+        "network_translation/variables.tf": "variable \"y\" {}",
+        "ec2_translation/main.tf": "resource \"oci_core_instance\" \"i\" {}",
+        "resource-mapping.json": "[...]",   # not skill-scoped → excluded
+        "data_migration/runbook.md": "steps",  # not a known skill-of-interest
+    }
+    lib = build_reference_library(completed)
+    assert "network_translation" in lib
+    assert "main.tf" in lib["network_translation"]
+    assert "variables.tf" in lib["network_translation"]
+    assert "ec2_translation" in lib
+    # Non-skill / non-tf entries are filtered out
+    assert "resource-mapping.json" not in lib
+    assert "data_migration" not in lib
+
+
+def test_cfn_chunker_merge_deduplicates_variables_and_outputs():
+    """Variables + outputs with the same name are deduplicated across chunks."""
+    from app.services.cfn_chunker import merge_chunk_outputs
+
+    chunks = [
+        {
+            "main.tf": 'resource "oci_core_vcn" "a" { cidr_block = "10.0.0.0/16" }',
+            "variables.tf": 'variable "compartment_ocid" {\n  type = string\n}',
+            "outputs.tf": 'output "vcn_id" {\n  value = oci_core_vcn.a.id\n}',
+        },
+        {
+            "main.tf": 'resource "oci_core_subnet" "b" { cidr_block = "10.0.1.0/24" }',
+            "variables.tf": 'variable "compartment_ocid" {\n  type = string\n}\n\nvariable "subnet_cidr" {\n  type = string\n}',
+            "outputs.tf": 'output "subnet_id" {\n  value = oci_core_subnet.b.id\n}',
+        },
+    ]
+    merged = merge_chunk_outputs(chunks)
+
+    # Main.tf concatenates both chunks (with chunk headers)
+    assert "oci_core_vcn" in merged["main.tf"]
+    assert "oci_core_subnet" in merged["main.tf"]
+    assert "# --- chunk 0 ---" in merged["main.tf"]
+    assert "# --- chunk 1 ---" in merged["main.tf"]
+    # compartment_ocid appears once — duplicate dropped
+    assert merged["variables.tf"].count('variable "compartment_ocid"') == 1
+    # subnet_cidr is unique to chunk 1, preserved
+    assert 'variable "subnet_cidr"' in merged["variables.tf"]
+    # Both outputs survive (different names)
+    assert 'output "vcn_id"' in merged["outputs.tf"]
+    assert 'output "subnet_id"' in merged["outputs.tf"]
+
+
+def test_cfn_chunker_chunk_input_serializes_reference_hcl():
+    """ChunkSpec.to_input() embeds the reference HCL the writer needs."""
+    from app.services.cfn_chunker import chunk_cfn_template
+
+    tpl = {"Resources": {f"R{i}": {"Type": "AWS::EC2::Volume"} for i in range(3)}}
+    chunks = chunk_cfn_template(tpl, chunk_size=2)
+    assert len(chunks) == 2
+    ref = {"network_translation": {"main.tf": "resource \"oci_core_vcn\" \"x\" {}"}}
+    payload = json.loads(chunks[0].to_input(reference_hcl=ref))
+    assert payload["_chunked"] is True
+    assert payload["chunk_index"] == 0
+    assert payload["chunk_total"] == 2
+    assert list(payload["resources"].keys()) == ["R0", "R1"]
+    assert payload["all_logical_ids"] == ["R0", "R1", "R2"]
+    assert "reference_hcl" in payload
+    assert payload["reference_hcl"]["network_translation"]["main.tf"].startswith("resource")
 
 
 def test_job_result_shape():
