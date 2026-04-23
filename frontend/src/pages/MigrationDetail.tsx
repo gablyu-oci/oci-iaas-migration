@@ -1685,6 +1685,113 @@ function PlanStep({
 
 // ── Step: Migrate ────────────────────────────────────────────────────────────
 
+interface OCMStatus {
+  migration_ocid?: string;
+  level: 'none' | 'running' | 'succeeded' | 'failed' | 'timeout' | 'sdk_unavailable';
+  message: string;
+  percent_complete?: number;
+  work_requests?: {
+    id: string;
+    operation_type: string;
+    status: string;
+    percent_complete: number;
+    time_accepted: string;
+    time_finished: string;
+  }[];
+  started_at?: string;
+  updated_at?: string;
+}
+
+function OCMProgressCard({ migrationId }: { migrationId: string }) {
+  const [status, setStatus] = useState<OCMStatus | null>(null);
+
+  useEffect(() => {
+    if (!migrationId) return;
+    let cancelled = false;
+    const fetchStatus = async () => {
+      try {
+        const r = await client.get(`/api/migrations/${migrationId}/ocm-status`);
+        if (!cancelled) setStatus(r.data);
+      } catch { /* ignore transient failures */ }
+    };
+    fetchStatus();
+    const timer = setInterval(fetchStatus, 10_000);  // 10s cadence; watcher polls at 30s
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [migrationId]);
+
+  // Hide until OCM is actually involved
+  if (!status || status.level === 'none') return null;
+
+  const color =
+    status.level === 'succeeded' ? '#16a34a' :
+    status.level === 'failed'    ? '#dc2626' :
+    status.level === 'timeout'   ? '#d97706' :
+    status.level === 'sdk_unavailable' ? '#d97706' :
+                                    '#7c3aed';
+  const pct = Math.max(0, Math.min(100, Math.round(status.percent_complete ?? 0)));
+
+  return (
+    <div className="rounded-xl p-5" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}>
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <p className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>
+            Oracle Cloud Migrations — replication &amp; launch
+          </p>
+          <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)' }}>
+            {status.message}
+          </p>
+        </div>
+        <div className="text-right">
+          <p className="text-lg font-bold" style={{ color, fontFamily: 'var(--font-mono)' }}>{pct}%</p>
+          <p className="text-xs" style={{ color: 'var(--color-text-dim)' }}>{status.level}</p>
+        </div>
+      </div>
+      {/* Progress bar */}
+      {status.level === 'running' && (
+        <div className="w-full rounded-full overflow-hidden" style={{ height: '6px', background: 'var(--color-well)' }}>
+          <div style={{
+            height: '100%',
+            width: `${pct}%`,
+            background: color,
+            transition: 'width 500ms ease-out',
+          }} />
+        </div>
+      )}
+      {/* Per-work-request table */}
+      {status.work_requests && status.work_requests.length > 0 && (
+        <div className="mt-3" style={{ borderTop: '1px dashed var(--color-fence)' }}>
+          <table className="w-full mt-2 text-xs" style={{ fontFamily: 'var(--font-mono)' }}>
+            <thead style={{ color: 'var(--color-text-dim)' }}>
+              <tr>
+                <th className="text-left py-1 font-normal">Operation</th>
+                <th className="text-left py-1 font-normal">Status</th>
+                <th className="text-right py-1 font-normal">%</th>
+              </tr>
+            </thead>
+            <tbody style={{ color: 'var(--color-text-bright)' }}>
+              {status.work_requests.map((wr) => (
+                <tr key={wr.id} style={{ borderTop: '1px dashed var(--color-fence)' }}>
+                  <td className="py-1">{wr.operation_type || '—'}</td>
+                  <td className="py-1" style={{ color: wr.status === 'FAILED' ? '#dc2626' : wr.status === 'SUCCEEDED' ? '#16a34a' : 'var(--color-text-bright)' }}>
+                    {wr.status}
+                  </td>
+                  <td className="text-right py-1">{Math.round(wr.percent_complete || 0)}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {status.migration_ocid && (
+        <p className="mt-2 text-[10px]" style={{ color: 'var(--color-text-dim)', fontFamily: 'var(--font-mono)' }}>
+          OCID: {status.migration_ocid}
+        </p>
+      )}
+    </div>
+  );
+}
+
+
 function MigrateStep({ migrationId, migration }: {
   migrationId: string;
   migration?: { migrate_status?: string | null; migrate_workload_name?: string | null; migrate_started_at?: string | null; migrate_current_step?: string | null; migrate_terraform_plan?: string | null; migrate_logs?: string[] | null; plan_status?: string | null; plan_workload_id?: string | null; plan_workload_name?: string | null } | null;
@@ -2194,6 +2301,8 @@ function MigrateStep({ migrationId, migration }: {
             ))}
           </div>
         </div>
+
+        <OCMProgressCard migrationId={migrationId} />
 
         {/* Live logs */}
         <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--color-rule)' }}>

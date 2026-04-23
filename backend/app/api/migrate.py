@@ -116,6 +116,62 @@ async def get_execution_status(
     )
 
 
+@router.get("/migrations/{mig_id}/ocm-status")
+async def get_ocm_status(
+    mig_id: str,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the latest OCM work-request status parsed from migrate_logs.
+
+    The migration_executor writes ``[OCM] <json>`` entries as the watcher
+    reports progress; we scan from the end for the most recent one and
+    return its parsed contents. Shape mirrors
+    ``ocm_watcher.WorkRequestStatus.as_dict()``:
+
+        {
+          "migration_ocid": "...",
+          "level": "running" | "succeeded" | "failed" | "timeout" | "sdk_unavailable",
+          "message": "...",
+          "percent_complete": 0.0,
+          "work_requests": [...],
+          "started_at": "...",
+          "updated_at": "..."
+        }
+
+    Returns ``{"level": "none"}`` when the migration isn't using OCM or
+    hasn't reached the OCM phase yet — the UI hides the progress card in
+    that case.
+    """
+    import json as _json
+
+    result = await db.execute(
+        select(Migration).where(
+            Migration.id == uuid.UUID(mig_id),
+            Migration.tenant_id == tenant.id,
+        )
+    )
+    mig = result.scalar_one_or_none()
+    if not mig:
+        raise HTTPException(status_code=404, detail="Migration not found")
+
+    logs = mig.migrate_logs or []
+    for line in reversed(logs):
+        if not isinstance(line, str):
+            continue
+        # Lines are stored as "HH:MM:SS [OCM] <json>" or similar; find the marker.
+        idx = line.find("[OCM]")
+        if idx < 0:
+            continue
+        payload = line[idx + len("[OCM]"):].strip()
+        try:
+            return _json.loads(payload)
+        except (ValueError, TypeError):
+            continue
+
+    return {"level": "none", "message": "No OCM activity recorded for this migration."}
+
+
 @router.post("/migrations/{mig_id}/approve-plan")
 async def approve_plan(
     mig_id: str,

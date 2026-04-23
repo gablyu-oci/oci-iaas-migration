@@ -297,12 +297,102 @@ def _run_execution(
         _save_terraform_state(session, migration_id, workspace)
         return
 
+    # ── Step 5b: Watch OCM work-requests (if any OCM resources in the plan) ──
+    # When the plan generated oci_cloud_migrations_migration / migration_plan
+    # resources, `terraform apply` only provisions the OCM plan record —
+    # OCM itself then runs replication + launch asynchronously. Poll until
+    # those work-requests reach a terminal state so the UI has accurate
+    # completion signal.
+    _watch_ocm_if_applicable(session, migration_id, workspace, oci_conn)
+
     # ── Step 6: Save state + complete ─────────────────────────────────
     _save_terraform_state(session, migration_id, workspace)
 
     _update_migrate_status(session, migration_id, status="completed", step="complete",
                            log_line="Migration completed successfully")
     logger.info("Migration execution completed for %s", workload_name)
+
+
+def _watch_ocm_if_applicable(
+    session, migration_id: str, workspace: Path, oci_conn
+) -> None:
+    """If the applied Terraform includes OCM resources, poll their work
+    requests and log progress. Best-effort — any failure here is
+    surfaced as a log line, never blocks the overall migration."""
+    import json as _json
+
+    # Pull the migration_id output from terraform — our ocm_handoff skill
+    # exports this as the sole public handle into OCM.
+    try:
+        out_proc = subprocess.run(
+            ["terraform", "output", "-json"],
+            cwd=str(workspace), capture_output=True, text=True, timeout=30,
+        )
+        if out_proc.returncode != 0:
+            return  # no outputs / not an OCM-flavored plan
+        from app.services.ocm_watcher import (
+            parse_migration_ocid_from_tf_output, poll_work_requests,
+        )
+        ocm_ocid = parse_migration_ocid_from_tf_output(out_proc.stdout)
+        if not ocm_ocid:
+            return
+    except Exception as exc:  # noqa: BLE001
+        _update_migrate_status(session, migration_id,
+                               log_line=f"OCM watcher: skipped ({exc!s})")
+        return
+
+    _update_migrate_status(
+        session, migration_id, step="ocm_replication",
+        log_line=f"OCM handoff detected (migration={ocm_ocid}); polling work-requests",
+    )
+
+    # Build OCI config from the migration's connection record.
+    oci_config = _oci_config_from_conn(oci_conn)
+
+    def _on_progress(status) -> None:
+        # Encode the structured status as a special log entry the UI can parse.
+        try:
+            payload = _json.dumps(status.as_dict(), default=str)
+        except Exception:
+            payload = status.message
+        _update_migrate_status(
+            session, migration_id,
+            log_line=f"[OCM] {payload}",
+        )
+
+    try:
+        result = poll_work_requests(
+            migration_id=migration_id,
+            ocm_migration_ocid=ocm_ocid,
+            oci_config=oci_config,
+            on_progress=_on_progress,
+            timeout_seconds=3600 * 6,
+            poll_interval_seconds=30,
+        )
+        _update_migrate_status(
+            session, migration_id,
+            log_line=f"OCM watcher finished: {result.level} — {result.message}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        _update_migrate_status(
+            session, migration_id,
+            log_line=f"OCM watcher error: {exc!s}",
+        )
+
+
+def _oci_config_from_conn(oci_conn) -> dict:
+    """Turn an OCIConnection ORM row into an ``oci.config``-shaped dict
+    the SDK clients consume."""
+    if oci_conn is None:
+        return {}
+    return {
+        "user":             getattr(oci_conn, "user_ocid", "") or "",
+        "tenancy":          getattr(oci_conn, "tenancy_ocid", "") or "",
+        "fingerprint":      getattr(oci_conn, "fingerprint", "") or "",
+        "region":           getattr(oci_conn, "region", "") or "",
+        "key_content":      getattr(oci_conn, "private_key_pem", "") or "",
+        "compartment_id":   getattr(oci_conn, "compartment_id", "") or "",
+    }
 
 
 _PROVIDER_CREDENTIAL_VARS = {"tenancy_ocid", "user_ocid", "fingerprint", "private_key_path", "region"}

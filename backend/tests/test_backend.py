@@ -645,6 +645,48 @@ def test_resource_details_ec2_feeds_metrics_into_rightsizer():
     assert out["rightsizing"]["confidence"] == "high"
 
 
+def test_ocm_watcher_parses_migration_ocid_from_tf_output():
+    """The watcher locates migration_id in both flat and wrapped-by-'value' shapes."""
+    from app.services.ocm_watcher import parse_migration_ocid_from_tf_output
+
+    # Standard terraform output -json shape: {"key": {"value": "...", "type": "..."}}
+    ocid = "ocid1.migration.oc1..abcdefg"
+    tf_out = json.dumps({
+        "migration_id": {"value": ocid, "type": "string", "sensitive": False},
+        "target_asset_ids": {"value": {}, "type": "object"},
+    })
+    assert parse_migration_ocid_from_tf_output(tf_out) == ocid
+
+    # Alternate key name we accept
+    tf_out2 = json.dumps({"migration_ocid": {"value": ocid}})
+    assert parse_migration_ocid_from_tf_output(tf_out2) == ocid
+
+    # No migration output → None
+    assert parse_migration_ocid_from_tf_output(json.dumps({"other": {"value": "x"}})) is None
+    # Malformed JSON → None
+    assert parse_migration_ocid_from_tf_output("not json") is None
+
+
+def test_ocm_watcher_falls_back_without_sdk():
+    """When the oci SDK isn't importable, poll_work_requests returns sdk_unavailable."""
+    import sys as _sys
+    from unittest.mock import patch
+
+    # Force SDK import to fail
+    with patch.dict(_sys.modules, {"oci": None}):
+        from importlib import reload
+        import app.services.ocm_watcher as w
+        reload(w)
+        status = w.poll_work_requests(
+            migration_id="m1",
+            ocm_migration_ocid="ocid1.migration.oc1..x",
+            oci_config={},
+            on_progress=None,
+        )
+        assert status.level == "sdk_unavailable"
+        assert "SDK" in status.message or "manually" in status.message
+
+
 def test_ocm_handoff_skill_registered():
     """ocm_handoff_translation is a first-class skill with SkillSpec + routing."""
     from app.agents.skill_group import SKILL_SPECS, SKILL_TO_AWS_TYPES
