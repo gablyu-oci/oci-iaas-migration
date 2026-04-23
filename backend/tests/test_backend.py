@@ -1017,6 +1017,55 @@ def test_ocm_handoff_input_includes_compat_and_prereqs():
     assert parsed["target_compartment_var"] == "compartment_ocid"
 
 
+def test_ocm_compatibility_target_shape_not_on_whitelist_downgrades_to_manual():
+    """Source passes OS + arch, but rightsizer-picked shape isn't on OCM's whitelist.
+
+    Example: Oracle Linux on x86 normally 'full', but if rightsizer picked
+    VM.DenseIO.E5.Flex or VM.Standard.A2.Flex (both not on OCM's list),
+    the compat verdict must downgrade to 'manual' so the operator sees
+    the problem at assessment time instead of at OCM execute time.
+    """
+    from app.services.ocm_compatibility import check_ec2_compatibility
+
+    rc = {"instance_type": "m5.large", "architecture": "x86_64",
+          "platform": "", "root_device_type": "ebs"}
+    inv = {"os_name": "Oracle Linux", "os_version": "9.3"}
+
+    # Whitelisted shape → still full
+    r_ok = check_ec2_compatibility(rc, inv, recommended_shape="VM.Standard.E5.Flex")
+    assert r_ok["level"] == "full"
+
+    # DenseIO.E5.Flex NOT on OCM's whitelist → downgrade to manual
+    r_denseio = check_ec2_compatibility(rc, inv, recommended_shape="VM.DenseIO.E5.Flex")
+    assert r_denseio["level"] == "manual"
+    assert r_denseio["supported"] is False
+    assert "DenseIO.E5.Flex" in r_denseio["reason"]
+    assert "whitelisted" in r_denseio["alternative"].lower()
+
+    # ARM (A2.Flex) also not on whitelist → manual
+    r_arm = check_ec2_compatibility(rc, inv, recommended_shape="VM.Standard.A2.Flex")
+    assert r_arm["level"] == "manual"
+    assert "A2.Flex" in r_arm["reason"]
+
+    # When no recommended_shape is provided, old behavior preserved
+    r_legacy = check_ec2_compatibility(rc, inv)
+    assert r_legacy["level"] == "full"
+
+
+def test_ocm_compatibility_hard_disqualifier_wins_over_shape_check():
+    """Graviton source is 'unsupported' regardless of target shape."""
+    from app.services.ocm_compatibility import check_ec2_compatibility
+    r = check_ec2_compatibility(
+        {"instance_type": "m7g.xlarge", "architecture": "arm64",
+         "platform": "", "root_device_type": "ebs"},
+        None,
+        recommended_shape="VM.Standard.E5.Flex",  # a whitelisted shape
+    )
+    # The ARM hard disqualifier fires before the target-shape check
+    assert r["level"] == "unsupported"
+    assert r["matched_rule"] == "arm-architecture"
+
+
 def test_ocm_compatibility_full_for_oracle_linux():
     """Oracle Linux 9 on x86 EBS-backed instance → fully OCM-ready."""
     from app.services.ocm_compatibility import check_ec2_compatibility

@@ -493,7 +493,14 @@ def _run_pipeline(
                 native_only.append(r)
                 continue
             rc = r.get("raw_config") or {}
-            compat = check_ec2_compatibility(rc, rc.get("software_inventory"))
+            # Feed the rightsizer-picked shape in so the check rejects
+            # instances whose target shape isn't on OCM's whitelist (e.g.
+            # DenseIO.E5.Flex, A2.Flex) — they'd otherwise fail at OCM
+            # plan-execute time instead of at routing time.
+            rec_shape = (ra_map.get(str(r.get("id", ""))) or {}).get("recommended_oci_shape")
+            compat = check_ec2_compatibility(
+                rc, rc.get("software_inventory"), recommended_shape=rec_shape,
+            )
             if compat.get("level") in ("full", "with_prep", "manual"):
                 ocm_eligible.append(r)
             else:

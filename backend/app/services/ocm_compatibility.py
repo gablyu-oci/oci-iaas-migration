@@ -133,8 +133,19 @@ def _match_os_rule(os_label: str, raw_config: dict) -> dict[str, Any] | None:
 def check_ec2_compatibility(
     raw_config: dict,
     software_inventory: dict | None = None,
+    recommended_shape: str | None = None,
 ) -> dict[str, Any]:
     """Decide OCM compatibility for one EC2 instance.
+
+    Factor in three tiers of checks:
+      1. Hard source disqualifiers (ARM arch, instance-store root, GPU family).
+      2. OS-rule match against ``ocm_support.yaml`` (full / with_prep / manual).
+      3. Target-shape check — if ``recommended_shape`` is supplied (from
+         the assessment's rightsizing), verify it's on OCM's published
+         target whitelist. A source that passes 1-2 but whose recommended
+         target shape isn't OCM-supported gets downgraded to ``manual``,
+         surfacing an otherwise-silent incompatibility the operator would
+         only discover at `oci cloud-migrations migration-plan execute` time.
 
     Args:
         raw_config: The EC2 row's raw_config dict (post-enrichment — must
@@ -142,6 +153,9 @@ def check_ec2_compatibility(
             root_device_type).
         software_inventory: Optional SSM inventory payload captured at
             discovery time ({os_name, os_version, kernel, ...}).
+        recommended_shape: Optional OCI shape name the rightsizer picked
+            for this instance (e.g. ``VM.Standard.E5.Flex``). When None,
+            only source-side checks run — matches the old behaviour.
 
     Returns:
         A dict matching the module docstring's contract.
@@ -156,20 +170,45 @@ def check_ec2_compatibility(
         return hit
 
     # 2) OS rule match
-    os_hit = _match_os_rule(detected, raw_config)
-    if os_hit is not None:
-        os_hit["detected_os"] = detected
-        return os_hit
+    base = _match_os_rule(detected, raw_config)
+    if base is None:
+        # No OS rule matched — conservative default: manual review
+        base = {
+            **_DEFAULT_RESULT_FIELDS,
+            "supported": False,
+            "level": "manual",
+            "reason": f"Could not classify source OS '{detected}'; no OCM support rule matched.",
+            "alternative": "Verify the instance OS manually. Fall back to native ec2_translation if OCM doesn't cover it.",
+        }
+    base["detected_os"] = detected
 
-    # 3) No rule matched — conservative default: manual review
-    return {
-        **_DEFAULT_RESULT_FIELDS,
-        "supported": False,
-        "level": "manual",
-        "reason": f"Could not classify source OS '{detected}'; no OCM support rule matched.",
-        "alternative": "Verify the instance OS manually. Fall back to native ec2_translation if OCM doesn't cover it.",
-        "detected_os": detected,
-    }
+    # 3) Target-shape check. The rightsizer may have picked a perfectly
+    # reasonable OCI shape (e.g. VM.DenseIO.E5.Flex, VM.Standard.A2.Flex)
+    # that OCM doesn't accept as a target — and the operator would only
+    # find out when `migration-plan execute` throws. Catch it here so the
+    # compatibility badge reflects the full end-to-end verdict.
+    if recommended_shape and not is_shape_supported_by_ocm(recommended_shape):
+        already_bad = base.get("level") in ("unsupported", "manual")
+        base["supported"] = False
+        base["level"] = "manual" if not already_bad else base["level"]
+        shape_reason = (
+            f"Recommended OCI shape '{recommended_shape}' is not on OCM's "
+            f"target whitelist. OCM will refuse to provision the migration "
+            f"plan on execute."
+        )
+        # Preserve any earlier reason; prepend the shape-specific one so it
+        # reads first in the UI.
+        base["reason"] = (
+            shape_reason + (f" (also: {base['reason']})" if base.get("reason") else "")
+        )
+        base["alternative"] = (
+            "Either (a) route this instance through native ec2_translation "
+            "(emits oci_core_instance HCL directly), or (b) downshift the "
+            "rightsizer to a whitelisted shape such as VM.Standard.E5.Flex "
+            "/ VM.Standard3.Flex / VM.Optimized3.Flex / VM.Standard2.*."
+        )
+
+    return base
 
 
 def is_shape_supported_by_ocm(shape: str | None) -> bool:

@@ -303,7 +303,9 @@ async def get_resource_assessments(
         if rtype == "AWS::EC2::Instance":
             try:
                 compat = check_ec2_compatibility(
-                    rraw, rraw.get("software_inventory") if isinstance(rraw, dict) else None
+                    rraw,
+                    rraw.get("software_inventory") if isinstance(rraw, dict) else None,
+                    recommended_shape=ra.recommended_oci_shape,
                 )
                 ocm_level = compat.get("level")
                 ocm_rule = compat.get("matched_rule")
@@ -457,6 +459,21 @@ async def get_app_group_resource_details(
         select(Resource).where(Resource.id.in_(resource_ids))
     )
 
+    # Load this app-group's ResourceAssessment rows so we can feed the
+    # rightsizer-picked shape into the OCM compat check (catches
+    # target-shape-not-on-whitelist cases that a source-only check misses).
+    shape_by_resource: dict[uuid.UUID, str] = {}
+    if ag.assessment_id:
+        ra_rows = await db.execute(
+            select(ResourceAssessment).where(
+                ResourceAssessment.assessment_id == ag.assessment_id,
+                ResourceAssessment.resource_id.in_(resource_ids),
+            )
+        )
+        for ra in ra_rows.scalars().all():
+            if ra.recommended_oci_shape:
+                shape_by_resource[ra.resource_id] = ra.recommended_oci_shape
+
     out: list[dict] = []
     for r in res_result.scalars().all():
         rc = r.raw_config or {}
@@ -475,7 +492,9 @@ async def get_app_group_resource_details(
         if r.aws_type == "AWS::EC2::Instance":
             try:
                 row["ocm_compatibility"] = check_ec2_compatibility(
-                    rc, rc.get("software_inventory") if isinstance(rc, dict) else None,
+                    rc,
+                    rc.get("software_inventory") if isinstance(rc, dict) else None,
+                    recommended_shape=shape_by_resource.get(r.id),
                 )
             except Exception:
                 pass

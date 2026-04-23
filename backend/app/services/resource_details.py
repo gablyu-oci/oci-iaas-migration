@@ -29,6 +29,7 @@ def enrich(
     aws_type: str | None,
     raw_config: dict | None,
     include_rightsizing: bool = True,
+    recommended_shape: str | None = None,
 ) -> dict[str, Any]:
     """Return a dict of UI-ready fields for one resource.
 
@@ -63,7 +64,12 @@ def enrich(
     if aws_type == "AWS::EC2::Instance":
         if include_rightsizing:
             out["rightsizing"] = _rightsizing_for_ec2(rc)
-        out["ocm_compatibility"] = _ocm_compat_for_ec2(rc)
+        # If caller supplied a recommended_shape (from the assessment DB),
+        # use it. Otherwise fall back to the fresh rightsizing pass above.
+        shape_for_compat = recommended_shape or (
+            out["rightsizing"].get("recommended_oci_shape") if out.get("rightsizing") else None
+        )
+        out["ocm_compatibility"] = _ocm_compat_for_ec2(rc, recommended_shape=shape_for_compat)
 
     return out
 
@@ -110,11 +116,13 @@ def _shape_spec_for(instance_type: str) -> dict[str, Any] | None:
     }
 
 
-def _ocm_compat_for_ec2(rc: dict) -> dict[str, Any] | None:
+def _ocm_compat_for_ec2(rc: dict, recommended_shape: str | None = None) -> dict[str, Any] | None:
     """OCM compatibility check for one EC2 instance.
 
-    Returns ``None`` on import failure so that a missing dep never breaks
-    the detail render (matches the existing rightsizing try/except pattern).
+    Passes the assessment-picked ``recommended_shape`` through so the compat
+    verdict reflects both source-side disqualifiers AND target-shape
+    whitelist matches. Returns ``None`` on import failure so that a missing
+    dep never breaks the detail render.
     """
     try:
         from app.services.ocm_compatibility import check_ec2_compatibility
@@ -122,7 +130,7 @@ def _ocm_compat_for_ec2(rc: dict) -> dict[str, Any] | None:
         return None
     software_inventory = rc.get("software_inventory") or None
     try:
-        return check_ec2_compatibility(rc, software_inventory)
+        return check_ec2_compatibility(rc, software_inventory, recommended_shape=recommended_shape)
     except Exception:  # noqa: BLE001 — never fail a detail render
         return None
 
