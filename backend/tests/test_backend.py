@@ -645,6 +645,106 @@ def test_resource_details_ec2_feeds_metrics_into_rightsizer():
     assert out["rightsizing"]["confidence"] == "high"
 
 
+def test_bundle_builder_reorganizes_artifacts_into_hybrid_layout():
+    """build_hybrid_bundle splits per-skill artifacts into the four sections."""
+    from app.services.bundle_builder import build_hybrid_bundle
+
+    raw = {
+        "resource-mapping.json": '[{"aws": "ec2"}]',
+        "synthesis/main.tf": "resource \"oci_core_vcn\" \"x\" {}",
+        "synthesis/variables.tf": "variable \"y\" {}",
+        "synthesis/prerequisites.md": "pre",
+        "synthesis/special-attention.md": "attn",
+        "ec2_translation/main.tf": "# per-skill debug",
+        "ec2_translation/variables.tf": "variable \"z\" {}",
+        "network_translation/main.tf": "# net debug",
+        "data_migration/runbook.md": "mig steps",
+        "workload_planning/cutover.md": "cutover steps",
+        "ocm_handoff_translation/main.tf": "resource \"oci_cloud_migrations_migration\" \"m\" {}",
+        "ocm_handoff_translation/handoff.md": "OCM handoff steps",
+    }
+    out = build_hybrid_bundle(
+        raw, migration_name="multi-tier-vpc", resource_count=5,
+        skills_ran=["network_translation", "ec2_translation", "synthesis"],
+        elapsed_seconds=120.5, synthesis_ok=True,
+        ocm_instance_count=2, native_instance_count=3,
+    )
+
+    # Terraform (synthesis → terraform/)
+    assert "terraform/main.tf" in out
+    assert "terraform/variables.tf" in out
+    # OCM handoff TF goes under terraform/ocm/
+    assert "terraform/ocm/main.tf" in out
+
+    # Runbooks (handoff, data-migration, cutover)
+    assert "runbooks/handoff.md" in out
+    assert "runbooks/data-migration/runbook.md" in out
+    assert "runbooks/cutover/cutover.md" in out
+
+    # Reports (resource-mapping, prerequisites, special-attention, gaps)
+    assert "reports/resource-mapping.json" in out
+    assert "reports/prerequisites.md" in out
+    assert "reports/special-attention.md" in out
+    assert "reports/gaps.md" in out
+
+    # Debug (per-skill intermediate HCL)
+    assert "debug/ec2_translation/main.tf" in out
+    assert "debug/network_translation/main.tf" in out
+
+    # Top-level generated docs
+    assert "README.md" in out
+    assert "manifest.json" in out
+    assert "multi-tier-vpc" in out["README.md"]
+    assert "OCM" in out["README.md"]
+
+    # Manifest carries the file list + SHA256s
+    manifest = json.loads(out["manifest.json"])
+    assert manifest["migration_name"] == "multi-tier-vpc"
+    assert manifest["resource_count"] == 5
+    assert manifest["file_count"] >= 10
+    assert all("sha256" in f and "path" in f for f in manifest["files"])
+
+
+def test_bundle_builder_aggregates_gaps_by_severity():
+    """When a _review_gaps_sentinel is present, gaps.md groups by CRITICAL → LOW."""
+    from app.services.bundle_builder import build_hybrid_bundle
+    raw = {
+        "synthesis/main.tf": "tf",
+        "_review_gaps_sentinel": json.dumps([
+            {"skill": "ec2_translation", "severity": "HIGH",
+             "description": "Windows BYOL needs dedicated host",
+             "recommendation": "Switch to license-included AMI"},
+            {"skill": "storage_translation", "severity": "CRITICAL",
+             "description": "io2 Block Express source exceeds UHP cap",
+             "recommendation": "Re-provision storage in OCI with smaller IOPS"},
+            {"skill": "loadbalancer_translation", "severity": "LOW",
+             "description": "HTTPS listener missing cert OCID",
+             "recommendation": "Import cert to OCI Certificate Service first"},
+        ]),
+    }
+    out = build_hybrid_bundle(
+        raw, migration_name="w", resource_count=1,
+        skills_ran=["ec2_translation"], elapsed_seconds=1.0, synthesis_ok=True,
+    )
+    gaps_md = out["reports/gaps.md"]
+    # CRITICAL comes before HIGH comes before LOW
+    assert gaps_md.index("## CRITICAL") < gaps_md.index("## HIGH") < gaps_md.index("## LOW")
+    # Each gap carries its skill tag + description + recommendation
+    assert "[storage_translation]" in gaps_md
+    assert "io2 Block Express" in gaps_md
+    assert "Switch to license-included AMI" in gaps_md
+
+
+def test_bundle_builder_empty_gaps_renders_positive_message():
+    from app.services.bundle_builder import build_hybrid_bundle
+    raw = {"synthesis/main.tf": "tf"}
+    out = build_hybrid_bundle(
+        raw, migration_name="w", resource_count=1,
+        skills_ran=[], elapsed_seconds=1.0, synthesis_ok=True,
+    )
+    assert "No gaps were reported" in out["reports/gaps.md"]
+
+
 def test_ocm_watcher_parses_migration_ocid_from_tf_output():
     """The watcher locates migration_id in both flat and wrapped-by-'value' shapes."""
     from app.services.ocm_watcher import parse_migration_ocid_from_tf_output

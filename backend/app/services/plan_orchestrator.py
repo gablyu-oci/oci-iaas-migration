@@ -513,6 +513,11 @@ def _run_pipeline(
             "resource_mapping",
             f"Hybrid EC2: {len(ocm_eligible)} via OCM, {len(native_only)} via native Terraform",
         )
+        _hybrid_ocm_count = len(ocm_eligible)
+        _hybrid_native_count = len(native_only)
+    else:
+        _hybrid_ocm_count = 0
+        _hybrid_native_count = 0
 
     has_databases = "database_translation" in skill_resources
     # Check if data migration planning is needed:
@@ -548,6 +553,37 @@ def _run_pipeline(
     # has to translate what isn't already covered.
     cfn_stacks = skill_resources.pop("cfn_terraform", None)
 
+    # Accumulates reviewer-flagged gaps across every skill so the
+    # bundle_builder can aggregate them into reports/gaps.md at the end.
+    all_gaps: list[dict] = []
+
+    def _collect_gaps(skill_type: str, result: dict | None) -> None:
+        if not result:
+            return
+        review = result.get("review") or {}
+        # Standard shape: review.issues = [{severity, description, recommendation}]
+        for issue in (review.get("issues") or []):
+            if not isinstance(issue, dict):
+                continue
+            all_gaps.append({
+                "skill": skill_type,
+                "severity": issue.get("severity", ""),
+                "description": issue.get("description", ""),
+                "recommendation": issue.get("recommendation", ""),
+            })
+        # Some skills also drop gaps as a separate array on draft
+        draft = result.get("draft") or {}
+        for g in (draft.get("gaps") or []):
+            if isinstance(g, str):
+                all_gaps.append({"skill": skill_type, "severity": "INFO", "description": g, "recommendation": ""})
+            elif isinstance(g, dict):
+                all_gaps.append({
+                    "skill": skill_type,
+                    "severity": g.get("severity", "INFO"),
+                    "description": g.get("description", g.get("issue", "")),
+                    "recommendation": g.get("recommendation", g.get("fix", "")),
+                })
+
     for skill_type in skill_resources:
         skill_label = skill_type.replace("_", " ").title()
         _progress(skill_type, f"Running {skill_label} (max {max_iterations} rounds)")
@@ -557,6 +593,7 @@ def _run_pipeline(
             if result:
                 for name, content in result.get("artifacts", {}).items():
                     completed_artifacts[f"{skill_type}/{name}"] = content
+                _collect_gaps(skill_type, result)
                 _progress(skill_type, f"{skill_label} complete — confidence {result.get('confidence', 0):.0%}, {result.get('iterations', 1)} round(s)")
         except Exception as exc:
             _progress(skill_type, f"{skill_label} failed: {exc}")
@@ -679,9 +716,48 @@ def _run_pipeline(
     else:
         _progress("synthesis", "No translation artifacts to synthesize — skipping")
 
-    # ── Step 7: Store results ──────────────────────────────────────────
+    # ── Step 7: Build the hybrid bundle ────────────────────────────────
+    # Reorganize per-skill artifacts into terraform/ + runbooks/ +
+    # reports/ + debug/ with a top-level README.md + manifest.json.
     import time
     elapsed = round(time.time() - pipeline_start, 1)
+
+    synthesis_ok = any(k.startswith("synthesis/") for k in completed_artifacts)
+    skills_ran_list = (
+        list(skill_resources.keys())
+        + (["data_migration_planning"] if needs_data_migration else [])
+        + ["workload_planning"]
+        + (["synthesis"] if synthesis_ok else [])
+    )
+
+    # Stash aggregated gaps for bundle_builder (consumed + deleted inside).
+    completed_artifacts["_review_gaps_sentinel"] = json.dumps(all_gaps)
+
+    try:
+        from app.services.bundle_builder import build_hybrid_bundle
+        bundle = build_hybrid_bundle(
+            completed_artifacts,
+            migration_name=ag.name,
+            resource_count=len(resources),
+            skills_ran=skills_ran_list,
+            elapsed_seconds=elapsed,
+            synthesis_ok=synthesis_ok,
+            ocm_instance_count=_hybrid_ocm_count,
+            native_instance_count=_hybrid_native_count,
+        )
+        _progress(
+            "complete",
+            f"Hybrid bundle built: {sum(1 for p in bundle if p.startswith('terraform/'))} terraform files, "
+            f"{sum(1 for p in bundle if p.startswith('runbooks/'))} runbook files, "
+            f"{sum(1 for p in bundle if p.startswith('reports/'))} report files, "
+            f"{sum(1 for p in bundle if p.startswith('debug/'))} debug files",
+        )
+        # Replace flat dict with hybrid layout for downstream consumers
+        completed_artifacts = bundle
+    except Exception as exc:
+        logger.warning("bundle rebuild failed: %s\n%s", exc, traceback.format_exc())
+        completed_artifacts.pop("_review_gaps_sentinel", None)
+
     _progress("complete", f"Plan generation complete in {elapsed}s")
 
     from sqlalchemy import text as _text
@@ -699,7 +775,7 @@ def _run_pipeline(
             "status": "completed",
             "resource_mapping": resource_mapping,
             "artifacts": {k: v for k, v in completed_artifacts.items()},
-            "skills_ran": list(skill_resources.keys()) + (["data_migration_planning"] if needs_data_migration else []) + ["workload_planning", "synthesis"],
+            "skills_ran": skills_ran_list,
             "max_iterations": max_iterations,
             "elapsed_seconds": elapsed,
             "completed_at": datetime.now(timezone.utc).isoformat(),

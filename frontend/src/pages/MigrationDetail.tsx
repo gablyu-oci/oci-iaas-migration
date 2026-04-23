@@ -569,51 +569,57 @@ function DiscoverStep({
 // ── Plan Results Display ─────────────────────────────────────────────────────
 
 function PlanResults({ results }: { results: { resource_mapping?: Array<Record<string, unknown>>; artifacts?: Record<string, string>; skills_ran?: string[] } }) {
-  const [activeTab, setActiveTab] = useState<string>('mapping');
+  const [activeTab, setActiveTab] = useState<string>('summary');
+  const [showDebug, setShowDebug] = useState(false);
 
   const mapping = results.resource_mapping || [];
-  const artifacts = results.artifacts || {};
+  const rawArtifacts = results.artifacts || {};
 
-  // Build tabs from available artifacts
-  const tabs: { id: string; label: string }[] = [
-    { id: 'mapping', label: 'Resource Mapping' },
-  ];
+  // Partition artifacts by top-level directory (hybrid bundle layout).
+  // Fallback: if an artifact doesn't use the new layout (plan generated
+  // before the bundle_builder rolled out), route it through the old
+  // prefix logic so older plans still render.
+  const bySection: Record<'terraform' | 'runbooks' | 'reports' | 'debug', Record<string, string>> = {
+    terraform: {}, runbooks: {}, reports: {}, debug: {},
+  };
+  let readme: string | null = null;
+  let manifestJson: string | null = null;
 
-  // Group artifacts by category
-  const synthesisArtifacts: Record<string, string> = {};
-  const skillTfArtifacts: Record<string, string> = {};
-  const dataMigArtifacts: Record<string, string> = {};
-  const runbookArtifacts: Record<string, string> = {};
-
-  const prerequisitesContent: Record<string, string> = {};
-
-  for (const [key, content] of Object.entries(artifacts)) {
-    if (key.startsWith('synthesis/')) {
-      const fname = key.replace('synthesis/', '');
-      if (fname === 'prerequisites.md' || fname === 'special-attention.md') {
-        prerequisitesContent[fname] = content;
-      } else {
-        synthesisArtifacts[fname] = content;
-      }
-    } else if (key.startsWith('data_migration/')) {
-      dataMigArtifacts[key.replace('data_migration/', '')] = content;
-    } else if (key.startsWith('workload_planning/')) {
-      runbookArtifacts[key.replace('workload_planning/', '')] = content;
-    } else if (key !== 'resource-mapping.json') {
-      // Individual skill outputs (ec2_translation/main.tf, etc.)
-      skillTfArtifacts[key] = content;
+  const legacyFallback: Record<string, string> = {};
+  for (const [key, content] of Object.entries(rawArtifacts)) {
+    if (key === 'README.md') { readme = content; continue; }
+    if (key === 'manifest.json') { manifestJson = content; continue; }
+    const top = key.split('/', 1)[0];
+    if (top === 'terraform' || top === 'runbooks' || top === 'reports' || top === 'debug') {
+      bySection[top][key.slice(top.length + 1)] = content;
+    } else {
+      legacyFallback[key] = content;
     }
   }
 
-  // Use synthesis if available, otherwise fall back to individual skill TF files
-  const terraformArtifacts = Object.keys(synthesisArtifacts).length > 0
-    ? synthesisArtifacts
-    : skillTfArtifacts;
+  // If we ended up with any legacy-layout artifacts, fold them into
+  // approximate new sections so older plan runs still display sensibly.
+  if (Object.keys(bySection.terraform).length === 0 && Object.keys(legacyFallback).length > 0) {
+    for (const [key, content] of Object.entries(legacyFallback)) {
+      if (key.startsWith('synthesis/')) bySection.terraform[key.replace('synthesis/', '')] = content;
+      else if (key.startsWith('data_migration/')) bySection.runbooks[`data-migration/${key.replace('data_migration/', '')}`] = content;
+      else if (key.startsWith('workload_planning/')) bySection.runbooks[`cutover/${key.replace('workload_planning/', '')}`] = content;
+      else if (key === 'resource-mapping.json') bySection.reports['resource-mapping.json'] = content;
+      else bySection.debug[key] = content;
+    }
+  }
 
-  if (Object.keys(prerequisitesContent).length > 0) tabs.push({ id: 'prerequisites', label: 'Prerequisites' });
-  if (Object.keys(terraformArtifacts).length > 0) tabs.push({ id: 'terraform', label: 'Terraform' });
-  if (Object.keys(dataMigArtifacts).length > 0) tabs.push({ id: 'data', label: 'Data Migration' });
-  if (Object.keys(runbookArtifacts).length > 0) tabs.push({ id: 'runbook', label: 'Runbook & Risks' });
+  const hasTf = Object.keys(bySection.terraform).length > 0;
+  const hasRunbooks = Object.keys(bySection.runbooks).length > 0;
+  const hasReports = Object.keys(bySection.reports).length > 0;
+  const hasDebug = Object.keys(bySection.debug).length > 0;
+
+  const tabs: { id: string; label: string; count?: number }[] = [];
+  if (readme) tabs.push({ id: 'summary', label: 'Summary' });
+  tabs.push({ id: 'mapping', label: 'Resource Map' });
+  if (hasTf) tabs.push({ id: 'terraform', label: 'Terraform', count: Object.keys(bySection.terraform).length });
+  if (hasRunbooks) tabs.push({ id: 'runbooks', label: 'Runbooks', count: Object.keys(bySection.runbooks).length });
+  if (hasReports) tabs.push({ id: 'reports', label: 'Reports', count: Object.keys(bySection.reports).length });
 
   const currentTab = tabs.find(t => t.id === activeTab) ? activeTab : tabs[0]?.id;
 
@@ -640,7 +646,6 @@ function PlanResults({ results }: { results: { resource_mapping?: Array<Record<s
               className="px-4 py-2 text-xs font-medium transition-colors"
               style={{
                 color: currentTab === tab.id ? 'var(--color-ember)' : 'var(--color-text-dim)',
-                borderBottom: `2px solid ${currentTab === tab.id ? 'var(--color-ember)' : 'transparent'}`,
                 background: 'transparent',
                 border: 'none',
                 borderBottomWidth: '2px',
@@ -649,46 +654,67 @@ function PlanResults({ results }: { results: { resource_mapping?: Array<Record<s
                 cursor: 'pointer',
               }}
             >
-              {tab.label}
+              {tab.label}{tab.count !== undefined ? ` (${tab.count})` : ''}
             </button>
           ))}
         </div>
 
         <div className="p-4">
+          {currentTab === 'summary' && readme && (
+            <div className="rounded-lg p-4" style={{
+              background: 'var(--color-well)', border: '1px solid var(--color-rule)',
+              whiteSpace: 'pre-wrap', fontSize: '0.75rem', lineHeight: 1.7,
+              color: 'var(--color-text-bright)', fontFamily: 'var(--font-mono)',
+            }}>
+              {readme}
+            </div>
+          )}
           {currentTab === 'mapping' && (
             <PlanMappingTable mapping={mapping} />
           )}
-          {currentTab === 'prerequisites' && (
-            <div className="space-y-4">
-              {prerequisitesContent['prerequisites.md'] && (
-                <div>
-                  <h4 className="text-xs font-semibold mb-2" style={{ color: 'var(--color-ember)' }}>Prerequisites Checklist</h4>
-                  <div className="rounded-lg p-4" style={{ background: 'var(--color-well)', border: '1px solid var(--color-rule)', whiteSpace: 'pre-wrap', fontSize: '0.75rem', lineHeight: 1.8, color: 'var(--color-text)' }}>
-                    {prerequisitesContent['prerequisites.md']}
-                  </div>
-                </div>
-              )}
-              {prerequisitesContent['special-attention.md'] && (
-                <div>
-                  <h4 className="text-xs font-semibold mb-2" style={{ color: '#d97706' }}>Special Attention Items</h4>
-                  <div className="rounded-lg p-4" style={{ background: 'var(--color-well)', border: '1px solid var(--color-rule)', whiteSpace: 'pre-wrap', fontSize: '0.75rem', lineHeight: 1.8, color: 'var(--color-text)' }}>
-                    {prerequisitesContent['special-attention.md']}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
           {currentTab === 'terraform' && (
-            <ArtifactList artifacts={terraformArtifacts} showDownloadAll downloadPrefix="terraform" />
+            <ArtifactList artifacts={bySection.terraform} showDownloadAll downloadPrefix="terraform" />
           )}
-          {currentTab === 'data' && (
-            <ArtifactList artifacts={dataMigArtifacts} />
+          {currentTab === 'runbooks' && (
+            <ArtifactList artifacts={bySection.runbooks} showDownloadAll downloadPrefix="runbooks" />
           )}
-          {currentTab === 'runbook' && (
-            <ArtifactList artifacts={runbookArtifacts} />
+          {currentTab === 'reports' && (
+            <ArtifactList artifacts={bySection.reports} showDownloadAll downloadPrefix="reports" />
           )}
         </div>
       </div>
+
+      {/* Debug section — collapsed by default. Intermediate per-skill HCL
+          the synthesis step already merged into terraform/; kept for
+          traceability. */}
+      {hasDebug && (
+        <div className="rounded-xl overflow-hidden" style={{ border: '1px dashed var(--color-fence)', background: 'var(--color-well)' }}>
+          <button
+            onClick={() => setShowDebug(v => !v)}
+            className="w-full flex items-center justify-between px-4 py-2.5 text-left"
+            style={{ background: 'transparent', border: 'none', cursor: 'pointer' }}
+          >
+            <span className="text-xs font-semibold" style={{ color: 'var(--color-text-dim)' }}>
+              {showDebug ? '▾' : '▸'} Intermediate per-skill outputs ({Object.keys(bySection.debug).length})
+            </span>
+            <span className="text-[10px]" style={{ color: 'var(--color-text-dim)' }}>
+              Merged into terraform/ — kept for traceability
+            </span>
+          </button>
+          {showDebug && (
+            <div className="p-4" style={{ borderTop: '1px solid var(--color-rule)' }}>
+              <ArtifactList artifacts={bySection.debug} showDownloadAll downloadPrefix="debug" />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Manifest (cosmetic — tells the operator integrity info exists) */}
+      {manifestJson && (
+        <p className="text-[10px]" style={{ color: 'var(--color-text-dim)', fontFamily: 'var(--font-mono)' }}>
+          manifest.json present — SHA256 checksums for every bundled file.
+        </p>
+      )}
     </div>
   );
 }
