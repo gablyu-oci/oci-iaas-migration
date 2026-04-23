@@ -158,6 +158,13 @@ SKILL_TO_AWS_TYPES: dict[str, frozenset[str] | None] = {
     "cfn_terraform":           frozenset({
         "AWS::CloudFormation::Stack", "AWS::CloudFront::Distribution",
     }),
+    # OCM handoff runs in parallel with ec2_translation on EC2 instances.
+    # The plan_orchestrator picks between the two outputs based on each
+    # instance's ocm_compatibility level: OCM-ready → OCM path;
+    # unsupported → native ec2_translation fallback.
+    "ocm_handoff_translation": frozenset({
+        "AWS::EC2::Instance",
+    }),
     "data_migration_planning": None,  # routes off DB resources but consumed differently
     "synthesis":               None,  # consumes prior skill outputs, not raw resources
     "workload_planning":       None,  # needs assessment output
@@ -215,6 +222,25 @@ SKILL_SPECS: dict[str, SkillSpec] = {
             "the instance, not separate resources."
         ),
         input_shape_hint="Dict with `instances` (+ optionally `auto_scaling_groups`).",
+        needs_terraform_validate=True,
+    ),
+    "ocm_handoff_translation": SkillSpec(
+        skill_type="ocm_handoff_translation",
+        display_name="OCM Handoff Translator",
+        description=(
+            "Hybrid-mode EC2 replacement for ec2_translation. Emits "
+            "oci_cloud_migrations_{migration,migration_plan,target_asset,"
+            "replication_schedule} Terraform + a step-by-step handoff.md "
+            "runbook the operator follows before and after apply. Only "
+            "translates instances whose assessed ocm_compatibility.level "
+            "is full / with_prep / manual — unsupported ones fall through "
+            "to native ec2_translation."
+        ),
+        input_shape_hint=(
+            "Dict with `instances` (each carrying ocm_compatibility from "
+            "the assessment), `ocm_prereqs`, `target_shape_whitelist`, and "
+            "target compartment / VCN / subnet variable names."
+        ),
         needs_terraform_validate=True,
     ),
     "storage_translation": SkillSpec(

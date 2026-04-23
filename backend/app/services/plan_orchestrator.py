@@ -108,6 +108,38 @@ def _build_skill_input(skill_type: str, resources: list[dict]) -> str:
             else: instances.append(r.get("raw_config") or {})
         return json.dumps({"instances": instances, "auto_scaling_groups": asgs}, indent=2)
 
+    if skill_type == "ocm_handoff_translation":
+        # Attach per-instance OCM compatibility metadata so the writer can
+        # route correctly (full/with_prep/manual → OCM; unsupported already
+        # filtered upstream in _partition_ec2_for_hybrid).
+        try:
+            from app.services.ocm_compatibility import check_ec2_compatibility
+            from app import mappings as _m
+        except ImportError:
+            check_ec2_compatibility = None  # type: ignore
+            _m = None  # type: ignore
+
+        instances: list[dict] = []
+        for r in resources:
+            rc = dict(r.get("raw_config") or {})
+            if check_ec2_compatibility is not None:
+                inv = rc.get("software_inventory") or None
+                try:
+                    rc["ocm_compatibility"] = check_ec2_compatibility(rc, inv)
+                except Exception:
+                    pass
+            instances.append(rc)
+        prereqs = _m.ocm_handoff_prereqs() if _m else []
+        whitelist = _m.ocm_target_shapes() if _m else []
+        return json.dumps({
+            "instances": instances,
+            "ocm_prereqs": prereqs,
+            "target_shape_whitelist": whitelist,
+            "target_compartment_var": "compartment_ocid",
+            "target_vcn_var": "target_vcn_ocid",
+            "target_subnet_var": "target_subnet_ocid",
+        }, indent=2)
+
     if skill_type == "database_translation":
         return json.dumps({"db_instances": raw_configs}, indent=2)
 
@@ -436,6 +468,51 @@ def _run_pipeline(
     if cfn_skipped:
         logger.info("Skipped %d resources already covered by CloudFormation stack translation", cfn_skipped)
         _progress("resource_mapping", f"Skipped {cfn_skipped} CFN-managed resources (covered by stack translation)")
+
+    # ── Hybrid EC2 routing: OCM vs native fallback ────────────────────
+    # Every EC2 instance gets an OCM compatibility check. Those whose level
+    # is full/with_prep/manual route through ocm_handoff_translation;
+    # unsupported ones fall through to ec2_translation. This gives us the
+    # OCM path for cases OCM can handle and keeps native HCL as the
+    # fallback for Graviton, instance-store, etc.
+    ec2_rows = skill_resources.get("ec2_translation", [])
+    if ec2_rows:
+        try:
+            from app.services.ocm_compatibility import check_ec2_compatibility
+        except ImportError:
+            check_ec2_compatibility = None  # type: ignore
+
+        ocm_eligible: list[dict] = []
+        native_only: list[dict] = []
+        for r in ec2_rows:
+            if "AutoScaling" in r.get("aws_type", ""):
+                # ASGs don't go through OCM today — OCM doesn't model scaling.
+                native_only.append(r)
+                continue
+            if check_ec2_compatibility is None:
+                native_only.append(r)
+                continue
+            rc = r.get("raw_config") or {}
+            compat = check_ec2_compatibility(rc, rc.get("software_inventory"))
+            if compat.get("level") in ("full", "with_prep", "manual"):
+                ocm_eligible.append(r)
+            else:
+                native_only.append(r)
+
+        if ocm_eligible:
+            skill_resources["ocm_handoff_translation"] = ocm_eligible
+        if native_only:
+            skill_resources["ec2_translation"] = native_only
+        else:
+            skill_resources.pop("ec2_translation", None)
+        logger.info(
+            "Hybrid EC2 routing: %d → OCM handoff, %d → native ec2_translation",
+            len(ocm_eligible), len(native_only),
+        )
+        _progress(
+            "resource_mapping",
+            f"Hybrid EC2: {len(ocm_eligible)} via OCM, {len(native_only)} via native Terraform",
+        )
 
     has_databases = "database_translation" in skill_resources
     # Check if data migration planning is needed:

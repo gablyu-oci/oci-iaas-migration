@@ -645,6 +645,45 @@ def test_resource_details_ec2_feeds_metrics_into_rightsizer():
     assert out["rightsizing"]["confidence"] == "high"
 
 
+def test_ocm_handoff_skill_registered():
+    """ocm_handoff_translation is a first-class skill with SkillSpec + routing."""
+    from app.agents.skill_group import SKILL_SPECS, SKILL_TO_AWS_TYPES
+    assert "ocm_handoff_translation" in SKILL_SPECS
+    assert "AWS::EC2::Instance" in (SKILL_TO_AWS_TYPES.get("ocm_handoff_translation") or set())
+    spec = SKILL_SPECS["ocm_handoff_translation"]
+    assert spec.display_name
+    assert "oci_cloud_migrations" in spec.description
+
+
+def test_ocm_handoff_input_includes_compat_and_prereqs():
+    """plan_orchestrator._build_skill_input for ocm_handoff embeds compat + prereqs."""
+    import json as _json
+    from app.services.plan_orchestrator import _build_skill_input
+    resources = [
+        {"id": "r1", "aws_type": "AWS::EC2::Instance",
+         "raw_config": {
+             "instance_id": "i-abc", "instance_type": "m5.large",
+             "architecture": "x86_64", "platform": "", "root_device_type": "ebs",
+             "software_inventory": {
+                 "os_name": "Oracle Linux", "os_version": "9.3",
+                 "inventory_collected": True,
+             },
+         }},
+    ]
+    raw = _build_skill_input("ocm_handoff_translation", resources)
+    parsed = _json.loads(raw)
+    assert "instances" in parsed
+    inst = parsed["instances"][0]
+    assert inst["instance_id"] == "i-abc"
+    # Compat attached per-instance so the writer can skip unsupported ones
+    assert "ocm_compatibility" in inst
+    assert inst["ocm_compatibility"]["level"] == "full"
+    # Template-level context the writer needs for variables.tf + handoff.md
+    assert parsed["target_shape_whitelist"]    # non-empty
+    assert parsed["ocm_prereqs"]               # non-empty
+    assert parsed["target_compartment_var"] == "compartment_ocid"
+
+
 def test_ocm_compatibility_full_for_oracle_linux():
     """Oracle Linux 9 on x86 EBS-backed instance → fully OCM-ready."""
     from app.services.ocm_compatibility import check_ec2_compatibility
