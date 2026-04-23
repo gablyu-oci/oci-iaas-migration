@@ -41,10 +41,15 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Chunk size: number of CFN Resources per writer call. 8 was empirically
-# enough to keep single-chunk writer turns under ~60s on gpt-5.4, well
-# within the Llama Stack nginx timeout.
-DEFAULT_CHUNK_SIZE = 8
+# Chunk size: number of CFN Resources per writer call.
+#
+# Strategy: start LARGE (fewer chunks = shorter wall-clock when successful).
+# If a chunk fails (504 / timeout / generic exception), the runner in
+# plan_orchestrator bisects it recursively down to single-resource chunks.
+# So the effective chunk size adapts to what the LLM gateway will
+# actually accept on a given day, and we only pay the bisect cost when
+# a chunk is genuinely too big.
+DEFAULT_CHUNK_SIZE = 20
 
 
 # ─── Parsing ─────────────────────────────────────────────────────────────────

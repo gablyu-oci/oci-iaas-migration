@@ -952,16 +952,24 @@ def _run_cfn_chunked(
     max_iterations: int,
     migration_id: str | None = None,
 ) -> None:
-    """Translate each CFN stack via chunked writer calls + prior-skill reuse.
+    """Translate each CFN stack with adaptive chunking + guaranteed coverage.
 
-    Instead of handing the whole template to one writer call (which 504s on
-    the nginx gateway for templates with 20+ resources), split it into
-    chunks of ~8 resources, reuse already-translated HCL from earlier
-    skills as context, translate each chunk with ``max_iterations=1``
-    (small inputs don't need a review loop), and merge the outputs.
+    Strategy:
+      1. Start with LARGE chunks (``DEFAULT_CHUNK_SIZE = 20``). Fewer chunks =
+         shorter wall-clock when they succeed.
+      2. If a chunk fails (504, timeout, agent exception), **bisect it**
+         recursively: split the resource list in half and try each half.
+         Base case is a single resource.
+      3. Track every input logical ID; after all chunks run, any ID whose
+         single-resource retry STILL failed is recorded as missing. We
+         emit ``cfn-missing-resources.md`` (which lands in ``reports/``
+         per bundle_builder's top-level key rule) **and** a stub HCL
+         block per missing resource so the operator sees exactly what
+         didn't translate. Nothing is silently dropped.
 
-    Failures are per-chunk, not per-stack — one 504 no longer wipes out
-    the whole CFN translation.
+    Per-stack failures don't kill the whole CFN step; per-chunk failures
+    don't kill the whole stack. The only way a resource ends up silently
+    missing is if Python itself panics during translation.
     """
     from app.services.cfn_chunker import (
         DEFAULT_CHUNK_SIZE,
@@ -969,6 +977,10 @@ def _run_cfn_chunked(
         chunk_cfn_template,
         merge_chunk_outputs,
     )
+
+    # Flat-key artifact (no '/' prefix) → bundle_builder routes to reports/.
+    # Accumulated across all stacks so one report summarizes everything.
+    all_missing: dict[str, list[dict]] = {}  # stack_name → [{logical_id, aws_type, raw}]
 
     for stack_idx, stack in enumerate(cfn_stacks):
         raw = stack.get("raw_config") or {}
@@ -989,20 +1001,42 @@ def _run_cfn_chunked(
         _progress(
             "cfn_terraform",
             f"CFN '{stack_name}': translating {total} chunk(s) of up to {DEFAULT_CHUNK_SIZE} resources "
-            f"(reusing HCL from {len(reference_hcl)} prior skills)",
+            f"(adaptive — chunks bisect on failure; reusing HCL from {len(reference_hcl)} prior skills)",
         )
 
         chunk_outputs: list[dict] = []
-        for chunk in chunks:
-            chunk_input = chunk.to_input(reference_hcl=reference_hcl)
+        missing_for_stack: list[dict] = []
+
+        def _translate_resources(
+            resources: dict, chunk_template: object, label: str
+        ) -> None:
+            """Try to translate ``resources`` as a single writer call; bisect on failure.
+
+            ``chunk_template`` is an existing ChunkSpec whose all_logical_ids +
+            parameters + mappings + conditions we reuse for context. We mutate
+            a copy with the smaller resource subset per recursion level.
+            """
+            if not resources:
+                return
+            # Build a chunk-shaped payload inline instead of creating a new
+            # ChunkSpec — saves an allocation per bisect step.
+            from app.services.cfn_chunker import ChunkSpec  # late import
+            spec = ChunkSpec(
+                index=0, total=1,
+                resources=resources,
+                all_logical_ids=chunk_template.all_logical_ids,
+                parameters=chunk_template.parameters,
+                mappings=chunk_template.mappings,
+                conditions=chunk_template.conditions,
+                outputs=chunk_template.outputs,
+                transform=chunk_template.transform,
+                description=chunk_template.description,
+            )
             try:
-                # max_iterations=1: chunks are small, a full review/revise loop
-                # per chunk would 3x the LLM traffic for marginal gain.
                 result = _run_skill(
                     "cfn_terraform",
-                    chunk_input,
-                    _progress_cb,
-                    anthropic_client,
+                    spec.to_input(reference_hcl=reference_hcl),
+                    _progress_cb, anthropic_client,
                     max_iterations=1,
                     migration_id=migration_id,
                 )
@@ -1011,25 +1045,141 @@ def _run_cfn_chunked(
                     conf = result.get("confidence", 0)
                     _progress(
                         "cfn_terraform",
-                        f"CFN '{stack_name}' chunk {chunk.index + 1}/{total} — confidence {conf:.0%}",
+                        f"CFN '{stack_name}' {label} ({len(resources)} res) — confidence {conf:.0%}",
                     )
+                    return
+                # _run_skill returned None (unknown skill / import error) —
+                # treat as failure so the bisect / report path fires.
+                raise RuntimeError("skill runner returned no result")
             except Exception as exc:
-                logger.warning("CFN chunk %d/%d for '%s' failed: %s",
-                               chunk.index + 1, total, stack_name, exc)
+                # Base case: single resource. Can't bisect further.
+                if len(resources) <= 1:
+                    logical_id, body = next(iter(resources.items()))
+                    aws_type = (body or {}).get("Type") if isinstance(body, dict) else ""
+                    missing_for_stack.append({
+                        "logical_id": logical_id,
+                        "aws_type": aws_type or "",
+                        "error": str(exc)[:500],
+                        "raw": body,
+                    })
+                    logger.warning(
+                        "CFN '%s': resource %s could not be translated (%s)",
+                        stack_name, logical_id, str(exc)[:200],
+                    )
+                    _progress(
+                        "cfn_terraform",
+                        f"CFN '{stack_name}' resource '{logical_id}' failed after bisect — "
+                        f"will appear in reports/cfn-missing-resources.md",
+                    )
+                    return
+                # Bisect and retry each half
+                items = list(resources.items())
+                mid = len(items) // 2
+                left, right = dict(items[:mid]), dict(items[mid:])
                 _progress(
                     "cfn_terraform",
-                    f"CFN '{stack_name}' chunk {chunk.index + 1}/{total} failed: {str(exc)[:200]}",
+                    f"CFN '{stack_name}' {label} ({len(resources)} res) failed: "
+                    f"{str(exc)[:100]} — bisecting to {len(left)} + {len(right)}",
                 )
+                _translate_resources(left,  chunk_template, f"{label}a")
+                _translate_resources(right, chunk_template, f"{label}b")
+
+        for i, chunk in enumerate(chunks):
+            _translate_resources(chunk.resources, chunk, f"chunk {i + 1}/{total}")
+
+        if missing_for_stack:
+            all_missing[stack_name] = missing_for_stack
 
         if not chunk_outputs:
             _progress("cfn_terraform", f"CFN '{stack_name}' produced no output; moving on")
             continue
 
         merged = merge_chunk_outputs(chunk_outputs)
+
+        # If any resources failed, append stub HCL blocks so the merged main.tf
+        # carries a visible marker instead of silently omitting them.
+        if missing_for_stack:
+            merged["main.tf"] = (
+                merged.get("main.tf", "") + "\n\n"
+                + _render_cfn_missing_stubs(missing_for_stack)
+            )
+
         for name, content in merged.items():
             completed_artifacts[f"cfn_terraform/{stack_name}/{name}"] = content
+        translated = len(chunk_outputs)
         _progress(
             "cfn_terraform",
-            f"CFN '{stack_name}' merged: {len(chunk_outputs)}/{total} chunks translated, "
+            f"CFN '{stack_name}' merged: {translated} call(s) succeeded, "
+            f"{len(missing_for_stack)} resource(s) failed, "
             f"{len(merged)} file(s) in final bundle",
         )
+
+    # Emit the missing-resources report at plan-orchestrator scope so the
+    # bundle_builder routes it to reports/.
+    if all_missing:
+        completed_artifacts["cfn-missing-resources.md"] = _render_cfn_missing_report(all_missing)
+
+
+def _render_cfn_missing_stubs(missing: list[dict]) -> str:
+    """Stub HCL blocks marking resources the writer couldn't translate.
+
+    Emitted into the merged main.tf so ``terraform validate`` will flag
+    the output as incomplete (the stubs reference an undeclared resource)
+    AND so a grep for 'TRANSLATION_FAILED' surfaces exactly what's missing.
+    """
+    lines = ["# =====  CFN resources that FAILED to translate  ====="]
+    lines.append("# These blocks are intentionally invalid — edit them into working")
+    lines.append("# HCL manually, or re-run Generate Plan once the LLM gateway is healthy.")
+    lines.append("")
+    for m in missing:
+        lid = m.get("logical_id") or "?"
+        aws_type = m.get("aws_type") or "?"
+        err = (m.get("error") or "")[:200]
+        lines.append(f"# TRANSLATION_FAILED — {lid} ({aws_type})")
+        lines.append(f"#   reason: {err}")
+        lines.append(f'resource "oci_TODO" "{_sanitize_tf_name(lid)}" {{')
+        lines.append(f'  # Source CFN logical ID: {lid}')
+        lines.append(f'  # Source CFN type:       {aws_type}')
+        lines.append(f'  # See reports/cfn-missing-resources.md for the original properties.')
+        lines.append("}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _render_cfn_missing_report(all_missing: dict[str, list[dict]]) -> str:
+    """Per-stack, per-resource report with original CFN properties intact."""
+    lines = ["# CFN resources that failed to translate", ""]
+    total = sum(len(rs) for rs in all_missing.values())
+    lines.append(
+        f"**{total} resource(s) across {len(all_missing)} stack(s) could not be translated** "
+        f"even after the chunker bisected down to a single resource per writer call. "
+        f"Each is listed below with the original CFN body — translate manually, or "
+        f"re-run the plan once the upstream LLM gateway is reachable."
+    )
+    lines.append("")
+    for stack_name, entries in all_missing.items():
+        lines.append(f"## Stack: `{stack_name}`")
+        lines.append("")
+        for e in entries:
+            lines.append(f"### `{e.get('logical_id', '?')}`  ({e.get('aws_type', '?')})")
+            err = (e.get("error") or "").strip()
+            if err:
+                lines.append(f"**Error:** {err}")
+            raw = e.get("raw")
+            if raw is not None:
+                lines.append("")
+                lines.append("```json")
+                try:
+                    lines.append(json.dumps(raw, indent=2, default=str))
+                except Exception:
+                    lines.append(str(raw))
+                lines.append("```")
+            lines.append("")
+    return "\n".join(lines)
+
+
+def _sanitize_tf_name(s: str) -> str:
+    """Reduce a logical ID to a valid Terraform resource label."""
+    import re
+    out = re.sub(r"[^a-zA-Z0-9_]", "_", s or "missing")
+    return out if out and not out[0].isdigit() else f"_{out}"

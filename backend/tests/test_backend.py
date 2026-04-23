@@ -1186,6 +1186,130 @@ def test_resource_details_non_ec2_has_no_ocm_compat():
     assert out["ocm_compatibility"] is None
 
 
+def test_cfn_runner_bisects_on_failure_and_reports_missing():
+    """When a chunk's writer call raises, the runner halves the resources and
+    retries; single-resource failures land in reports/cfn-missing-resources.md."""
+    from unittest.mock import patch
+    from app.services import plan_orchestrator as po
+
+    # Fake stack: 4 resources
+    stack = {
+        "raw_config": {
+            "stack_name": "s1",
+            "template": json.dumps({
+                "Resources": {
+                    "A": {"Type": "AWS::EC2::VPC", "Properties": {}},
+                    "B": {"Type": "AWS::EC2::Subnet", "Properties": {}},
+                    "C": {"Type": "AWS::EC2::SecurityGroup", "Properties": {}},
+                    "D": {"Type": "AWS::EC2::Instance", "Properties": {}},
+                },
+            }),
+        },
+    }
+
+    # Fake _run_skill: succeed for 2-resource calls, fail for 1+4-resource calls
+    # (to force bisect paths). Resource B is a poison pill — single-resource
+    # retry still fails. Everything else succeeds eventually.
+    call_log: list[int] = []
+
+    def fake_run_skill(skill, input_content, *_a, **_k):
+        import json as _json
+        payload = _json.loads(input_content)
+        res_ids = list(payload.get("resources", {}).keys())
+        call_log.append(len(res_ids))
+        # 4-resource call fails → triggers bisect
+        if len(res_ids) == 4:
+            raise RuntimeError("simulated 504 on 4-resource chunk")
+        # After bisect, B alone always fails; A, C, D succeed individually
+        # or in pairs.
+        if len(res_ids) == 1 and res_ids[0] == "B":
+            raise RuntimeError("simulated 504 on single resource B")
+        if len(res_ids) == 2 and "B" in res_ids:
+            raise RuntimeError("simulated 504 on 2-resource chunk containing B")
+        return {
+            "artifacts": {
+                "main.tf": "\n".join(f'resource "x" "{rid}" {{}}' for rid in res_ids),
+            },
+            "confidence": 0.9,
+        }
+
+    completed: dict[str, str] = {}
+
+    def no_progress(*_a, **_kw): pass
+
+    with patch.object(po, "_run_skill", side_effect=fake_run_skill):
+        po._run_cfn_chunked(
+            cfn_stacks=[stack],
+            completed_artifacts=completed,
+            _progress=no_progress,
+            _progress_cb=no_progress,
+            anthropic_client=None,
+            max_iterations=1,
+        )
+
+    # A, C, D successfully translated (either in pairs or alone)
+    all_main = "\n".join(
+        v for k, v in completed.items()
+        if k.startswith("cfn_terraform/s1/") and k.endswith("main.tf")
+    )
+    assert '"A"' in all_main
+    assert '"C"' in all_main
+    assert '"D"' in all_main
+
+    # B permanently missing → stub block in main.tf + report file
+    assert "TRANSLATION_FAILED" in all_main
+    assert "B" in all_main  # the logical ID appears as a TODO
+    assert "cfn-missing-resources.md" in completed
+    assert "`B`" in completed["cfn-missing-resources.md"]
+
+    # Bisect actually happened — we saw a 4-resource call, then a 2-resource, etc.
+    assert 4 in call_log
+    assert any(n in (1, 2) for n in call_log)
+
+
+def test_cfn_runner_succeeds_without_bisect_when_chunks_fit():
+    """Happy-path: every chunk succeeds on first try → no missing report."""
+    from unittest.mock import patch
+    from app.services import plan_orchestrator as po
+
+    stack = {
+        "raw_config": {
+            "stack_name": "s2",
+            "template": json.dumps({
+                "Resources": {
+                    "V": {"Type": "AWS::EC2::VPC", "Properties": {}},
+                    "S": {"Type": "AWS::EC2::Subnet", "Properties": {}},
+                },
+            }),
+        },
+    }
+
+    def fake_run_skill(skill, input_content, *_a, **_k):
+        return {
+            "artifacts": {"main.tf": 'resource "oci_core_vcn" "x" {}'},
+            "confidence": 0.95,
+        }
+
+    completed: dict[str, str] = {}
+
+    def no_progress(*_a, **_kw): pass
+
+    with patch.object(po, "_run_skill", side_effect=fake_run_skill):
+        po._run_cfn_chunked(
+            cfn_stacks=[stack],
+            completed_artifacts=completed,
+            _progress=no_progress,
+            _progress_cb=no_progress,
+            anthropic_client=None,
+            max_iterations=1,
+        )
+
+    # No missing report generated
+    assert "cfn-missing-resources.md" not in completed
+    # main.tf in the stack bundle
+    assert any(k.startswith("cfn_terraform/s2/") and k.endswith("main.tf") for k in completed)
+
+
 def test_network_chunker_small_input_stays_single_chunk():
     """Networks under the size threshold don't need splitting."""
     from app.services.network_chunker import chunk_network_input
