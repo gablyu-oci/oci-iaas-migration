@@ -1998,6 +1998,271 @@ function OCMProgressCard({ migrationId }: { migrationId: string }) {
 }
 
 
+// ─── Migrate sub-steps: Prereqs → Terraform → OCM → Data Transfers ──────
+
+type MigrateSubStepId = 'prereqs' | 'terraform' | 'ocm' | 'data';
+
+interface MigrateSubStep {
+  id: MigrateSubStepId;
+  label: string;
+  desc: string;
+  optional?: boolean;   // present but not always applicable (OCM if no OCM routing)
+}
+
+function MigrateSubStepper({
+  current, onChange, status, hasOCM,
+}: {
+  current: MigrateSubStepId;
+  onChange: (id: MigrateSubStepId) => void;
+  status: string | null | undefined;
+  hasOCM: boolean;
+}) {
+  const steps: MigrateSubStep[] = [
+    { id: 'prereqs',   label: '1. Prereqs',        desc: 'Complete OCI + OCM setup before apply' },
+    { id: 'terraform', label: '2. Terraform',      desc: 'terraform plan + apply the bundle' },
+    { id: 'ocm',       label: '3. OCM',            desc: 'Oracle Cloud Migrations: add assets + execute', optional: !hasOCM },
+    { id: 'data',      label: '4. Data & Cutover', desc: 'Data transfer runbooks + cutover' },
+  ];
+
+  const isDone = (id: MigrateSubStepId) => {
+    if (id === 'terraform') return status === 'completed';
+    if (id === 'ocm')       return false; // hard to detect without OCM status; leave as in-progress indicator
+    return false;
+  };
+
+  return (
+    <div className="rounded-xl p-3 flex gap-2" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)' }}>
+      {steps.map((s, i) => {
+        const active = current === s.id;
+        const done = isDone(s.id);
+        const disabled = s.optional;
+        return (
+          <button
+            key={s.id}
+            onClick={() => onChange(s.id)}
+            disabled={disabled}
+            className="flex-1 flex flex-col items-start gap-0.5 px-4 py-2.5 rounded-lg text-left transition-colors"
+            style={{
+              background: active ? 'var(--color-ember-dim)' : done ? 'rgba(22,163,74,0.08)' : 'var(--color-well)',
+              border: active ? '1px solid var(--color-ember)' : '1px solid transparent',
+              color: disabled ? 'var(--color-text-dim)' : 'var(--color-text-bright)',
+              cursor: disabled ? 'not-allowed' : 'pointer',
+              opacity: disabled ? 0.5 : 1,
+              fontFamily: 'inherit',
+            }}
+            aria-current={active ? 'step' : undefined}
+          >
+            <div className="flex items-center gap-2 text-xs font-semibold">
+              {done && (
+                <svg className="w-3 h-3" style={{ color: '#16a34a' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                </svg>
+              )}
+              <span>{s.label}</span>
+              {disabled && <span className="text-[10px]" style={{ color: 'var(--color-text-dim)' }}>(n/a)</span>}
+            </div>
+            <span className="text-[11px]" style={{ color: 'var(--color-text-dim)' }}>{s.desc}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function PrereqsPanel({
+  migrationId: _migrationId,
+  ocmPrereqsMd,
+  onContinue,
+}: {
+  migrationId: string;
+  ocmPrereqsMd: string | null;
+  onContinue: () => void;
+}) {
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl p-5" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}>
+        <h3 className="text-sm font-semibold mb-2" style={{ color: 'var(--color-text-bright)' }}>
+          OCI-side setup checklist
+        </h3>
+        {ocmPrereqsMd ? (
+          <MarkdownView content={ocmPrereqsMd} storageKey={`migrate-prereqs-ocm:${_migrationId}`} />
+        ) : (
+          <div className="rounded-lg p-4" style={{ background: 'var(--color-well)', border: '1px dashed var(--color-fence)' }}>
+            <p className="text-xs" style={{ color: 'var(--color-text-dim)' }}>
+              This migration doesn't involve OCM — no OCM-side prereqs to check.
+              Continue to <strong>Terraform</strong> to review + apply the plan.
+            </p>
+          </div>
+        )}
+      </div>
+      <div className="flex justify-end">
+        <button onClick={onContinue} className="btn btn-primary btn-sm">
+          Continue to Terraform →
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function OCMActionsPanel({ migrationId }: { migrationId: string }) {
+  return (
+    <div className="space-y-4">
+      <OCMHandoffPanel migrationId={migrationId} />
+      <OCMProgressCard migrationId={migrationId} />
+    </div>
+  );
+}
+
+function DataTransferPanel({
+  dataRunbooks, cutoverRunbooks,
+}: {
+  dataRunbooks: Record<string, string>;
+  cutoverRunbooks: Record<string, string>;
+}) {
+  const dataKeys = Object.keys(dataRunbooks);
+  const cutKeys = Object.keys(cutoverRunbooks);
+  if (dataKeys.length === 0 && cutKeys.length === 0) {
+    return (
+      <div className="rounded-xl p-5" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}>
+        <p className="text-xs" style={{ color: 'var(--color-text-dim)' }}>
+          No data-transfer or cutover runbooks were generated for this migration.
+          If the workload has RDS / S3 / EFS data, re-run Generate Plan with those
+          resources included.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-4">
+      {dataKeys.length > 0 && (
+        <div className="rounded-xl p-5" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}>
+          <h3 className="text-sm font-semibold mb-2" style={{ color: 'var(--color-text-bright)' }}>
+            Data migration
+          </h3>
+          {dataKeys.map((k) => (
+            <details key={k} className="rounded-lg p-3 mb-2" style={{ background: 'var(--color-well)', border: '1px solid var(--color-rule)' }}>
+              <summary className="text-xs font-semibold cursor-pointer" style={{ color: 'var(--color-ember)', fontFamily: 'var(--font-mono)' }}>
+                {k.replace('runbooks/data-migration/', '')}
+              </summary>
+              <div className="mt-3">
+                <MarkdownView content={dataRunbooks[k]} storageKey={`migrate-data:${k}`} />
+              </div>
+            </details>
+          ))}
+        </div>
+      )}
+      {cutKeys.length > 0 && (
+        <div className="rounded-xl p-5" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}>
+          <h3 className="text-sm font-semibold mb-2" style={{ color: 'var(--color-text-bright)' }}>
+            Cutover &amp; verification
+          </h3>
+          {cutKeys.map((k) => (
+            <details key={k} className="rounded-lg p-3 mb-2" open style={{ background: 'var(--color-well)', border: '1px solid var(--color-rule)' }}>
+              <summary className="text-xs font-semibold cursor-pointer" style={{ color: 'var(--color-ember)', fontFamily: 'var(--font-mono)' }}>
+                {k.replace('runbooks/cutover/', '')}
+              </summary>
+              <div className="mt-3">
+                <MarkdownView content={cutoverRunbooks[k]} storageKey={`migrate-cutover:${k}`} />
+              </div>
+            </details>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Tabbed wrapper: loads plan artifacts, switches panels ──────────────
+
+interface MigrateStepTabbedMigration {
+  migrate_status?: string | null;
+  migrate_workload_name?: string | null;
+  migrate_started_at?: string | null;
+  migrate_current_step?: string | null;
+  migrate_terraform_plan?: string | null;
+  migrate_logs?: string[] | null;
+  plan_status?: string | null;
+  plan_workload_id?: string | null;
+  plan_workload_name?: string | null;
+  migrate_oci_connection_id?: string | number | null;
+}
+
+function MigrateStepTabbed({ migrationId, migration }: {
+  migrationId: string;
+  migration?: MigrateStepTabbedMigration | null;
+}) {
+  const [subStep, setSubStep] = useState<MigrateSubStepId>('prereqs');
+  const [planArtifacts, setPlanArtifacts] = useState<Record<string, string>>({});
+
+  // Load the plan bundle once. The tabs below derive everything from it —
+  // the prereqs markdown, the terraform files, the runbooks — so the
+  // Migrate UI is a direct continuation of what Plan produced.
+  useEffect(() => {
+    const appGroupId = migration?.plan_workload_id;
+    if (!appGroupId) return;
+    client.get(`/api/app-groups/${appGroupId}/plan-results`).then(res => {
+      const wp = res.data?.workload_plans?.[migration?.plan_workload_name || ''];
+      setPlanArtifacts(wp?.artifacts || {});
+    }).catch(() => { /* ignore transient */ });
+  }, [migration?.plan_workload_id, migration?.plan_workload_name]);
+
+  const status = migration?.migrate_status;
+
+  // Auto-advance when we can tell what's next. Initial state: if terraform
+  // is already running/applying/completed, skip to Terraform tab. Leave
+  // the user free to jump back at any time.
+  const advancedRef = useRef(false);
+  useEffect(() => {
+    if (advancedRef.current) return;
+    if (status && ['running', 'approved', 'applying', 'review', 'testing', 'fixing', 'test_passed', 'test_failed', 'completed', 'failed', 'rolling_back', 'rolled_back'].includes(status)) {
+      setSubStep('terraform');
+      advancedRef.current = true;
+    }
+  }, [status]);
+
+  const ocmPrereqsMd = planArtifacts['reports/ocm-prereqs.md'] || null;
+  const hasOCM = Object.keys(planArtifacts).some(k => k.startsWith('terraform/ocm/'));
+
+  const dataRunbooks: Record<string, string> = {};
+  const cutoverRunbooks: Record<string, string> = {};
+  for (const [k, v] of Object.entries(planArtifacts)) {
+    if (typeof v !== 'string') continue;
+    if (k.startsWith('runbooks/data-migration/')) dataRunbooks[k] = v;
+    else if (k.startsWith('runbooks/cutover/')) cutoverRunbooks[k] = v;
+  }
+
+  return (
+    <div className="space-y-4">
+      <MigrateSubStepper
+        current={subStep}
+        onChange={setSubStep}
+        status={status}
+        hasOCM={hasOCM}
+      />
+      {subStep === 'prereqs' && (
+        <PrereqsPanel
+          migrationId={migrationId}
+          ocmPrereqsMd={ocmPrereqsMd}
+          onContinue={() => setSubStep('terraform')}
+        />
+      )}
+      {subStep === 'terraform' && (
+        <MigrateStep migrationId={migrationId} migration={migration} />
+      )}
+      {subStep === 'ocm' && hasOCM && (
+        <OCMActionsPanel migrationId={migrationId} />
+      )}
+      {subStep === 'data' && (
+        <DataTransferPanel
+          dataRunbooks={dataRunbooks}
+          cutoverRunbooks={cutoverRunbooks}
+        />
+      )}
+    </div>
+  );
+}
+
+
 function MigrateStep({ migrationId, migration }: {
   migrationId: string;
   migration?: { migrate_status?: string | null; migrate_workload_name?: string | null; migrate_started_at?: string | null; migrate_current_step?: string | null; migrate_terraform_plan?: string | null; migrate_logs?: string[] | null; plan_status?: string | null; plan_workload_id?: string | null; plan_workload_name?: string | null } | null;
@@ -2508,9 +2773,6 @@ function MigrateStep({ migrationId, migration }: {
           </div>
         </div>
 
-        <OCMHandoffPanel migrationId={migrationId} />
-        <OCMProgressCard migrationId={migrationId} />
-
         {/* Live logs */}
         <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--color-rule)' }}>
           <div className="px-4 py-2.5 flex items-center justify-between" style={{ background: 'var(--color-raised)', borderBottom: '1px solid var(--color-rule)' }}>
@@ -2549,9 +2811,6 @@ function MigrateStep({ migrationId, migration }: {
             </button>
           </div>
         </div>
-
-        <OCMHandoffPanel migrationId={migrationId} />
-        <OCMProgressCard migrationId={migrationId} />
 
         {/* Logs */}
         <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--color-rule)' }}>
@@ -3136,9 +3395,12 @@ export default function MigrationDetail() {
         );
       })()}
 
-      {/* Phase 2 Migrate — full width, no sidebar */}
+      {/* Phase 2 Migrate — full width, no sidebar.
+          MigrateStepTabbed wraps MigrateStep and adds the 4 sub-steps
+          (Prereqs → Terraform → OCM → Data). Each sub-step's content is
+          driven by the Plan-phase artifacts already persisted. */}
       {activeStep === 'migrate' && (
-        <MigrateStep migrationId={id || ''} migration={migration} />
+        <MigrateStepTabbed migrationId={id || ''} migration={migration} />
       )}
 
       {/* Phase 1 — Two-column layout: sidebar + main */}
