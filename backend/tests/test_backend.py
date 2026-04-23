@@ -1186,6 +1186,104 @@ def test_resource_details_non_ec2_has_no_ocm_compat():
     assert out["ocm_compatibility"] is None
 
 
+def test_network_chunker_small_input_stays_single_chunk():
+    """Networks under the size threshold don't need splitting."""
+    from app.services.network_chunker import chunk_network_input
+
+    small = {
+        "vpc_id": "vpc-1", "cidr_block": "10.0.0.0/16",
+        "subnets": [{"subnet_id": "sub-a", "vpc_id": "vpc-1"}],
+        "security_groups": [{"group_id": "sg-a", "vpc_id": "vpc-1"}],
+    }
+    chunks = chunk_network_input(small, size_threshold=100_000)
+    assert len(chunks) == 1
+    assert chunks[0].scope == "whole"
+    assert chunks[0].payload["subnets"] == small["subnets"]
+
+
+def test_network_chunker_splits_large_input_per_vpc():
+    """Oversize inputs split into one chunk per VPC + a trailing global chunk."""
+    from app.services.network_chunker import chunk_network_input
+
+    # Two VPCs with chunky SGs that push us past the threshold
+    big = {
+        "vpcs": [
+            {"vpc_id": "vpc-a", "cidr_block": "10.0.0.0/16"},
+            {"vpc_id": "vpc-b", "cidr_block": "10.1.0.0/16"},
+        ],
+        "subnets": [
+            {"subnet_id": "sub-a1", "vpc_id": "vpc-a"},
+            {"subnet_id": "sub-a2", "vpc_id": "vpc-a"},
+            {"subnet_id": "sub-b1", "vpc_id": "vpc-b"},
+        ],
+        "security_groups": [
+            {"group_id": f"sg-{i}", "vpc_id": "vpc-a",
+             "ingress_rules": [{"from": 22, "to": 22, "cidr": "0.0.0.0/0"}] * 20}
+            for i in range(15)
+        ] + [
+            {"group_id": f"sg-b-{i}", "vpc_id": "vpc-b",
+             "ingress_rules": [{"from": 443, "to": 443, "cidr": "0.0.0.0/0"}] * 20}
+            for i in range(15)
+        ],
+        "route_tables": [
+            {"route_table_id": "rt-a", "vpc_id": "vpc-a"},
+            {"route_table_id": "rt-b", "vpc_id": "vpc-b"},
+        ],
+        "dns_zones": [{"zone_id": "z1", "name": "example.com"}],
+    }
+    chunks = chunk_network_input(big, size_threshold=5_000)
+
+    scopes = [c.scope for c in chunks]
+    assert "vpc:vpc-a" in scopes
+    assert "vpc:vpc-b" in scopes
+    assert "global" in scopes
+
+    # Per-VPC chunks carry only that VPC's sub-resources
+    vpc_a = next(c for c in chunks if c.scope == "vpc:vpc-a")
+    assert all(sg["vpc_id"] == "vpc-a" for sg in vpc_a.payload["security_groups"])
+    assert len(vpc_a.payload["security_groups"]) == 15
+    assert vpc_a.all_vpc_ids == ["vpc-a", "vpc-b"]
+
+    # Global chunk carries DNS + nothing VPC-scoped
+    global_chunk = next(c for c in chunks if c.scope == "global")
+    assert "dns_zones" in global_chunk.payload
+    assert "security_groups" not in global_chunk.payload
+
+    # chunk_index/total populated consistently
+    assert [c.index for c in chunks] == list(range(len(chunks)))
+    assert all(c.total == len(chunks) for c in chunks)
+
+
+def test_network_chunker_empty_input_returns_no_chunks():
+    from app.services.network_chunker import chunk_network_input
+    assert chunk_network_input({}) == []
+    assert chunk_network_input(None) == []
+
+
+def test_network_chunker_to_input_has_cross_chunk_refs():
+    """Every chunk carries the full VPC + subnet ID list for cross-chunk references."""
+    import json as _json
+    from app.services.network_chunker import chunk_network_input
+
+    big = {
+        "vpcs": [{"vpc_id": "vpc-a"}, {"vpc_id": "vpc-b"}],
+        "subnets": [
+            {"subnet_id": "sub-a", "vpc_id": "vpc-a"},
+            {"subnet_id": "sub-b", "vpc_id": "vpc-b"},
+        ],
+        "security_groups": [
+            {"group_id": f"sg-{i}", "vpc_id": "vpc-a", "description": "x" * 200}
+            for i in range(30)
+        ],
+    }
+    chunks = chunk_network_input(big, size_threshold=3_000)
+    vpc_b_chunk = next(c for c in chunks if c.scope == "vpc:vpc-b")
+    payload = _json.loads(vpc_b_chunk.to_input())
+    assert payload["_chunked"] is True
+    assert payload["all_vpc_ids"] == ["vpc-a", "vpc-b"]
+    assert set(payload["all_subnet_ids"]) == {"sub-a", "sub-b"}
+
+
 def test_cfn_chunker_parse_json():
     """A JSON CFN template round-trips through parse_cfn_template."""
     from app.services.cfn_chunker import parse_cfn_template

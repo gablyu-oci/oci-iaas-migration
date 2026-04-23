@@ -595,6 +595,16 @@ def _run_pipeline(
         skill_label = skill_type.replace("_", " ").title()
         _progress(skill_type, f"Running {skill_label} (max {max_iterations} rounds)")
         try:
+            # network_translation gets the chunked path — big networks
+            # (lots of SGs / rules / ENIs) blow past the LLM gateway's
+            # upstream-read timeout as one call.
+            if skill_type == "network_translation":
+                _run_network_chunked(
+                    skill_resources[skill_type], completed_artifacts,
+                    _progress, _progress_cb, anthropic_client, max_iterations,
+                    _collect_gaps,
+                )
+                continue
             skill_input = _build_skill_input(skill_type, skill_resources[skill_type])
             result = _run_skill(skill_type, skill_input, _progress_cb, anthropic_client, max_iterations)
             if result:
@@ -835,6 +845,101 @@ def _run_skill(
         skill_type, input_content,
         max_iterations=max_iterations,
         migration_id=migration_id,
+    )
+
+
+def _run_network_chunked(
+    network_resources: list[dict],
+    completed_artifacts: dict[str, str],
+    _progress,
+    _progress_cb,
+    anthropic_client,
+    max_iterations: int,
+    _collect_gaps,
+    migration_id: str | None = None,
+) -> None:
+    """Translate the network via chunked writer calls.
+
+    For small networks (under the chunker's size threshold) this runs
+    exactly one skill call — same as before. For large networks (many
+    VPCs / security groups / ENIs), each VPC becomes its own chunk plus
+    a trailing 'global' chunk for DNS / peering / transit gateways.
+    Outputs merge via the shared cfn_chunker helpers (dedupe variables
+    + outputs by name, concatenate main.tf with headers).
+    """
+    from app.services.cfn_chunker import merge_chunk_outputs
+    from app.services.network_chunker import chunk_network_input
+
+    # Reuse the existing _build_skill_input to aggregate the raw network
+    # input shape, then hand that dict to the chunker.
+    raw_input_str = _build_skill_input("network_translation", network_resources)
+    try:
+        network_input = json.loads(raw_input_str)
+    except (ValueError, TypeError):
+        logger.warning("network input not parseable; falling back to single call")
+        network_input = {}
+
+    chunks = chunk_network_input(network_input)
+    if not chunks:
+        _progress("network_translation", "Network input is empty; nothing to translate")
+        return
+
+    total = len(chunks)
+    _progress(
+        "network_translation",
+        f"Running Network Translation — {total} chunk(s)"
+        + (" (single-pass, input small enough)" if total == 1 else " (per-VPC chunking)"),
+    )
+
+    chunk_outputs: list[dict] = []
+    for chunk in chunks:
+        label = chunk.scope
+        # Single small network gets the full iteration budget; multi-chunk
+        # runs use 1 iteration each since each chunk is self-contained and
+        # a review loop per chunk would multiply LLM traffic without
+        # catching much the reviewer on the aggregate couldn't catch at
+        # merge time.
+        iters = max_iterations if total == 1 else 1
+        try:
+            result = _run_skill(
+                "network_translation", chunk.to_input(),
+                _progress_cb, anthropic_client,
+                max_iterations=iters,
+                migration_id=migration_id,
+            )
+            if result:
+                chunk_outputs.append(result.get("artifacts") or {})
+                conf = result.get("confidence", 0)
+                _collect_gaps("network_translation", result)
+                _progress(
+                    "network_translation",
+                    f"Network chunk {chunk.index + 1}/{total} [{label}] — "
+                    f"confidence {conf:.0%}",
+                )
+        except Exception as exc:
+            logger.warning("Network chunk %d/%d [%s] failed: %s",
+                           chunk.index + 1, total, label, exc)
+            _progress(
+                "network_translation",
+                f"Network chunk {chunk.index + 1}/{total} [{label}] failed: {str(exc)[:200]}",
+            )
+
+    if not chunk_outputs:
+        _progress("network_translation", "Network translation produced no output")
+        return
+
+    # Small-network fast path: one chunk → no merge overhead, just lift
+    # the single bundle as-is.
+    if total == 1:
+        for name, content in chunk_outputs[0].items():
+            completed_artifacts[f"network_translation/{name}"] = content
+    else:
+        merged = merge_chunk_outputs(chunk_outputs)
+        for name, content in merged.items():
+            completed_artifacts[f"network_translation/{name}"] = content
+    _progress(
+        "network_translation",
+        f"Network Translation merged: {len(chunk_outputs)}/{total} chunk(s) translated",
     )
 
 
