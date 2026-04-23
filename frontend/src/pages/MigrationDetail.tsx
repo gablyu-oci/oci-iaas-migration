@@ -11,6 +11,7 @@ import { useAssessments, useRunAssessment, useWorkloads, useBindGroup, useUnbind
 import ReadinessScoreBadge from '../components/ReadinessScoreBadge';
 import WorkloadCard from '../components/WorkloadCard';
 import ResourceMappingTable from '../components/ResourceMappingTable';
+import MarkdownView from '../components/MarkdownView';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -661,12 +662,10 @@ function PlanResults({ results }: { results: { resource_mapping?: Array<Record<s
 
         <div className="p-4">
           {currentTab === 'summary' && readme && (
-            <div className="rounded-lg p-4" style={{
+            <div className="rounded-lg p-5" style={{
               background: 'var(--color-well)', border: '1px solid var(--color-rule)',
-              whiteSpace: 'pre-wrap', fontSize: '0.75rem', lineHeight: 1.7,
-              color: 'var(--color-text-bright)', fontFamily: 'var(--font-mono)',
             }}>
-              {readme}
+              <MarkdownView content={readme} storageKey="plan-summary-readme" />
             </div>
           )}
           {currentTab === 'mapping' && (
@@ -866,23 +865,6 @@ function _downloadAll(artifacts: Record<string, string>, prefix: string) {
   }
 }
 
-function _simpleMarkdown(md: string): string {
-  // Minimal markdown → HTML for readable rendering
-  return md
-    .replace(/^### (.+)$/gm, '<h3 style="font-size:1rem;font-weight:700;margin:1.2em 0 0.5em;color:var(--color-text-bright)">$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2 style="font-size:1.15rem;font-weight:700;margin:1.5em 0 0.5em;color:var(--color-text-bright)">$1</h2>')
-    .replace(/^# (.+)$/gm, '<h1 style="font-size:1.35rem;font-weight:700;margin:1.5em 0 0.5em;color:var(--color-text-bright)">$1</h1>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong style="color:var(--color-text-bright)">$1</strong>')
-    .replace(/`([^`]+)`/g, '<code style="background:var(--color-well);padding:1px 5px;border-radius:3px;font-size:0.8em;font-family:var(--font-mono)">$1</code>')
-    .replace(/^```(\w*)\n([\s\S]*?)^```/gm, '<pre style="background:#0d1221;border:1px solid var(--color-fence);border-radius:8px;padding:12px;margin:8px 0;overflow-x:auto;font-size:0.75rem;font-family:var(--font-mono);color:#e2e8f0;line-height:1.5">$2</pre>')
-    .replace(/^- \[x\] (.+)$/gm, '<div style="margin:2px 0">✅ $1</div>')
-    .replace(/^- \[ \] (.+)$/gm, '<div style="margin:2px 0">☐ $1</div>')
-    .replace(/^- (.+)$/gm, '<div style="margin:2px 0;padding-left:1em">• $1</div>')
-    .replace(/^\d+\. (.+)$/gm, '<div style="margin:2px 0;padding-left:1em">$&</div>')
-    .replace(/\n{2,}/g, '<br/><br/>')
-    .replace(/\n/g, '<br/>');
-}
-
 function ArtifactList({ artifacts, showDownloadAll, downloadPrefix }: { artifacts: Record<string, string>; showDownloadAll?: boolean; downloadPrefix?: string }) {
   const [viewingFile, setViewingFile] = useState<{ name: string; content: string } | null>(null);
   const entries = Object.entries(artifacts);
@@ -948,11 +930,9 @@ function ArtifactList({ artifacts, showDownloadAll, downloadPrefix }: { artifact
             {/* Content */}
             <div className="overflow-auto" style={{ maxHeight: 'calc(90vh - 56px)' }}>
               {viewingFile.name.endsWith('.md') ? (
-                <div
-                  className="px-6 py-5"
-                  style={{ color: 'var(--color-text)', fontSize: '0.8125rem', lineHeight: 1.7, fontFamily: 'var(--font-sans)' }}
-                  dangerouslySetInnerHTML={{ __html: _simpleMarkdown(viewingFile.content) }}
-                />
+                <div className="px-6 py-5">
+                  <MarkdownView content={viewingFile.content} storageKey={`artifact:${viewingFile.name}`} />
+                </div>
               ) : (
                 <pre className="px-5 py-4 text-xs" style={{ background: '#0d1221', color: '#e2e8f0', fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', margin: 0, lineHeight: 1.5 }}>
                   {viewingFile.content}

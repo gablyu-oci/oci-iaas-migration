@@ -859,6 +859,38 @@ def test_bundle_builder_aggregates_gaps_by_severity():
     assert "Switch to license-included AMI" in gaps_md
 
 
+def test_bundle_builder_emits_ocm_prereqs_when_handoff_present():
+    """When terraform/ocm/*.tf lives in the bundle, reports/ocm-prereqs.md is generated."""
+    from app.services.bundle_builder import build_hybrid_bundle
+
+    raw_with_ocm = {
+        "synthesis/main.tf": "tf",
+        "ocm_handoff_translation/main.tf": "tf",  # → terraform/ocm/main.tf
+        "ocm_handoff_translation/handoff.md": "# handoff",
+    }
+    out = build_hybrid_bundle(
+        raw_with_ocm, migration_name="w", resource_count=2,
+        skills_ran=[], elapsed_seconds=1.0, synthesis_ok=True,
+        ocm_instance_count=3,
+    )
+    assert "reports/ocm-prereqs.md" in out
+    body = out["reports/ocm-prereqs.md"]
+    # GFM task-list syntax — MarkdownView converts to interactive checkboxes
+    assert "- [ ]" in body
+    # Mentions the instance count
+    assert "**3** EC2 instance" in body
+    # Points at the follow-up runbook
+    assert "handoff.md" in body
+
+    # Without OCM resources, the file is NOT generated
+    raw_no_ocm = {"synthesis/main.tf": "tf"}
+    out_no_ocm = build_hybrid_bundle(
+        raw_no_ocm, migration_name="w", resource_count=1,
+        skills_ran=[], elapsed_seconds=1.0, synthesis_ok=True,
+    )
+    assert "reports/ocm-prereqs.md" not in out_no_ocm
+
+
 def test_bundle_builder_empty_gaps_renders_positive_message():
     from app.services.bundle_builder import build_hybrid_bundle
     raw = {"synthesis/main.tf": "tf"}

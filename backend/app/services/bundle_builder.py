@@ -95,6 +95,17 @@ def build_hybrid_bundle(
     out["reports/gaps.md"] = _render_gaps_md(gaps_collected, skills_ran)
     sections["reports"].append("reports/gaps.md")
 
+    # When the plan includes OCM handoff HCL, emit a prereqs checklist so
+    # the operator can start setting up the OCI-side scaffolding (vault,
+    # IAM policies, staging bucket, AWS credentials) in parallel with
+    # reviewing the bundle. The GFM task-list syntax renders as
+    # interactive checkboxes in MarkdownView.
+    if any(p.startswith("terraform/ocm/") for p in out):
+        out["reports/ocm-prereqs.md"] = _render_ocm_prereqs_md(
+            ocm_instance_count=ocm_instance_count,
+        )
+        sections["reports"].append("reports/ocm-prereqs.md")
+
     readme = _render_readme(
         migration_name=migration_name,
         resource_count=resource_count,
@@ -240,6 +251,70 @@ def _render_gaps_md(gaps: list[dict[str, Any]], skills_ran: list[str]) -> str:
             lines.append(f"**Recommendation:** {rec}")
         lines.append("")
 
+    return "\n".join(lines)
+
+
+def _render_ocm_prereqs_md(ocm_instance_count: int = 0) -> str:
+    """OCM-side prerequisites the operator must satisfy before terraform apply.
+
+    Emitted as GFM task-list items so MarkdownView renders interactive
+    checkboxes the operator can tick off in the Plan results UI. Content
+    is driven by ``ocm_support.yaml``'s ``handoff_prereqs`` table so the
+    list stays in lockstep with the compatibility matrix.
+    """
+    try:
+        from app import mappings as _m
+        prereqs = _m.ocm_handoff_prereqs() or []
+    except Exception:
+        prereqs = []
+
+    lines: list[str] = [
+        "# Oracle Cloud Migrations — setup checklist",
+        "",
+        "Your plan routes "
+        + (f"**{ocm_instance_count}** EC2 instance(s)" if ocm_instance_count else "EC2 instances")
+        + " through Oracle Cloud Migrations (OCM), Oracle's managed migration "
+        "service. Before you click **Apply** on the Migrate step, the "
+        "following must exist on the OCI side — you can start this work in "
+        "parallel with reviewing the Terraform bundle.",
+        "",
+        "Tick each item as you finish it; the state persists in your browser.",
+        "",
+        "## Prerequisites",
+        "",
+    ]
+    if not prereqs:
+        lines.append("_No prerequisites defined — see docs/agent-architecture.md._")
+    else:
+        for p in prereqs:
+            title = p.get("title") or p.get("id") or "?"
+            detail = p.get("detail") or ""
+            doc_url = p.get("doc_url")
+            lines.append(f"- [ ] **{title}**")
+            if detail:
+                lines.append(f"  - {detail}")
+            if doc_url:
+                lines.append(f"  - [Reference docs]({doc_url})")
+
+    lines += [
+        "",
+        "## Next steps",
+        "",
+        "Once every item above is checked:",
+        "",
+        "1. Run `terraform apply` on the `terraform/` bundle — this provisions "
+        "the OCM migration plan container in OCI.",
+        "2. Return to the Migrate page in the UI — the **Oracle Cloud "
+        "Migrations — handoff** panel will unlock:",
+        "   - **Step 1/2**: Add AWS assets to the plan (provide the Vault "
+        "secret OCID + the source EC2 instance IDs).",
+        "   - **Step 2/2**: Execute the plan. OCM kicks off block-level "
+        "replication and launches OCI instances from the replicated volumes.",
+        "3. Track progress on the OCM progress card; work-requests run "
+        "asynchronously and can take hours depending on source volume size.",
+        "",
+        "See `runbooks/handoff.md` for the detailed step-by-step walkthrough.",
+    ]
     return "\n".join(lines)
 
 
