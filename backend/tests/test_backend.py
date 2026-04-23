@@ -645,6 +645,66 @@ def test_resource_details_ec2_feeds_metrics_into_rightsizer():
     assert out["rightsizing"]["confidence"] == "high"
 
 
+def test_extract_artifacts_normalizes_underscore_suffix_keys():
+    """``main_tf`` / ``handoff_md`` / … in LLM output become real filenames."""
+    from app.agents.job_result import _extract_artifacts
+
+    draft = {
+        "main_tf": "resource \"oci_core_vcn\" \"x\" {}",
+        "variables_tf": "variable \"y\" {}",
+        "outputs_tf": "output \"z\" {}",
+        "handoff_md": "# Handoff steps",
+        "cost_compare_md": "# Costs",
+        # Already-proper filenames stay unchanged
+        "manifest.json": "{}",
+        # Unknown / custom key still falls back to .txt
+        "notes": "plain text",
+    }
+    out = _extract_artifacts(draft)
+    assert "main.tf" in out
+    assert "variables.tf" in out
+    assert "outputs.tf" in out
+    assert "handoff.md" in out
+    assert "cost_compare.md" in out or "cost_compare.md" in out  # tolerates either convention
+    assert "manifest.json" in out
+    assert "notes.txt" in out
+    # None of the underscore-suffix shapes should leak through
+    for bad in ("main_tf.txt", "variables_tf.txt", "outputs_tf.txt", "handoff_md.txt"):
+        assert bad not in out, f"{bad} should have been normalized"
+    # draft.json is still appended for traceability
+    assert "draft.json" in out
+
+
+def test_bundle_builder_routes_draft_and_review_to_debug():
+    """draft.json + review.json (auto-produced by every skill run) land in debug/,
+    not alongside the actual Terraform files."""
+    from app.services.bundle_builder import build_hybrid_bundle
+
+    raw = {
+        "synthesis/main.tf": "resource \"x\" {}",
+        "synthesis/draft.json": "{...}",
+        "synthesis/review.json": "{...}",
+        "synthesis/handoff.md": "# handoff",
+        "ec2_translation/draft.json": "{...}",
+        "ec2_translation/review.json": "{...}",
+    }
+    out = build_hybrid_bundle(
+        raw, migration_name="w", resource_count=1, skills_ran=["synthesis"],
+        elapsed_seconds=1.0, synthesis_ok=True,
+    )
+    # Terraform tab stays clean — only real .tf files
+    assert "terraform/main.tf" in out
+    assert "terraform/draft.json" not in out
+    assert "terraform/review.json" not in out
+    # Agent traceability routed to debug per-skill
+    assert "debug/synthesis/draft.json" in out
+    assert "debug/synthesis/review.json" in out
+    assert "debug/ec2_translation/draft.json" in out
+    # Synthesis-emitted runbook markdown goes to runbooks/, not terraform/
+    assert "runbooks/handoff.md" in out
+    assert "terraform/handoff.md" not in out
+
+
 def test_bundle_builder_reorganizes_artifacts_into_hybrid_layout():
     """build_hybrid_bundle splits per-skill artifacts into the four sections."""
     from app.services.bundle_builder import build_hybrid_bundle

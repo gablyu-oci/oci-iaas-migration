@@ -19,19 +19,61 @@ from app.agents.skill_group import SKILL_SPECS
 from app.config import settings
 
 
+# Known filename suffixes LLMs commonly emit as underscore-separated JSON keys
+# (e.g. ``main_tf`` meaning ``main.tf``, ``handoff_md`` meaning ``handoff.md``).
+# Without normalization, _extract_artifacts used to append ``.txt`` to these
+# which made the plan bundle produce ``main_tf.txt`` files that lost their
+# syntax-highlighting / editor-affordance context. Ordered: longest first so
+# ``_yaml`` wins over a hypothetical ``_y`` check.
+_KEY_EXTENSION_SUFFIXES = (
+    ("_yaml", ".yaml"),
+    ("_json", ".json"),
+    ("_html", ".html"),
+    ("_yml",  ".yml"),
+    ("_tf",   ".tf"),
+    ("_md",   ".md"),
+    ("_sh",   ".sh"),
+    ("_py",   ".py"),
+    ("_csv",  ".csv"),
+    ("_txt",  ".txt"),
+)
+
+
+def _normalize_artifact_name(key: str) -> str:
+    """Turn an LLM's dict key into a proper filename.
+
+    Rules (first match wins):
+      - Already contains a '.' → leave alone (``main.tf`` stays ``main.tf``)
+      - Ends with a known extension suffix (``_tf``, ``_md``, …) → convert
+        that underscore to a dot (``main_tf`` → ``main.tf``)
+      - Otherwise → append ``.txt`` (same as before) so callers never see a
+        dotless file path.
+    """
+    if not key:
+        return "artifact.txt"
+    if "." in key:
+        return key
+    low = key.lower()
+    for suf, ext in _KEY_EXTENSION_SUFFIXES:
+        if low.endswith(suf) and len(key) > len(suf):
+            return key[:-len(suf)] + ext
+    return f"{key}.txt"
+
+
 def _extract_artifacts(draft: Any) -> dict[str, str]:
     """Lift a writer draft into a ``{filename → content}`` artifact map.
 
-    Strings that look like filenames (contain a ``.``) become files by that
-    name. Anything else becomes ``draft.json``. A copy of the full draft
-    is always saved as ``draft.json`` for traceability.
+    Strings keyed by a name that looks like a filename become files. Keys
+    that use the common ``main_tf`` / ``handoff_md`` JSON convention get
+    normalized to ``main.tf`` / ``handoff.md``. A copy of the full draft
+    is always saved as ``draft.json`` for traceability (the bundle_builder
+    routes that to ``debug/`` so it doesn't clutter the Terraform tab).
     """
     artifacts: dict[str, str] = {}
     if isinstance(draft, dict) and draft:
         for k, v in draft.items():
             if isinstance(v, str) and v.strip():
-                name = k if "." in k else f"{k}.txt"
-                artifacts[name] = v
+                artifacts[_normalize_artifact_name(k)] = v
         artifacts.setdefault("draft.json", json.dumps(draft, indent=2, default=str))
     else:
         artifacts["draft.json"] = json.dumps(draft, indent=2, default=str)

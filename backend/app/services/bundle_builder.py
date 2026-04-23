@@ -121,6 +121,25 @@ def build_hybrid_bundle(
 
 # ─── Key mapping ─────────────────────────────────────────────────────────────
 
+# Files every SkillRunResult carries for agent-runtime traceability. These
+# should never show up alongside the actual deliverables — always debug/.
+_AGENT_TRACEABILITY_FILES = frozenset({"draft.json", "review.json"})
+
+# Known runbook-style filenames. When synthesis emits one of these (as a
+# side-artifact of producing the unified HCL), it belongs in runbooks/
+# rather than terraform/ — it's a document, not an applyable file.
+_RUNBOOK_FILENAMES = frozenset({
+    "handoff.md", "cutover.md", "rollback.md", "runbook.md",
+    "data-migration.md", "validation.md",
+})
+
+# Reports that synthesis / skills sometimes emit at the top level.
+_REPORT_FILENAMES = frozenset({
+    "prerequisites.md", "special-attention.md", "special_attention.md",
+    "cost-compare.md", "cost_compare.md",
+})
+
+
 def _map_key(key: str) -> str | None:
     """Translate ``completed_artifacts`` keys into hybrid bundle paths."""
     # Top-level files
@@ -132,17 +151,27 @@ def _map_key(key: str) -> str | None:
 
     prefix, rest = key.split("/", 1)
 
-    # synthesis/ — the primary Terraform output
+    # Agent-runtime traceability files go to debug/ regardless of skill —
+    # every skill's SkillRunResult auto-produces these, but they're not
+    # what the operator wants to see next to the real deliverables.
+    if rest in _AGENT_TRACEABILITY_FILES:
+        return f"debug/{prefix}/{rest}"
+
+    # synthesis/ — the primary Terraform output, with runbook + report
+    # side-artifacts redirected to their proper sections.
     if prefix == "synthesis":
-        # Sub-docs like prerequisites.md / special-attention.md are actually reports
-        if rest in ("prerequisites.md", "special-attention.md"):
-            return f"reports/{rest}"
+        if rest in _REPORT_FILENAMES:
+            # Normalize special_attention.md → special-attention.md
+            normalized = rest.replace("_", "-") if rest.endswith("_attention.md") else rest
+            return f"reports/{normalized}"
+        if rest in _RUNBOOK_FILENAMES:
+            return f"runbooks/{rest}"
         return f"terraform/{rest}"
 
     # ocm_handoff_translation/ — parallel OCM Terraform + its handoff runbook
     if prefix == "ocm_handoff_translation":
-        if rest == "handoff.md":
-            return "runbooks/handoff.md"
+        if rest in _RUNBOOK_FILENAMES:
+            return f"runbooks/{rest}"
         return f"terraform/ocm/{rest}"
 
     # data_migration/ and workload_planning/ are pure runbooks
