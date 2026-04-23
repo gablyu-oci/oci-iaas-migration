@@ -645,6 +645,70 @@ def test_resource_details_ec2_feeds_metrics_into_rightsizer():
     assert out["rightsizing"]["confidence"] == "high"
 
 
+def test_aws_config_summary_formats_ec2_compactly():
+    """The workload-resources modal's AWS Config column needs a readable one-liner."""
+    from app.api.assessments import _aws_config_summary, _usage_summary, _short_aws_type
+
+    # EC2: shape + AZ + OS + IP + VPC
+    s = _aws_config_summary("AWS::EC2::Instance", {
+        "instance_type": "m5.large",
+        "availability_zone": "us-east-1a",
+        "software_inventory": {"os_name": "Oracle Linux", "os_version": "9.3"},
+        "private_ip_address": "10.0.1.5",
+        "vpc_id": "vpc-abc",
+    })
+    assert "m5.large" in s
+    assert "Oracle Linux 9.3" in s
+    assert "ip:10.0.1.5" in s
+    assert " · " in s  # middle-dot separators
+
+    # EBS: size + type + iops + throughput
+    s_ebs = _aws_config_summary("AWS::EC2::Volume", {
+        "size_gb": 100, "volume_type": "gp3", "iops": 3000,
+        "throughput_mbps": 125, "encrypted": True,
+    })
+    assert "100GB" in s_ebs
+    assert "gp3" in s_ebs
+    assert "3000iops" in s_ebs
+    assert "125MB/s" in s_ebs
+    assert "encrypted" in s_ebs
+
+    # RDS: engine + version + class + storage + multi-AZ
+    s_rds = _aws_config_summary("AWS::RDS::DBInstance", {
+        "engine": "postgres", "engine_version": "16.1",
+        "db_instance_class": "db.r6g.large", "allocated_storage_gb": 100,
+        "multi_az": True,
+    })
+    assert "postgres" in s_rds and "16.1" in s_rds
+    assert "db.r6g.large" in s_rds
+    assert "100GB" in s_rds
+    assert "multi-AZ" in s_rds
+
+    # Short type helper
+    assert _short_aws_type("AWS::EC2::Instance") == "EC2::Instance"
+    assert _short_aws_type("AWS::RDS::DBInstance") == "RDS::DBInstance"
+    assert _short_aws_type("plain") == "plain"  # no :: → passthrough
+
+
+def test_usage_summary_extracts_cloudwatch_p95():
+    """When metrics are present on raw_config, the modal gets p95 bits."""
+    from app.api.assessments import _usage_summary
+    usage = _usage_summary({"metrics": {
+        "CPUUtilization":   {"avg": 40, "p95": 78.5, "max": 92},
+        "mem_used_percent": {"p95": 64.2},
+        "NetworkIn":        {"p95": 12_345_678},
+    }})
+    assert usage is not None
+    assert usage["cpu_p95"] == 78.5
+    assert usage["mem_p95"] == 64.2
+    assert usage["net_in_p95"] == 12_345_678
+    # Unreported metrics come back as None
+    assert usage["disk_read_p95"] is None
+    # No metrics → None (not an empty dict)
+    assert _usage_summary({}) is None
+    assert _usage_summary(None) is None
+
+
 def test_extract_artifacts_normalizes_underscore_suffix_keys():
     """``main_tf`` / ``handoff_md`` / … in LLM output become real filenames."""
     from app.agents.job_result import _extract_artifacts

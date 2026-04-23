@@ -411,6 +411,184 @@ async def get_app_groups(
     return out
 
 
+@router.get("/app-groups/{app_group_id}/resource-details")
+async def get_app_group_resource_details(
+    app_group_id: str,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return per-resource enrichment for every member of an app group.
+
+    Drives the "View Resources" modal on the Workloads tab — one row per
+    resource with pre-formatted summary fields so the frontend doesn't
+    have to reshape raw_config itself.
+
+    Each row carries:
+      - id, aws_type, aws_type_short, name, aws_arn
+      - aws_config_summary   : one-line "m5.large · us-east-1a · Oracle Linux 9 · vpc-abc"
+      - usage                : CloudWatch {CPUUtilization/mem_used_percent/NetworkIn} p95 summary
+      - oci_mapping_raw      : {oci_terraform, oci_service, oci_resource_label, skill, confidence}
+                              — NO rightsizing. Straight lookup from resources.yaml.
+      - ocm_compatibility    : full OCM compat dict (EC2 only, null otherwise)
+      - raw_config           : the full dict so the "View raw" button can render it
+    """
+    from app.services.resource_details import _oci_mapping
+    from app.services.ocm_compatibility import check_ec2_compatibility
+
+    ag_result = await db.execute(
+        select(AppGroup).where(
+            AppGroup.id == uuid.UUID(app_group_id),
+            AppGroup.tenant_id == tenant.id,
+        )
+    )
+    ag = ag_result.scalar_one_or_none()
+    if not ag:
+        raise HTTPException(status_code=404, detail="App group not found")
+
+    mem_result = await db.execute(
+        select(AppGroupMember).where(AppGroupMember.app_group_id == ag.id)
+    )
+    members = mem_result.scalars().all()
+    resource_ids = [m.resource_id for m in members]
+    if not resource_ids:
+        return []
+
+    res_result = await db.execute(
+        select(Resource).where(Resource.id.in_(resource_ids))
+    )
+
+    out: list[dict] = []
+    for r in res_result.scalars().all():
+        rc = r.raw_config or {}
+        row = {
+            "id": str(r.id),
+            "aws_type": r.aws_type,
+            "aws_type_short": _short_aws_type(r.aws_type or ""),
+            "name": r.name or "",
+            "aws_arn": r.aws_arn or "",
+            "aws_config_summary": _aws_config_summary(r.aws_type or "", rc),
+            "usage": _usage_summary(rc),
+            "oci_mapping_raw": _oci_mapping(r.aws_type),
+            "ocm_compatibility": None,
+            "raw_config": rc,
+        }
+        if r.aws_type == "AWS::EC2::Instance":
+            try:
+                row["ocm_compatibility"] = check_ec2_compatibility(
+                    rc, rc.get("software_inventory") if isinstance(rc, dict) else None,
+                )
+            except Exception:
+                pass
+        out.append(row)
+    return out
+
+
+def _short_aws_type(t: str) -> str:
+    parts = t.split("::")
+    return "::".join(parts[1:]) if len(parts) >= 3 else t
+
+
+def _aws_config_summary(aws_type: str, rc: dict) -> str:
+    """One-line human-readable summary of the resource's headline config.
+
+    Picks 3-5 fields that matter per resource type. Formatted with
+    middle-dot separators so the UI can render it as a compact line.
+    """
+    if not isinstance(rc, dict):
+        return ""
+    parts: list[str] = []
+
+    def _add(val: object, fmt: str | None = None) -> None:
+        if val in (None, "", 0, False):
+            return
+        parts.append(fmt.format(val) if fmt else str(val))
+
+    if aws_type == "AWS::EC2::Instance":
+        _add(rc.get("instance_type"))
+        _add(rc.get("availability_zone"))
+        inv = rc.get("software_inventory") or {}
+        os_name = inv.get("os_name") or rc.get("platform_details") or rc.get("platform")
+        if os_name:
+            ver = inv.get("os_version") or ""
+            parts.append(f"{os_name} {ver}".strip())
+        _add(rc.get("private_ip_address"), "ip:{}")
+        _add(rc.get("vpc_id"))
+    elif aws_type == "AWS::EC2::Volume":
+        _add(rc.get("size_gb"), "{}GB")
+        _add(rc.get("volume_type"))
+        _add(rc.get("iops"), "{}iops")
+        _add(rc.get("throughput_mbps"), "{}MB/s")
+        if rc.get("encrypted"):
+            parts.append("encrypted")
+    elif aws_type == "AWS::RDS::DBInstance":
+        _add(rc.get("engine"))
+        _add(rc.get("engine_version"))
+        _add(rc.get("db_instance_class"))
+        _add(rc.get("allocated_storage_gb"), "{}GB")
+        if rc.get("multi_az"):
+            parts.append("multi-AZ")
+    elif aws_type == "AWS::Lambda::Function":
+        _add(rc.get("runtime"))
+        _add(rc.get("memory_size_mb"), "{}MB")
+        _add(rc.get("timeout_seconds"), "{}s")
+        archs = rc.get("architectures") or []
+        if archs:
+            parts.append(",".join(archs))
+    elif aws_type == "AWS::S3::Bucket":
+        _add(rc.get("region"))
+        _add(rc.get("versioning_status"))
+        _add(rc.get("encryption_type"))
+    elif aws_type == "AWS::EC2::VPC":
+        _add(rc.get("cidr_block"))
+        subnets = rc.get("subnets") or []
+        if subnets:
+            parts.append(f"{len(subnets)} subnet(s)")
+    elif aws_type == "AWS::EC2::Subnet":
+        _add(rc.get("cidr_block"))
+        _add(rc.get("availability_zone"))
+    elif aws_type == "AWS::EC2::SecurityGroup":
+        ingress = rc.get("ingress_rules") or []
+        egress = rc.get("egress_rules") or []
+        parts.append(f"{len(ingress)} ingress / {len(egress)} egress rule(s)")
+        _add(rc.get("vpc_id"))
+    elif aws_type == "AWS::ElasticLoadBalancingV2::LoadBalancer":
+        _add(rc.get("type"))
+        _add(rc.get("dns_name"))
+    elif aws_type == "AWS::AutoScaling::AutoScalingGroup":
+        _add(rc.get("min_size"), "min={}")
+        _add(rc.get("max_size"), "max={}")
+        _add(rc.get("desired_capacity"), "desired={}")
+    else:
+        # Generic fallback — lift any handful of scalar fields
+        for k in ("region", "type", "engine", "state", "status", "size_gb"):
+            _add(rc.get(k))
+    return " · ".join(parts) if parts else "—"
+
+
+def _usage_summary(rc: dict) -> dict | None:
+    """CloudWatch p95 summary for the resource (EC2 only today).
+
+    Returns ``{cpu_p95, mem_p95, net_in_p95_mbps, disk_read_p95, ...}`` when
+    metrics were captured at discovery; None otherwise.
+    """
+    if not isinstance(rc, dict):
+        return None
+    metrics = rc.get("metrics") or {}
+    if not metrics:
+        return None
+    def _p95(name: str) -> float | None:
+        val = (metrics.get(name) or {}).get("p95")
+        return round(val, 1) if isinstance(val, (int, float)) else None
+    return {
+        "cpu_p95":          _p95("CPUUtilization"),
+        "mem_p95":          _p95("mem_used_percent"),
+        "net_in_p95":       _p95("NetworkIn"),
+        "net_out_p95":      _p95("NetworkOut"),
+        "disk_read_p95":    _p95("DiskReadOps"),
+        "disk_write_p95":   _p95("DiskWriteOps"),
+    }
+
+
 @router.get("/app-groups/{app_group_id}/resource-mapping")
 async def get_resource_mapping(
     app_group_id: str,

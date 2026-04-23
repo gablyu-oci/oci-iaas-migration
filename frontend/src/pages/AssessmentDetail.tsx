@@ -15,6 +15,7 @@ import SixRBadge from '../components/SixRBadge';
 import CostComparisonChart from '../components/CostComparisonChart';
 import DependencyGraph from '../components/DependencyGraph';
 import ResourceDetailPanel from '../components/ResourceDetailPanel';
+import WorkloadResourcesModal from '../components/WorkloadResourcesModal';
 import { formatDate } from '../lib/utils';
 
 type TabId = 'overview' | 'workloads' | 'resources' | 'dependencies' | 'os-compat';
@@ -40,8 +41,8 @@ export default function AssessmentDetail() {
   const [activeTab, setActiveTab] = useState<TabId>('overview');
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortAsc, setSortAsc] = useState(true);
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [detailResource, setDetailResource] = useState<{ id: string; name: string; aws_type: string } | null>(null);
+  const [workloadModal, setWorkloadModal] = useState<{ appGroupId: string; name: string } | null>(null);
 
   const { data: assessment, isLoading: loadingAssessment } = useAssessment(assessmentId || '');
   const { data: migration } = useMigration(assessment?.migration_id || '');
@@ -76,15 +77,6 @@ export default function AssessmentDetail() {
       setSortKey(key);
       setSortAsc(true);
     }
-  };
-
-  const toggleGroup = (groupId: string) => {
-    setExpandedGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(groupId)) next.delete(groupId);
-      else next.add(groupId);
-      return next;
-    });
   };
 
   const handleRerun = () => {
@@ -426,73 +418,40 @@ export default function AssessmentDetail() {
               </div>
             ) : (
               appGroups.map((group) => {
-                const isExpanded = expandedGroups.has(group.id);
                 return (
                   <div
                     key={group.id}
-                    className="rounded-lg"
+                    className="rounded-lg p-4 flex items-center justify-between gap-3"
                     style={{ background: 'var(--color-well)', border: '1px solid var(--color-rule)' }}
                   >
-                    <button
-                      onClick={() => toggleGroup(group.id)}
-                      className="w-full flex items-center justify-between gap-3 p-4 text-left"
-                      style={{ background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
-                      aria-expanded={isExpanded}
-                    >
-                      <div className="flex items-center gap-3 min-w-0">
-                        <svg
-                          className="w-3.5 h-3.5 flex-shrink-0 transition-transform"
-                          style={{
-                            transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
-                            color: 'var(--color-text-dim)',
-                          }}
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                        </svg>
-                        <span className="text-sm font-medium truncate" style={{ color: 'var(--color-text-bright)' }}>
-                          {group.name}
-                        </span>
-                        {group.workload_type && (
-                          <span
-                            className="badge"
-                            style={{
-                              fontSize: '0.5625rem',
-                              background: 'rgba(37,99,235,0.08)',
-                              color: '#2563eb',
-                              borderColor: 'rgba(37,99,235,0.2)',
-                            }}
-                          >
-                            {group.workload_type.replace('_', '/')}
-                          </span>
-                        )}
-                        <SixRBadge strategy={group.six_r_strategy} confidence={group.six_r_confidence} />
-                      </div>
-                      <span className="badge badge-neutral flex-shrink-0">
-                        {group.resource_count} resource{group.resource_count !== 1 ? 's' : ''}
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <span className="text-sm font-medium truncate" style={{ color: 'var(--color-text-bright)' }}>
+                        {group.name}
                       </span>
+                      {group.workload_type && (
+                        <span
+                          className="badge"
+                          style={{
+                            fontSize: '0.5625rem',
+                            background: 'rgba(37,99,235,0.08)',
+                            color: '#2563eb',
+                            borderColor: 'rgba(37,99,235,0.2)',
+                          }}
+                        >
+                          {group.workload_type.replace('_', '/')}
+                        </span>
+                      )}
+                      <SixRBadge strategy={group.six_r_strategy} confidence={group.six_r_confidence} />
+                    </div>
+                    <span className="badge badge-neutral flex-shrink-0">
+                      {group.resource_count} resource{group.resource_count !== 1 ? 's' : ''}
+                    </span>
+                    <button
+                      onClick={() => setWorkloadModal({ appGroupId: group.id, name: group.name })}
+                      className="btn btn-secondary btn-sm flex-shrink-0"
+                    >
+                      View resources
                     </button>
-                    {isExpanded && (
-                      <div
-                        className="px-4 pb-4 space-y-1.5"
-                        style={{ borderTop: '1px solid var(--color-rule)', paddingTop: '0.75rem', marginLeft: '1.5rem' }}
-                      >
-                        {group.members.map((member) => (
-                          <div
-                            key={member.resource_id}
-                            className="flex items-center gap-2 text-xs"
-                            style={{ color: 'var(--color-text-dim)' }}
-                          >
-                            <span className="badge badge-neutral" style={{ fontSize: '0.5625rem' }}>
-                              {shortType(member.aws_type)}
-                            </span>
-                            <span className="truncate">{member.name}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
                   </div>
                 );
               })
@@ -565,6 +524,15 @@ export default function AssessmentDetail() {
           </div>
         )}
       </div>
+
+      {/* ── Workload Resources Modal ── */}
+      {workloadModal && (
+        <WorkloadResourcesModal
+          appGroupId={workloadModal.appGroupId}
+          workloadName={workloadModal.name}
+          onClose={() => setWorkloadModal(null)}
+        />
+      )}
 
       {/* ── Resource Detail Modal ── */}
       {detailResource && (
