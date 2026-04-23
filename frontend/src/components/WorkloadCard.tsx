@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import WorkloadResourcesModal from './WorkloadResourcesModal';
 
 export interface WorkloadCardProps {
   name: string;
@@ -16,6 +17,10 @@ export interface WorkloadCardProps {
   onSelect?: () => void;
   onUnbind?: () => void;
   selectLoading?: boolean;
+  // App group UUID — when present, the card shows a "View resources"
+  // button that opens the full WorkloadResourcesModal instead of the
+  // cramped inline <details> expand.
+  appGroupId?: string | null;
 }
 
 const WORKLOAD_CONFIG: Record<string, { label: string; color: string; bg: string; border: string; icon: JSX.Element }> = {
@@ -152,8 +157,10 @@ export default function WorkloadCard({
   onSelect,
   onUnbind,
   selectLoading,
+  appGroupId,
 }: WorkloadCardProps) {
   const [showGraph, setShowGraph] = useState(false);
+  const [showResourcesModal, setShowResourcesModal] = useState(false);
   const config = getConfig(workloadType);
 
   return (
@@ -278,38 +285,60 @@ export default function WorkloadCard({
           </div>
         )}
 
-        {/* Resource list (collapsible) */}
-        <details className="group">
-          <summary
-            className="flex items-center gap-1.5 text-xs font-medium cursor-pointer list-none"
-            style={{ color: 'var(--color-text-dim)' }}
+        {/* Resource count + View-resources button.
+            Replaces the cramped inline <details> expand. When an app-group
+            UUID is available, the button opens a full-size modal table
+            (type / config summary / usage / OCI mapping / OCM badge / raw).
+            Falls back to a brief member list only when appGroupId is unknown
+            (e.g. pre-assessment state). */}
+        {appGroupId ? (
+          <button
+            onClick={() => setShowResourcesModal(true)}
+            className="flex items-center gap-1.5 text-xs font-medium"
+            style={{ color: 'var(--color-text-dim)', background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}
           >
-            <svg
-              className="w-3 h-3 transition-transform group-open:rotate-90"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z M2.458 12C3.732 7.943 7.523 5 12 5c4.477 0 8.268 2.943 9.542 7-1.274 4.057-5.065 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
             </svg>
-            {resourceCount} resource{resourceCount !== 1 ? 's' : ''}
-          </summary>
-          <div className="mt-2 space-y-1.5 pt-2" style={{ borderTop: '1px solid var(--color-rule)' }}>
-            {resources.map((r) => (
-              <div
-                key={r.id}
-                className="flex items-center gap-2 text-xs"
-                style={{ color: 'var(--color-text-dim)' }}
-              >
-                <span className="badge badge-neutral" style={{ fontSize: '0.5625rem' }}>
-                  {shortType(r.aws_type)}
-                </span>
-                <span className="truncate">{r.name || r.id}</span>
-              </div>
-            ))}
-          </div>
-        </details>
+            View {resourceCount} resource{resourceCount !== 1 ? 's' : ''}
+          </button>
+        ) : (
+          <details className="group">
+            <summary
+              className="flex items-center gap-1.5 text-xs font-medium cursor-pointer list-none"
+              style={{ color: 'var(--color-text-dim)' }}
+            >
+              <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+              {resourceCount} resource{resourceCount !== 1 ? 's' : ''}
+            </summary>
+            <div className="mt-2 space-y-1.5 pt-2" style={{ borderTop: '1px solid var(--color-rule)' }}>
+              {resources.map((r) => (
+                <div
+                  key={r.id}
+                  className="flex items-center gap-2 text-xs"
+                  style={{ color: 'var(--color-text-dim)' }}
+                >
+                  <span className="badge badge-neutral" style={{ fontSize: '0.5625rem' }}>
+                    {shortType(r.aws_type)}
+                  </span>
+                  <span className="truncate">{r.name || r.id}</span>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
       </div>
+
+      {/* Resources modal (opened from the button above) */}
+      {showResourcesModal && appGroupId && (
+        <WorkloadResourcesModal
+          appGroupId={appGroupId}
+          workloadName={name}
+          onClose={() => setShowResourcesModal(false)}
+        />
+      )}
 
       {/* Bound badge */}
       {isBound && (

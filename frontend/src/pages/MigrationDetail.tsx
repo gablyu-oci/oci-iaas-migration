@@ -1238,6 +1238,7 @@ function AssessStep({
                   selectLoading={bindLoading}
                   onSelect={() => onBindGroup(groupId)}
                   onUnbind={() => onUnbindGroup()}
+                  appGroupId={w.id}
                 />
               );
             })}
