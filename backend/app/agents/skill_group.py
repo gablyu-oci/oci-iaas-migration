@@ -425,9 +425,33 @@ def _writer_instructions(spec: SkillSpec) -> str:
         "issues as the ONLY work to do — do not regenerate from scratch.",
         "2. Otherwise produce a complete first draft.",
         "3. Call tools to verify your mappings / validate your HCL.",
-        "4. Return the finished translation as JSON with the fields your "
-        "skill's contract specifies (main_tf, variables_tf, outputs_tf, "
-        "resource_mappings, gaps, migration_prerequisites, etc.).",
+        "4. Return the finished translation as a single JSON object.",
+        "",
+        "## Output format (important)",
+        "",
+        "**Use real filenames as JSON keys**, with the extension as a dot-suffix:",
+        "",
+        "```json",
+        "{",
+        '  "main.tf":       "<full HCL content>",',
+        '  "variables.tf":  "<full HCL content>",',
+        '  "outputs.tf":    "<full HCL content>",',
+        '  "resource_mappings": [...],',
+        '  "gaps": [...],',
+        '  "migration_prerequisites": [...]',
+        "}",
+        "```",
+        "",
+        "Do NOT use underscore-suffix aliases like `main_tf` / `variables_tf` / "
+        "`handoff_md` — those end up written to disk as `main_tf.txt` and lose "
+        "editor syntax highlighting. Always use the real filename as the key.",
+        "",
+        "## Completeness",
+        "",
+        "Translate EVERY resource the input asks about. Do not emit placeholders "
+        "like \"# ... and N more similar resources\". If the input has 30 "
+        "resources, your output has ≥ 30 resource blocks. Long HCL is fine — "
+        "truncated HCL is a failure that causes missing OCI resources at apply time.",
         "",
         _common_context_section(spec),
     ])
