@@ -571,7 +571,6 @@ export default function Resources() {
           resource={viewResource}
           onClose={() => setViewResource(null)}
         />
-        </div>
       )}
     </div>
   );
