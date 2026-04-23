@@ -688,50 +688,64 @@ def _run_pipeline(
         logger.warning("Workload planning failed: %s", exc)
 
     # ── Step 6: Synthesis ──────────────────────────────────────────────
-    # Aggregate artifacts by skill type (not one job per file)
+    # Deterministic merge of per-skill HCL into per-concern files
+    # (network.tf, compute.tf, database.tf, …). Replaces an earlier LLM
+    # synthesis call that was hitting nginx's 5-min upstream cap on big
+    # stacks (30+ resources = 20k+ output tokens = longer than the
+    # Llama Stack gateway allows). The composer is pure Python — no LLM
+    # calls, no timeout risk, O(number of HCL blocks) runtime.
+    #
+    # Cross-file references resolve naturally: all output files land in
+    # the same terraform/ directory, so network.tf's
+    # `oci_core_subnet.primary` is addressable from compute.tf without
+    # any wiring. The composer deduplicates variables + outputs by
+    # name, renames resource/data/module label collisions with a
+    # `_from_<skill>` suffix, and emits a single canonical providers.tf.
     skill_artifacts: dict[str, dict[str, str]] = {}
     for key, content in completed_artifacts.items():
         if "/" not in key:
             continue
         skill = key.split("/")[0]
-        if skill in ("workload_planning", "data_migration", "resource-mapping"):
+        # Keep HCL-producing skills only; runbooks + reports aren't
+        # fodder for the Terraform merge. ocm_handoff_translation and
+        # cfn_terraform stay in their own sub-directories (handled
+        # elsewhere in bundle_builder).
+        if skill in ("workload_planning", "data_migration", "resource-mapping",
+                     "ocm_handoff_translation", "cfn_terraform"):
             continue
         fname = key.split("/", 1)[-1]
-        # .tf files in full, .md reports truncated to first 1000 chars for context
         if fname.endswith(".tf"):
             skill_artifacts.setdefault(skill, {})[fname] = content
-        elif fname.endswith(".md"):
-            skill_artifacts.setdefault(skill, {})[fname] = content[:1000] + "\n\n[... truncated for synthesis ...]" if len(content) > 1000 else content
-            skill_artifacts.setdefault(skill, {})[fname] = content
 
-    translation_jobs = [
-        {"skill_type": skill, "artifacts": arts}
-        for skill, arts in skill_artifacts.items()
-    ]
-
-    if translation_jobs:
-        _progress("synthesis", f"Merging Terraform (combining {len(translation_jobs)} skill outputs into one stack)")
+    if skill_artifacts:
+        from app.services.synthesis_composer import compose_terraform
+        _progress(
+            "synthesis",
+            f"Composing Terraform (deterministic merge of {len(skill_artifacts)} skill output(s) "
+            f"into per-concern .tf files)",
+        )
         try:
-            synthesis_input = json.dumps({
-                "migration_name": ag.name,
-                "jobs": translation_jobs,
-            }, indent=2)
-
-            from app.agents.job_result import run_skill_sync
-            result = run_skill_sync(
-                "synthesis", synthesis_input,
-                max_iterations=max_iterations,
-                migration_id=str(ag.assessment_id) if ag.assessment_id else None,
+            syn = compose_terraform(skill_artifacts, migration_name=ag.name)
+            for filename, content in syn.files.items():
+                completed_artifacts[f"synthesis/{filename}"] = content
+            for w in syn.warnings:
+                all_gaps.append({
+                    "skill": "synthesis",
+                    "severity": "MEDIUM",
+                    "description": w,
+                    "recommendation": "Review the renamed/deduped blocks; rename if the original identifier mattered to operators.",
+                })
+                logger.info("synthesis: %s", w)
+            _progress(
+                "synthesis",
+                f"Synthesis composed: {len(syn.files)} file(s) across {len(syn.skills_included)} skill(s)"
+                + (f", {len(syn.warnings)} collision(s) resolved" if syn.warnings else ""),
             )
-            if result:
-                for name, content in result.get("artifacts", {}).items():
-                    completed_artifacts[f"synthesis/{name}"] = content
-                _progress("synthesis", "Synthesis complete")
         except Exception as exc:
-            _progress("synthesis", f"Synthesis failed: {exc!r}")
-            logger.warning("Synthesis failed: %s\n%s", exc, traceback.format_exc())
+            _progress("synthesis", f"Synthesis composer failed: {exc!r}")
+            logger.warning("Synthesis composer failed: %s\n%s", exc, traceback.format_exc())
     else:
-        _progress("synthesis", "No translation artifacts to synthesize — skipping")
+        _progress("synthesis", "No translation artifacts to compose — skipping")
 
     # ── Step 7: Build the hybrid bundle ────────────────────────────────
     # Reorganize per-skill artifacts into terraform/ + runbooks/ +

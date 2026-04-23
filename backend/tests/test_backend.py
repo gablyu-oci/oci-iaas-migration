@@ -1186,6 +1186,142 @@ def test_resource_details_non_ec2_has_no_ocm_compat():
     assert out["ocm_compatibility"] is None
 
 
+def test_synthesis_composer_splits_per_skill_into_concern_files():
+    """Deterministic merger routes each skill's HCL into its concern file
+    and produces a valid cross-referenceable module."""
+    from app.services.synthesis_composer import compose_terraform
+
+    per_skill = {
+        "network_translation": {
+            "main.tf": (
+                'resource "oci_core_vcn" "main" {\n'
+                '  cidr_block = "10.0.0.0/16"\n'
+                '}\n\n'
+                'resource "oci_core_subnet" "primary" {\n'
+                '  vcn_id     = oci_core_vcn.main.id\n'
+                '  cidr_block = "10.0.1.0/24"\n'
+                '}\n'
+            ),
+            "variables.tf": 'variable "compartment_ocid" { type = string }\n',
+            "outputs.tf":   'output "vcn_id" { value = oci_core_vcn.main.id }\n',
+        },
+        "ec2_translation": {
+            "main.tf": (
+                'resource "oci_core_instance" "web" {\n'
+                '  subnet_id = oci_core_subnet.primary.id\n'  # cross-file ref
+                '  shape     = "VM.Standard.E5.Flex"\n'
+                '}\n'
+            ),
+            "variables.tf": 'variable "compartment_ocid" { type = string }\n',  # dup
+        },
+        "database_translation": {
+            "main.tf": (
+                'resource "oci_database_db_system" "pg" {\n'
+                '  subnet_id = oci_core_subnet.primary.id\n'
+                '}\n'
+            ),
+        },
+    }
+    res = compose_terraform(per_skill, migration_name="test-workload")
+
+    # Each skill's HCL lands in its concern file
+    assert "network.tf"  in res.files
+    assert "compute.tf"  in res.files
+    assert "database.tf" in res.files
+    assert "variables.tf" in res.files
+    assert "outputs.tf"  in res.files
+    assert "providers.tf" in res.files
+
+    # Cross-file references survive verbatim (composer doesn't rewrite them).
+    assert 'oci_core_subnet.primary.id' in res.files["compute.tf"]
+    assert 'oci_core_subnet.primary.id' in res.files["database.tf"]
+    # And the subnet block lives in network.tf where compute.tf can find it.
+    assert 'resource "oci_core_subnet" "primary"' in res.files["network.tf"]
+
+    # Duplicate variable deduped (once, not twice)
+    assert res.files["variables.tf"].count('variable "compartment_ocid"') == 1
+
+    # Providers.tf is the canonical one (single provider block + required_providers)
+    assert res.files["providers.tf"].count('provider "oci"') == 1
+    assert 'required_providers' in res.files["providers.tf"]
+
+    # No warnings for this happy path
+    assert res.warnings == []
+
+
+def test_synthesis_composer_renames_label_collisions():
+    """Two skills declaring the same (type, label) → second gets suffix-renamed."""
+    from app.services.synthesis_composer import compose_terraform
+
+    per_skill = {
+        "network_translation": {
+            "main.tf": 'resource "oci_core_vcn" "main" {\n  cidr_block = "10.0.0.0/16"\n}\n',
+        },
+        "iam_translation": {
+            # Legitimate collision — IAM shouldn't own a VCN but bad LLM
+            # output sometimes produces one. Composer must not drop either
+            # block; it renames the second.
+            "main.tf": 'resource "oci_core_vcn" "main" {\n  cidr_block = "192.168.0.0/16"\n}\n',
+        },
+    }
+    res = compose_terraform(per_skill, migration_name="w")
+
+    # Both VCN blocks survive, second renamed
+    vcns_in_output = (res.files.get("network.tf", "") + res.files.get("iam.tf", ""))
+    assert 'resource "oci_core_vcn" "main"' in vcns_in_output
+    assert '_from_iam"' in vcns_in_output   # the renamed label
+    # Warning emitted so the operator sees it
+    assert any("oci_core_vcn" in w and "renamed" in w for w in res.warnings)
+
+
+def test_synthesis_composer_drops_per_skill_provider_blocks():
+    """Per-skill provider / terraform blocks get replaced with one canonical
+    providers.tf — no duplicate provider blocks in the merged module."""
+    from app.services.synthesis_composer import compose_terraform
+
+    per_skill = {
+        "network_translation": {
+            "main.tf": (
+                'terraform {\n  required_providers { oci = { source = "oracle/oci" } }\n}\n\n'
+                'provider "oci" {\n  region = "us-ashburn-1"\n}\n\n'
+                'resource "oci_core_vcn" "main" {}\n'
+            ),
+        },
+        "ec2_translation": {
+            "main.tf": (
+                'provider "oci" {\n  region = "us-ashburn-1"\n}\n\n'
+                'resource "oci_core_instance" "web" {}\n'
+            ),
+        },
+    }
+    res = compose_terraform(per_skill, migration_name="w")
+
+    # Concern files no longer carry a provider block
+    assert 'provider "oci"' not in res.files.get("network.tf", "")
+    assert 'provider "oci"' not in res.files.get("compute.tf", "")
+    assert 'terraform {' not in res.files.get("network.tf", "")
+
+    # Exactly one canonical provider in providers.tf
+    assert res.files["providers.tf"].count('provider "oci"') == 1
+
+
+def test_synthesis_composer_ignores_unmapped_skills():
+    """Skills we route separately (ocm_handoff_translation, cfn_terraform)
+    aren't mapped to a concern file; they should be handled upstream, not
+    folded into the merged module."""
+    from app.services.synthesis_composer import compose_terraform
+
+    per_skill = {
+        "ocm_handoff_translation": {
+            "main.tf": 'resource "oci_cloud_migrations_migration" "m" {}\n',
+        },
+    }
+    res = compose_terraform(per_skill)
+    # No concern file emitted because no mapped skill produced HCL
+    assert all(not k.endswith(".tf") or k == "providers.tf"
+               for k in res.files.keys())
+
+
 def test_cfn_runner_bisects_on_failure_and_reports_missing():
     """When a chunk's writer call raises, the runner halves the resources and
     retries; single-resource failures land in reports/cfn-missing-resources.md."""
