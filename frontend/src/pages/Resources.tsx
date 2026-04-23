@@ -1,12 +1,12 @@
 import { useState, useMemo, useCallback } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useResources, type Resource } from '../api/hooks/useResources';
-import { useCreateTranslationJob, useResourceTranslationJobs, type TranslationJob } from '../api/hooks/useTranslationJobs';
+import { useCreateTranslationJob } from '../api/hooks/useTranslationJobs';
 import { useMigrations } from '../api/hooks/useMigrations';
 import client from '../api/client';
 import { formatDate } from '../lib/utils';
-import ResourceDetailPanel from '../components/ResourceDetailPanel';
+import ResourceDetailModal from '../components/ResourceDetailModal';
 
 const SKILL_FOR_TYPE: Record<string, string> = {
   'AWS::CloudFormation::Stack': 'cfn_terraform',
@@ -23,16 +23,6 @@ const SKILL_FOR_TYPE: Record<string, string> = {
   CloudTrail: 'dependency_discovery',
   FlowLog: 'dependency_discovery',
 };
-
-function jobStatusBadge(status: string) {
-  const map: Record<string, string> = {
-    queued: 'badge badge-neutral',
-    running: 'badge badge-running',
-    complete: 'badge badge-success',
-    failed: 'badge badge-error',
-  };
-  return map[status] || 'badge badge-neutral';
-}
 
 function resourceStatusBadge(status: string) {
   const map: Record<string, string> = {
@@ -54,58 +44,6 @@ function typeService(awsType: string): string {
   // Returns the AWS service group, e.g. "EC2", "RDS", "IAM"
   const parts = awsType.split('::');
   return parts.length >= 2 ? parts[1] : awsType;
-}
-
-// ── Resource Translation Jobs Panel ───────────────────────────────────────────
-
-function ResourceSkillRunsPanel({ resourceId }: { resourceId: string }) {
-  const { data: runs, isLoading } = useResourceTranslationJobs(resourceId);
-
-  if (isLoading) {
-    return (
-      <div className="space-y-2">
-        {[...Array(3)].map((_, i) => <div key={i} className="skel h-10" />)}
-      </div>
-    );
-  }
-  if (!runs || runs.length === 0) {
-    return <div className="empty-state"><p>No translation jobs for this resource yet.</p></div>;
-  }
-  return (
-    <div className="space-y-2">
-      {runs.map((run: TranslationJob) => (
-        <div
-          key={run.id}
-          className="flex items-center justify-between p-3 rounded-lg text-sm"
-          style={{ background: 'var(--color-well)', border: '1px solid var(--color-fence)' }}
-        >
-          <div className="flex items-center gap-3 min-w-0">
-            <span className={jobStatusBadge(run.status)}>
-              <span className="badge-dot" />
-              {run.status}
-            </span>
-            <span className="text-xs truncate" style={{ color: 'var(--color-text-dim)', fontFamily: 'var(--font-mono)' }}>
-              {run.skill_type}
-            </span>
-            {run.status === 'complete' && (
-              <span className="text-xs" style={{ color: 'var(--color-rail)' }}>
-                {Math.round(run.confidence * 100)}%
-              </span>
-            )}
-          </div>
-          <div className="flex items-center gap-3 flex-shrink-0 ml-3">
-            <span className="text-xs" style={{ color: 'var(--color-text-dim)' }}>{formatDate(run.created_at)}</span>
-            <Link
-              to={run.status === 'complete' ? `/translation-jobs/${run.id}/results` : `/translation-jobs/${run.id}`}
-              className="btn btn-ghost btn-sm"
-            >
-              {run.status === 'complete' ? 'Results' : 'View'} →
-            </Link>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
 }
 
 // ── Resource Card ─────────────────────────────────────────────────────────────
@@ -212,7 +150,6 @@ export default function Resources() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isDeleting, setIsDeleting] = useState(false);
   const [viewResource, setViewResource] = useState<Resource | null>(null);
-  const [modalTab, setModalTab] = useState<'details' | 'config' | 'runs'>('details');
 
   const qc = useQueryClient();
 
@@ -630,120 +567,10 @@ export default function Resources() {
 
       {/* ── Resource Detail Modal ── */}
       {viewResource && (
-        <div
-          className="modal-overlay"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Resource Details"
-          onClick={(e) => { if (e.target === e.currentTarget) { setViewResource(null); setModalTab('details'); }}}
-        >
-          <div className="modal modal-lg" style={{ maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}>
-            <div className="modal-header">
-              <div>
-                <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>
-                  {viewResource.name || 'Unnamed Resource'}
-                </h3>
-                <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)', fontFamily: 'var(--font-mono)' }}>
-                  {viewResource.aws_type}
-                </p>
-              </div>
-              <button
-                onClick={() => { setViewResource(null); setModalTab('details'); }}
-                className="btn btn-ghost btn-sm"
-                aria-label="Close modal"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-
-            {/* Tabs */}
-            <div className="tabs px-4">
-              {(['details', 'config', 'runs'] as const).map((tab) => (
-                <button
-                  key={tab}
-                  onClick={() => setModalTab(tab)}
-                  className={`tab-btn ${modalTab === tab ? 'active' : ''}`}
-                >
-                  {tab === 'details' ? 'Details' : tab === 'config' ? 'Raw Config' : 'Translation Jobs'}
-                </button>
-              ))}
-            </div>
-
-            <div className="modal-body overflow-y-auto flex-1 space-y-4">
-              {modalTab === 'details' ? (
-                <ResourceDetailPanel resourceId={viewResource.id} />
-              ) : modalTab === 'config' ? (
-                <>
-                  <div className="grid grid-cols-2 gap-4 text-xs">
-                    {[
-                      { label: 'Name', value: viewResource.name || '—' },
-                      { label: 'Type', value: viewResource.aws_type, mono: true },
-                      { label: 'ARN', value: viewResource.aws_arn || '—', mono: true, breakAll: true },
-                      { label: 'Status', value: viewResource.status },
-                    ].map(({ label, value, mono, breakAll }) => (
-                      <div key={label}>
-                        <p className="field-label">{label}</p>
-                        <p
-                          className="mt-1 text-xs"
-                          style={{
-                            color: 'var(--color-text-bright)',
-                            fontFamily: mono ? 'var(--font-mono)' : undefined,
-                            wordBreak: breakAll ? 'break-all' : undefined,
-                          }}
-                        >
-                          {value}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <p className="field-label">Raw Configuration</p>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => navigator.clipboard.writeText(JSON.stringify(viewResource.raw_config, null, 2))}
-                          className="btn btn-secondary btn-sm"
-                        >
-                          Copy
-                        </button>
-                        <button
-                          onClick={() => {
-                            const blob = new Blob([JSON.stringify(viewResource.raw_config, null, 2)], { type: 'application/json' });
-                            const url = URL.createObjectURL(blob);
-                            const a = document.createElement('a');
-                            a.href = url;
-                            a.download = `${viewResource.name || 'resource'}.json`;
-                            a.click();
-                            URL.revokeObjectURL(url);
-                          }}
-                          className="btn btn-primary btn-sm"
-                        >
-                          Download
-                        </button>
-                      </div>
-                    </div>
-                    <pre
-                      className="rounded-lg p-4 text-xs overflow-auto"
-                      style={{
-                        background: 'var(--color-well)',
-                        border: '1px solid var(--color-fence)',
-                        color: 'var(--color-text-dim)',
-                        fontFamily: 'var(--font-mono)',
-                        maxHeight: '20rem',
-                        whiteSpace: 'pre-wrap',
-                      }}
-                    >
-                      {JSON.stringify(viewResource.raw_config, null, 2)}
-                    </pre>
-                  </div>
-                </>
-              ) : (
-                <ResourceSkillRunsPanel resourceId={viewResource.id} />
-              )}
-            </div>
-          </div>
+        <ResourceDetailModal
+          resource={viewResource}
+          onClose={() => setViewResource(null)}
+        />
         </div>
       )}
     </div>

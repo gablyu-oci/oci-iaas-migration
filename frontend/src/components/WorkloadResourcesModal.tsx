@@ -1,7 +1,66 @@
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import client from '../api/client';
-import ResourceDetailPanel from './ResourceDetailPanel';
+import ResourceDetailModal from './ResourceDetailModal';
+
+// ─── Type-based color palette ──────────────────────────────────────────────
+// Colors the AWS-type badge by service category so scanning a workload's
+// resource list is faster than parsing prefixes. Badge text stays legible
+// on both light and dark themes by pairing a translucent background with
+// the saturated foreground color.
+
+function typeColor(awsTypeShort: string): { bg: string; fg: string; border: string } {
+  const s = awsTypeShort;
+  // Storage — volumes, S3, EFS, FSx, snapshots, images
+  if (/::Volume|::Snapshot|::Image|S3::|EFS::|FSx::/.test(s)) {
+    return { bg: 'rgba(37,99,235,0.12)', fg: '#2563eb', border: 'rgba(37,99,235,0.3)' };
+  }
+  // Network — VPC, subnet, SG, gateways, peering, route-tables, IPs
+  if (/::VPC|::Subnet|::SecurityGroup|::NetworkInterface|::InternetGateway|::NatGateway|::RouteTable|::EIP|::NetworkAcl|::VPCPeering|::TransitGateway|::VPNConnection|::VPNGateway|::CustomerGateway|::VPCEndpoint|Route53::|DirectConnect::/.test(s)) {
+    return { bg: 'rgba(13,148,136,0.12)', fg: '#0d9488', border: 'rgba(13,148,136,0.3)' };
+  }
+  // Compute — EC2 instances, ASGs, launch templates, key pairs
+  if (/EC2::Instance|AutoScaling::|LaunchTemplate|LaunchConfiguration|::KeyPair|::SpotFleet/.test(s)) {
+    return { bg: 'rgba(234,88,12,0.12)', fg: '#ea580c', border: 'rgba(234,88,12,0.3)' };
+  }
+  // Database
+  if (/RDS::|DynamoDB::|DocDB::|Neptune::|ElastiCache::|OpenSearchService::|Redshift::|DAX::|MSK::|Timestream::/.test(s)) {
+    return { bg: 'rgba(124,58,237,0.12)', fg: '#7c3aed', border: 'rgba(124,58,237,0.3)' };
+  }
+  // Load balancing
+  if (/ElasticLoadBalancing/.test(s)) {
+    return { bg: 'rgba(79,70,229,0.12)', fg: '#4f46e5', border: 'rgba(79,70,229,0.3)' };
+  }
+  // Security (IAM, KMS, Secrets, SSM, ACM, WAF)
+  if (/IAM::|KMS::|SecretsManager::|SSM::|CertificateManager::|WAFv2::/.test(s)) {
+    return { bg: 'rgba(220,38,38,0.12)', fg: '#dc2626', border: 'rgba(220,38,38,0.3)' };
+  }
+  // Serverless / containers
+  if (/Lambda::|ApiGateway::|ApiGatewayV2::|StepFunctions::|Events::|Kinesis::|ECS::|EKS::|ECR::/.test(s)) {
+    return { bg: 'rgba(202,138,4,0.12)', fg: '#ca8a04', border: 'rgba(202,138,4,0.3)' };
+  }
+  // Observability / messaging
+  if (/CloudWatch::|Logs::|SNS::|SQS::|CloudTrail::/.test(s)) {
+    return { bg: 'rgba(22,163,74,0.12)', fg: '#16a34a', border: 'rgba(22,163,74,0.3)' };
+  }
+  // IaC / CDN
+  if (/CloudFormation::|CloudFront::/.test(s)) {
+    return { bg: 'rgba(100,116,139,0.12)', fg: '#64748b', border: 'rgba(100,116,139,0.3)' };
+  }
+  return { bg: 'var(--color-well)', fg: 'var(--color-text-dim)', border: 'var(--color-rule)' };
+}
+
+function TypeBadge({ awsTypeShort }: { awsTypeShort: string }) {
+  const c = typeColor(awsTypeShort);
+  return (
+    <span
+      className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap"
+      style={{ background: c.bg, color: c.fg, border: `1px solid ${c.border}`, fontFamily: 'var(--font-mono)' }}
+    >
+      {awsTypeShort}
+    </span>
+  );
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -120,7 +179,7 @@ export default function WorkloadResourcesModal({
   onClose: () => void;
 }) {
   const { data: rows, isLoading, error } = useWorkloadResourceDetails(appGroupId);
-  const [rawDetailId, setRawDetailId] = useState<string | null>(null);
+  const [detailResource, setDetailResource] = useState<WorkloadResourceRow | null>(null);
   const [filter, setFilter] = useState('');
   const [typeFilter, setTypeFilter] = useState<string>('');
 
@@ -257,9 +316,7 @@ export default function WorkloadResourcesModal({
                   {filteredRows.map((r) => (
                     <tr key={r.id}>
                       <td>
-                        <span className="badge badge-neutral" style={{ fontSize: '0.5625rem' }}>
-                          {r.aws_type_short}
-                        </span>
+                        <TypeBadge awsTypeShort={r.aws_type_short} />
                       </td>
                       <td className="td-primary" style={{ maxWidth: '14rem' }}>
                         <span className="truncate block" title={r.name}>{r.name || '—'}</span>
@@ -280,11 +337,11 @@ export default function WorkloadResourcesModal({
                       </td>
                       <td>
                         <button
-                          onClick={() => setRawDetailId(r.id)}
+                          onClick={() => setDetailResource(r)}
                           className="btn btn-ghost btn-sm"
                           style={{ fontSize: '0.6875rem' }}
                         >
-                          View raw
+                          View detail
                         </button>
                       </td>
                     </tr>
@@ -296,34 +353,19 @@ export default function WorkloadResourcesModal({
         </div>
       </div>
 
-      {/* Nested modal: full resource detail panel when "View raw" is clicked */}
-      {rawDetailId && (
-        <div
-          className="modal-overlay"
-          role="dialog"
-          aria-modal="true"
-          onClick={(e) => { if (e.target === e.currentTarget) setRawDetailId(null); }}
-        >
-          <div className="modal modal-lg" style={{ maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}>
-            <div className="modal-header">
-              <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>
-                Resource details
-              </h3>
-              <button
-                onClick={() => setRawDetailId(null)}
-                className="btn btn-ghost btn-sm"
-                aria-label="Close modal"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-            <div className="modal-body overflow-y-auto flex-1 space-y-4">
-              <ResourceDetailPanel resourceId={rawDetailId} />
-            </div>
-          </div>
-        </div>
+      {/* Full detail modal (Details / Raw Config / Translation Jobs tabs) —
+          same experience as clicking a row on the Resources page. */}
+      {detailResource && (
+        <ResourceDetailModal
+          resource={{
+            id: detailResource.id,
+            name: detailResource.name,
+            aws_type: detailResource.aws_type,
+            aws_arn: detailResource.aws_arn,
+            raw_config: detailResource.raw_config,
+          }}
+          onClose={() => setDetailResource(null)}
+        />
       )}
     </>
   );
