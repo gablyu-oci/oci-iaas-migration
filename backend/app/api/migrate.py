@@ -116,6 +116,201 @@ async def get_execution_status(
     )
 
 
+@router.get("/migrations/{mig_id}/ocm-handoff")
+async def get_ocm_handoff(
+    mig_id: str,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return what the UI needs to drive the OCM step.
+
+    Bundle:
+      prereqs[]                — from ocm_support.yaml handoff_prereqs
+      ocm_instance_ids[]       — AWS instance IDs this migration routed
+                                  to OCM (from the plan artifacts)
+      ocm_migration_ocid       — from terraform state, if apply ran
+      ocm_plan_ocid            — same
+      aws_secret_ocid          — from the saved OCI connection metadata
+                                  if the operator has stored it
+      status                   — aggregate: not_ready | ready_to_add_assets
+                                  | ready_to_execute | running | succeeded |
+                                  failed
+    """
+    result = await db.execute(
+        select(Migration).where(
+            Migration.id == uuid.UUID(mig_id),
+            Migration.tenant_id == tenant.id,
+        )
+    )
+    mig = result.scalar_one_or_none()
+    if not mig:
+        raise HTTPException(status_code=404, detail="Migration not found")
+
+    from app import mappings as _m
+    prereqs = _m.ocm_handoff_prereqs()
+
+    # Pull OCM OCIDs out of saved terraform state. terraform_state is
+    # persisted as raw JSON (output -json), so parse defensively.
+    ocm_migration_ocid = None
+    ocm_plan_ocid = None
+    tf_state = mig.migrate_terraform_state
+    if isinstance(tf_state, dict) and tf_state.get("outputs"):
+        outs = tf_state["outputs"]
+        mig_out = outs.get("migration_id") or outs.get("migration_ocid") or {}
+        plan_out = outs.get("migration_plan_id") or outs.get("migration_plan_ocid") or {}
+        if isinstance(mig_out, dict):
+            ocm_migration_ocid = mig_out.get("value")
+        if isinstance(plan_out, dict):
+            ocm_plan_ocid = plan_out.get("value")
+
+    # Scan migrate_logs for the latest [OCM] status line
+    last_status_level = None
+    for line in reversed(mig.migrate_logs or []):
+        if not isinstance(line, str):
+            continue
+        idx = line.find("[OCM]")
+        if idx < 0:
+            continue
+        payload = line[idx + len("[OCM]"):].strip()
+        try:
+            last_status_level = json.loads(payload).get("level")
+            break
+        except (ValueError, TypeError):
+            continue
+
+    # Derive an aggregate status for the UI
+    if not ocm_migration_ocid:
+        agg = "not_ready"       # no OCM resources in this migration
+    elif last_status_level in ("running", "succeeded", "failed", "timeout"):
+        agg = last_status_level
+    elif ocm_plan_ocid:
+        # Plan exists but nothing OCM-side has run yet
+        agg = "ready_to_add_assets"
+    else:
+        agg = "not_ready"
+
+    return {
+        "status": agg,
+        "prereqs": prereqs,
+        "ocm_migration_ocid": ocm_migration_ocid,
+        "ocm_plan_ocid": ocm_plan_ocid,
+        "last_status_level": last_status_level,
+    }
+
+
+class OCMAddAssetsRequest(BaseModel):
+    aws_instance_ids: list[str]
+    aws_credentials_secret_ocid: str
+
+
+@router.post("/migrations/{mig_id}/ocm-actions/add-aws-assets")
+async def ocm_add_aws_assets(
+    mig_id: str,
+    body: OCMAddAssetsRequest,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Call OCM's add-aws-assets action for this migration.
+
+    Operator provides the Vault secret OCID that OCM can read to auth
+    against AWS (separate from our own AWS connection — OCM discovers on
+    its own side). Returns the work-request ID so the UI can poll.
+    """
+    result = await db.execute(
+        select(Migration).where(
+            Migration.id == uuid.UUID(mig_id),
+            Migration.tenant_id == tenant.id,
+        )
+    )
+    mig = result.scalar_one_or_none()
+    if not mig:
+        raise HTTPException(status_code=404, detail="Migration not found")
+
+    from app.services.migration_executor import _oci_config_from_conn
+    from app.services.ocm_watcher import add_aws_assets_to_plan
+    from app.db.models import OCIConnection
+
+    conn_row = None
+    if mig.migrate_oci_connection_id:
+        conn_result = await db.execute(
+            select(OCIConnection).where(OCIConnection.id == mig.migrate_oci_connection_id)
+        )
+        conn_row = conn_result.scalar_one_or_none()
+    if not conn_row:
+        raise HTTPException(status_code=400, detail="Migration has no OCI connection yet; run the Migrate step first.")
+
+    # Resolve the OCM migration OCID from terraform state
+    ocm_migration_ocid = None
+    tf_state = mig.migrate_terraform_state
+    if isinstance(tf_state, dict) and tf_state.get("outputs"):
+        mig_out = tf_state["outputs"].get("migration_id") or tf_state["outputs"].get("migration_ocid") or {}
+        if isinstance(mig_out, dict):
+            ocm_migration_ocid = mig_out.get("value")
+    if not ocm_migration_ocid:
+        raise HTTPException(status_code=400, detail="No OCM migration OCID in Terraform state. Run terraform apply first.")
+
+    oci_config = _oci_config_from_conn(conn_row)
+    result = add_aws_assets_to_plan(
+        oci_config=oci_config,
+        ocm_migration_ocid=ocm_migration_ocid,
+        aws_instance_ids=body.aws_instance_ids,
+        aws_credentials_secret_ocid=body.aws_credentials_secret_ocid,
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=502, detail=result.get("message", "OCM add-aws-assets failed."))
+    return result
+
+
+@router.post("/migrations/{mig_id}/ocm-actions/execute")
+async def ocm_execute_plan(
+    mig_id: str,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Trigger OCM to execute the migration plan.
+
+    Kicks off replication + launch inside OCM. Returns the work-request
+    ID. The OCMProgressCard polls separately via /ocm-status.
+    """
+    result = await db.execute(
+        select(Migration).where(
+            Migration.id == uuid.UUID(mig_id),
+            Migration.tenant_id == tenant.id,
+        )
+    )
+    mig = result.scalar_one_or_none()
+    if not mig:
+        raise HTTPException(status_code=404, detail="Migration not found")
+
+    from app.services.migration_executor import _oci_config_from_conn
+    from app.services.ocm_watcher import execute_migration_plan
+    from app.db.models import OCIConnection
+
+    conn_row = None
+    if mig.migrate_oci_connection_id:
+        conn_result = await db.execute(
+            select(OCIConnection).where(OCIConnection.id == mig.migrate_oci_connection_id)
+        )
+        conn_row = conn_result.scalar_one_or_none()
+    if not conn_row:
+        raise HTTPException(status_code=400, detail="Migration has no OCI connection yet.")
+
+    ocm_plan_ocid = None
+    tf_state = mig.migrate_terraform_state
+    if isinstance(tf_state, dict) and tf_state.get("outputs"):
+        plan_out = tf_state["outputs"].get("migration_plan_id") or tf_state["outputs"].get("migration_plan_ocid") or {}
+        if isinstance(plan_out, dict):
+            ocm_plan_ocid = plan_out.get("value")
+    if not ocm_plan_ocid:
+        raise HTTPException(status_code=400, detail="No OCM migration plan OCID in Terraform state.")
+
+    oci_config = _oci_config_from_conn(conn_row)
+    result = execute_migration_plan(oci_config=oci_config, ocm_migration_plan_ocid=ocm_plan_ocid)
+    if not result.get("ok"):
+        raise HTTPException(status_code=502, detail=result.get("message", "OCM execute failed."))
+    return result
+
+
 @router.get("/migrations/{mig_id}/ocm-status")
 async def get_ocm_status(
     mig_id: str,

@@ -891,6 +891,41 @@ def test_ocm_watcher_parses_migration_ocid_from_tf_output():
     assert parse_migration_ocid_from_tf_output("not json") is None
 
 
+def test_ocm_watcher_add_aws_assets_rejects_missing_inputs():
+    """add_aws_assets_to_plan validates inputs before calling OCI."""
+    from app.services.ocm_watcher import add_aws_assets_to_plan
+    # Missing migration OCID
+    r = add_aws_assets_to_plan({}, "", ["i-abc"], "ocid1.vaultsecret..")
+    assert r["ok"] is False and "migration_ocid" in r["message"].lower()
+    # Empty instance list
+    r = add_aws_assets_to_plan({}, "ocid1.m..", [], "ocid1.s..")
+    assert r["ok"] is False and "instance_ids" in r["message"].lower()
+    # Missing secret
+    r = add_aws_assets_to_plan({}, "ocid1.m..", ["i-abc"], "")
+    assert r["ok"] is False and "secret" in r["message"].lower()
+
+
+def test_ocm_watcher_parse_plan_ocid_from_tf_output():
+    """Plan OCID parser handles flat + wrapped shapes, ignores junk."""
+    from app.services.ocm_watcher import parse_plan_ocid_from_tf_output
+    import json as _json
+
+    plan = "ocid1.migrationplan.oc1..xyz"
+    tf1 = _json.dumps({"migration_plan_id": {"value": plan, "type": "string"}})
+    assert parse_plan_ocid_from_tf_output(tf1) == plan
+    tf2 = _json.dumps({"migration_plan_ocid": {"value": plan}})
+    assert parse_plan_ocid_from_tf_output(tf2) == plan
+    tf3 = _json.dumps({"other": "x"})
+    assert parse_plan_ocid_from_tf_output(tf3) is None
+    assert parse_plan_ocid_from_tf_output("not json") is None
+
+
+def test_ocm_watcher_execute_plan_rejects_missing_ocid():
+    from app.services.ocm_watcher import execute_migration_plan
+    r = execute_migration_plan({}, "")
+    assert r["ok"] is False and "plan_ocid" in r["message"].lower()
+
+
 def test_ocm_watcher_falls_back_without_sdk():
     """When the oci SDK isn't importable, poll_work_requests returns sdk_unavailable."""
     import sys as _sys

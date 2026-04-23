@@ -1728,6 +1728,205 @@ interface OCMStatus {
   updated_at?: string;
 }
 
+interface OCMHandoffState {
+  status: 'not_ready' | 'ready_to_add_assets' | 'ready_to_execute' | 'running' | 'succeeded' | 'failed' | 'timeout';
+  prereqs: { id: string; title: string; detail: string; doc_url?: string }[];
+  ocm_migration_ocid: string | null;
+  ocm_plan_ocid: string | null;
+  last_status_level: string | null;
+}
+
+function OCMHandoffPanel({ migrationId }: { migrationId: string }) {
+  const [state, setState] = useState<OCMHandoffState | null>(null);
+  const [secretOcid, setSecretOcid] = useState('');
+  const [instanceIds, setInstanceIds] = useState('');
+  const [busy, setBusy] = useState<null | 'add' | 'execute'>(null);
+  const [lastResult, setLastResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [prereqsChecked, setPrereqsChecked] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    if (!migrationId) return;
+    let cancelled = false;
+    const fetchState = async () => {
+      try {
+        const r = await client.get(`/api/migrations/${migrationId}/ocm-handoff`);
+        if (!cancelled) setState(r.data);
+      } catch { /* ignore transient */ }
+    };
+    fetchState();
+    const t = setInterval(fetchState, 15_000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [migrationId]);
+
+  if (!state || state.status === 'not_ready') {
+    // Nothing to show if migration doesn't include OCM resources
+    return null;
+  }
+
+  const runAddAssets = async () => {
+    const ids = instanceIds.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+    if (ids.length === 0 || !secretOcid.trim()) {
+      setLastResult({ ok: false, message: 'Fill in both the Vault secret OCID and at least one AWS instance ID.' });
+      return;
+    }
+    setBusy('add');
+    setLastResult(null);
+    try {
+      const r = await client.post(
+        `/api/migrations/${migrationId}/ocm-actions/add-aws-assets`,
+        { aws_instance_ids: ids, aws_credentials_secret_ocid: secretOcid.trim() },
+      );
+      setLastResult({ ok: true, message: r.data.message || 'Submitted.' });
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { detail?: string } }; message?: string };
+      setLastResult({ ok: false, message: err.response?.data?.detail || err.message || 'Failed' });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const runExecute = async () => {
+    setBusy('execute');
+    setLastResult(null);
+    try {
+      const r = await client.post(`/api/migrations/${migrationId}/ocm-actions/execute`);
+      setLastResult({ ok: true, message: r.data.message || 'Execute submitted.' });
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { detail?: string } }; message?: string };
+      setLastResult({ ok: false, message: err.response?.data?.detail || err.message || 'Failed' });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const stageLabel: Record<string, string> = {
+    ready_to_add_assets: 'Step 1 of 2: add AWS assets to the OCM plan',
+    ready_to_execute:    'Step 2 of 2: execute the plan to start replication',
+    running:             'OCM replication + launch in progress',
+    succeeded:           'OCM replication + launch complete',
+    failed:              'OCM reported a failure — see progress card',
+    timeout:             'OCM watcher timed out — check OCM console directly',
+  };
+  const statusColor =
+    state.status === 'succeeded' ? '#16a34a' :
+    state.status === 'failed'    ? '#dc2626' :
+    state.status === 'timeout'   ? '#d97706' :
+                                    '#7c3aed';
+
+  const canAddAssets = state.status === 'ready_to_add_assets';
+  const canExecute = state.status === 'ready_to_add_assets' || state.status === 'ready_to_execute';
+
+  return (
+    <div className="rounded-xl p-5 space-y-4" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}>
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm font-semibold" style={{ color: 'var(--color-text-bright)' }}>
+            Oracle Cloud Migrations — handoff
+          </p>
+          <p className="text-xs mt-0.5" style={{ color: statusColor }}>
+            {stageLabel[state.status] || state.status}
+          </p>
+        </div>
+        {state.ocm_migration_ocid && (
+          <span className="text-[10px]" style={{ color: 'var(--color-text-dim)', fontFamily: 'var(--font-mono)' }}>
+            {state.ocm_migration_ocid.slice(0, 20)}…
+          </span>
+        )}
+      </div>
+
+      {/* Prereqs checklist */}
+      {state.prereqs.length > 0 && (
+        <div className="rounded-lg p-3" style={{ background: 'var(--color-well)', border: '1px dashed var(--color-fence)' }}>
+          <p className="text-[10px] uppercase tracking-wide mb-2" style={{ color: 'var(--color-text-dim)' }}>
+            Before proceeding, confirm each prerequisite exists on the OCI side
+          </p>
+          <ul className="space-y-1.5">
+            {state.prereqs.map((p) => (
+              <li key={p.id} className="flex items-start gap-2">
+                <input
+                  type="checkbox"
+                  checked={!!prereqsChecked[p.id]}
+                  onChange={(e) => setPrereqsChecked((prev) => ({ ...prev, [p.id]: e.target.checked }))}
+                  style={{ marginTop: '2px' }}
+                />
+                <div className="flex-1 text-xs">
+                  <span style={{ color: 'var(--color-text-bright)', fontWeight: 500 }}>{p.title}</span>
+                  {p.doc_url && (
+                    <a href={p.doc_url} target="_blank" rel="noreferrer" className="ml-2 text-[10px]"
+                       style={{ color: 'var(--color-ember)' }}>docs →</a>
+                  )}
+                  <div className="text-[11px] mt-0.5" style={{ color: 'var(--color-text-dim)' }}>
+                    {p.detail}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Action form — hidden once running/succeeded/failed */}
+      {(canAddAssets || canExecute) && (
+        <div className="rounded-lg p-3 space-y-2" style={{ background: 'var(--color-well)', border: '1px solid var(--color-rule)' }}>
+          <div>
+            <label className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--color-text-dim)' }}>
+              Vault secret OCID (AWS credentials for OCM)
+            </label>
+            <input
+              type="text"
+              value={secretOcid}
+              onChange={(e) => setSecretOcid(e.target.value)}
+              placeholder="ocid1.vaultsecret.oc1..."
+              className="w-full rounded px-2 py-1 text-xs mt-1"
+              style={{ background: 'var(--color-raised)', border: '1px solid var(--color-rule)', color: 'var(--color-text-bright)', fontFamily: 'var(--font-mono)' }}
+            />
+          </div>
+          <div>
+            <label className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--color-text-dim)' }}>
+              AWS instance IDs (comma or newline separated)
+            </label>
+            <textarea
+              value={instanceIds}
+              onChange={(e) => setInstanceIds(e.target.value)}
+              placeholder="i-abc123, i-def456"
+              rows={2}
+              className="w-full rounded px-2 py-1 text-xs mt-1"
+              style={{ background: 'var(--color-raised)', border: '1px solid var(--color-rule)', color: 'var(--color-text-bright)', fontFamily: 'var(--font-mono)' }}
+            />
+          </div>
+          <div className="flex gap-2 items-center flex-wrap">
+            <button
+              onClick={runAddAssets}
+              disabled={!canAddAssets || busy !== null}
+              className="btn btn-secondary btn-sm"
+              style={{ opacity: (!canAddAssets || busy !== null) ? 0.5 : 1 }}
+            >
+              {busy === 'add' ? 'Submitting…' : '1. Add AWS assets to plan'}
+            </button>
+            <button
+              onClick={runExecute}
+              disabled={!canExecute || busy !== null}
+              className="btn btn-primary btn-sm"
+              style={{ opacity: (!canExecute || busy !== null) ? 0.5 : 1 }}
+            >
+              {busy === 'execute' ? 'Submitting…' : '2. Execute migration plan'}
+            </button>
+            {lastResult && (
+              <span className="text-xs" style={{ color: lastResult.ok ? 'var(--color-success, #4a9)' : 'var(--color-danger, #d33)' }}>
+                {lastResult.ok ? '✓ ' : '✗ '}{lastResult.message}
+              </span>
+            )}
+          </div>
+          <p className="text-[10px]" style={{ color: 'var(--color-text-dim)' }}>
+            Tip: the AWS instance IDs are the sources OCM will replicate. They match the OCM-flagged instances in your assessment. The Vault secret holds the AWS access key + secret key OCM uses to snapshot them — create it once per source account in your migration's compartment.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 function OCMProgressCard({ migrationId }: { migrationId: string }) {
   const [status, setStatus] = useState<OCMStatus | null>(null);
 
@@ -2328,6 +2527,7 @@ function MigrateStep({ migrationId, migration }: {
           </div>
         </div>
 
+        <OCMHandoffPanel migrationId={migrationId} />
         <OCMProgressCard migrationId={migrationId} />
 
         {/* Live logs */}
@@ -2368,6 +2568,9 @@ function MigrateStep({ migrationId, migration }: {
             </button>
           </div>
         </div>
+
+        <OCMHandoffPanel migrationId={migrationId} />
+        <OCMProgressCard migrationId={migrationId} />
 
         {/* Logs */}
         <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--color-rule)' }}>

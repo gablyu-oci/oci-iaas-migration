@@ -203,6 +203,117 @@ def poll_work_requests(
     return status
 
 
+def add_aws_assets_to_plan(
+    oci_config: dict[str, Any],
+    ocm_migration_ocid: str,
+    aws_instance_ids: list[str],
+    aws_credentials_secret_ocid: str,
+) -> dict[str, Any]:
+    """Ask OCM to discover + link the AWS EC2 instances to the migration plan.
+
+    Calls ``POST /migrations/{migrationId}/actions/addAwsAssets`` via the
+    OCI SDK. Returns ``{ok, message, work_request_id}``. Errors are caught
+    and returned as ``{ok: false, ...}``; never raises.
+
+    Must be called AFTER ``terraform apply`` has created the
+    ``oci_cloud_migrations_migration`` + ``oci_cloud_migrations_source``
+    resources, and after the AWS credentials secret is in a Vault OCM
+    can read.
+    """
+    oci_sdk = _load_oci_sdk()
+    if oci_sdk is None:
+        return {"ok": False, "message": "OCI Python SDK not installed on this host."}
+    if not ocm_migration_ocid:
+        return {"ok": False, "message": "ocm_migration_ocid is required."}
+    if not aws_instance_ids:
+        return {"ok": False, "message": "aws_instance_ids list is empty."}
+    if not aws_credentials_secret_ocid:
+        return {"ok": False, "message": "aws_credentials_secret_ocid is required."}
+
+    try:
+        from oci.cloud_migrations import MigrationClient
+        from oci.cloud_migrations.models import AddAwsAssetsDetails
+    except ImportError:
+        return {"ok": False, "message": "oci.cloud_migrations module not available."}
+
+    try:
+        client = MigrationClient(oci_config)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "message": f"Failed to build MigrationClient: {exc!s}"[:500]}
+
+    try:
+        details = AddAwsAssetsDetails(
+            asset_source_id=aws_credentials_secret_ocid,
+            instance_ids=aws_instance_ids,
+        )
+        resp = client.add_aws_assets(
+            migration_id=ocm_migration_ocid,
+            add_aws_assets_details=details,
+        )
+        wr_id = resp.headers.get("opc-work-request-id") if resp.headers else None
+        return {
+            "ok": True,
+            "message": f"Submitted {len(aws_instance_ids)} asset(s); follow the work-request for completion.",
+            "work_request_id": wr_id,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "message": f"add_aws_assets failed: {exc!s}"[:1000]}
+
+
+def execute_migration_plan(
+    oci_config: dict[str, Any],
+    ocm_migration_plan_ocid: str,
+) -> dict[str, Any]:
+    """Trigger OCM to execute the migration plan (replication + launch).
+
+    Calls ``POST /migrationPlans/{planId}/actions/execute``. Returns
+    ``{ok, message, work_request_id}``. Users typically want to poll work
+    requests via ``poll_work_requests`` afterwards; the UI's OCMProgressCard
+    already does that.
+    """
+    oci_sdk = _load_oci_sdk()
+    if oci_sdk is None:
+        return {"ok": False, "message": "OCI Python SDK not installed on this host."}
+    if not ocm_migration_plan_ocid:
+        return {"ok": False, "message": "ocm_migration_plan_ocid is required."}
+
+    try:
+        from oci.cloud_migrations import MigrationClient
+    except ImportError:
+        return {"ok": False, "message": "oci.cloud_migrations module not available."}
+
+    try:
+        client = MigrationClient(oci_config)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "message": f"Failed to build MigrationClient: {exc!s}"[:500]}
+
+    try:
+        resp = client.execute_migration_plan(migration_plan_id=ocm_migration_plan_ocid)
+        wr_id = resp.headers.get("opc-work-request-id") if resp.headers else None
+        return {
+            "ok": True,
+            "message": "Execute submitted; OCM replication + launch will run in the background.",
+            "work_request_id": wr_id,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "message": f"execute_migration_plan failed: {exc!s}"[:1000]}
+
+
+def parse_plan_ocid_from_tf_output(output_json: str) -> str | None:
+    """Pull the migration_plan_id TF output. Our ocm_handoff skill emits it."""
+    import json as _json
+    try:
+        data = _json.loads(output_json)
+    except (ValueError, TypeError):
+        return None
+    node = data.get("migration_plan_id") or data.get("migration_plan_ocid")
+    if isinstance(node, dict):
+        return node.get("value") or None
+    if isinstance(node, str):
+        return node
+    return None
+
+
 def parse_migration_ocid_from_tf_output(output_json: str) -> str | None:
     """Extract the migration_id Terraform output from ``terraform output -json``.
 
