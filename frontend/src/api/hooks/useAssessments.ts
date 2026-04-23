@@ -34,6 +34,10 @@ export interface ResourceAssessment {
   os_version?: string;
   os_compat_status: string;
   remediation_notes?: string;
+  // OCM hybrid: per-EC2 compatibility badge. Populated by the API from
+  // ocm_support.yaml against the instance's raw_config at read time.
+  ocm_level?: 'full' | 'with_prep' | 'manual' | 'unsupported' | null;
+  ocm_matched_rule?: string | null;
 }
 
 export interface AppGroup {

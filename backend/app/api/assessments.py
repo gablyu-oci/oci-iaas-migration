@@ -72,6 +72,11 @@ class ResourceAssessmentOut(BaseModel):
     ssm_available: Optional[bool] = None
     sixr_strategy: Optional[str] = None
     sixr_confidence: Optional[float] = None
+    # OCM hybrid: per-EC2 badge surfaced in the assessment resources table.
+    # Populated from the instance's raw_config + software_inventory at read
+    # time (no DB column — the matrix lives in ocm_support.yaml).
+    ocm_level: Optional[str] = None                 # full | with_prep | manual | unsupported
+    ocm_matched_rule: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -276,21 +281,34 @@ async def get_resource_assessments(
     )
     rows = result.scalars().all()
 
-    # Batch-load resource names and types
+    # Batch-load resource names, types, and raw_configs (latter used for OCM
+    # compatibility check on EC2 rows).
     resource_ids = [ra.resource_id for ra in rows]
-    resource_map: dict[uuid.UUID, tuple[str, str]] = {}
+    resource_map: dict[uuid.UUID, tuple[str, str, dict]] = {}
     if resource_ids:
         res_result = await db.execute(
-            select(Resource.id, Resource.name, Resource.aws_type).where(
+            select(Resource.id, Resource.name, Resource.aws_type, Resource.raw_config).where(
                 Resource.id.in_(resource_ids)
             )
         )
-        for rid, rname, rtype in res_result.all():
-            resource_map[rid] = (rname or "", rtype or "")
+        for rid, rname, rtype, rraw in res_result.all():
+            resource_map[rid] = (rname or "", rtype or "", rraw or {})
 
+    from app.services.ocm_compatibility import check_ec2_compatibility
     out = []
     for ra in rows:
-        rname, rtype = resource_map.get(ra.resource_id, ("", ""))
+        rname, rtype, rraw = resource_map.get(ra.resource_id, ("", "", {}))
+        ocm_level: Optional[str] = None
+        ocm_rule: Optional[str] = None
+        if rtype == "AWS::EC2::Instance":
+            try:
+                compat = check_ec2_compatibility(
+                    rraw, rraw.get("software_inventory") if isinstance(rraw, dict) else None
+                )
+                ocm_level = compat.get("level")
+                ocm_rule = compat.get("matched_rule")
+            except Exception:
+                pass
         out.append(ResourceAssessmentOut(
             id=str(ra.id),
             resource_id=str(ra.resource_id),
@@ -311,6 +329,8 @@ async def get_resource_assessments(
             ssm_available=ra.ssm_available,
             sixr_strategy=ra.sixr_strategy,
             sixr_confidence=ra.sixr_confidence,
+            ocm_level=ocm_level,
+            ocm_matched_rule=ocm_rule,
         ))
     return out
 

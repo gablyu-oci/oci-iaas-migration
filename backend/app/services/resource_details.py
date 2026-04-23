@@ -50,6 +50,7 @@ def enrich(
         "summary": {},
         "sections": [],
         "rightsizing": None,
+        "ocm_compatibility": None,
         "metrics": rc.get("metrics"),
         "software_inventory": rc.get("software_inventory"),
     }
@@ -59,8 +60,10 @@ def enrich(
     out["summary"] = summary
     out["sections"] = sections
 
-    if include_rightsizing and aws_type == "AWS::EC2::Instance":
-        out["rightsizing"] = _rightsizing_for_ec2(rc)
+    if aws_type == "AWS::EC2::Instance":
+        if include_rightsizing:
+            out["rightsizing"] = _rightsizing_for_ec2(rc)
+        out["ocm_compatibility"] = _ocm_compat_for_ec2(rc)
 
     return out
 
@@ -105,6 +108,23 @@ def _shape_spec_for(instance_type: str) -> dict[str, Any] | None:
         "local_nvme_gb": spec.get("local_nvme_gb"),
         "local_hdd_gb": spec.get("local_hdd_gb"),
     }
+
+
+def _ocm_compat_for_ec2(rc: dict) -> dict[str, Any] | None:
+    """OCM compatibility check for one EC2 instance.
+
+    Returns ``None`` on import failure so that a missing dep never breaks
+    the detail render (matches the existing rightsizing try/except pattern).
+    """
+    try:
+        from app.services.ocm_compatibility import check_ec2_compatibility
+    except ImportError:
+        return None
+    software_inventory = rc.get("software_inventory") or None
+    try:
+        return check_ec2_compatibility(rc, software_inventory)
+    except Exception:  # noqa: BLE001 — never fail a detail render
+        return None
 
 
 def _rightsizing_for_ec2(rc: dict) -> dict[str, Any] | None:

@@ -39,6 +39,17 @@ interface MetricBucket {
   max?: number;
 }
 
+interface OCMCompatibility {
+  supported: boolean;
+  level: 'full' | 'with_prep' | 'manual' | 'unsupported';
+  matched_rule: string | null;
+  reason: string;
+  alternative: string;
+  prep_steps: string[];
+  notes: string[];
+  detected_os: string;
+}
+
 interface ResourceDetails {
   id: string;
   aws_type: string | null;
@@ -51,6 +62,7 @@ interface ResourceDetails {
   summary: Record<string, string | number | boolean>;
   sections: DetailSection[];
   rightsizing: RightsizingPreview | null;
+  ocm_compatibility: OCMCompatibility | null;
   metrics: Record<string, MetricBucket> | null;
   software_inventory: {
     os_name?: string;
@@ -300,6 +312,71 @@ function MetricsCard({ metrics }: { metrics: Record<string, MetricBucket> | null
   );
 }
 
+function OCMCompatibilityCard({ compat }: { compat: OCMCompatibility | null }) {
+  if (!compat) return null;
+  const { level } = compat;
+  const badge =
+    level === 'full'        ? { label: '✓ OCM-ready',       color: 'var(--color-success, #4a9)' } :
+    level === 'with_prep'   ? { label: '⚠ OCM — needs prep', color: 'var(--color-warning, #d90)' } :
+    level === 'manual'      ? { label: '⚠ OCM — manual review', color: 'var(--color-warning, #d90)' } :
+                              { label: '✗ Not OCM-compatible', color: 'var(--color-danger, #d33)' };
+
+  return (
+    <div
+      className="rounded-lg p-3"
+      style={{ background: 'var(--color-surface)', border: '1px solid var(--color-fence)' }}
+    >
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-xs font-semibold" style={{ color: 'var(--color-text-bright)' }}>
+          Oracle Cloud Migrations compatibility
+        </p>
+        <span
+          className="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium"
+          style={{ background: 'var(--color-well)', border: `1px solid ${badge.color}`, color: badge.color }}
+        >
+          {badge.label}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs mb-2">
+        <div>
+          <span style={{ color: 'var(--color-text-dim)' }}>Detected OS:</span>{' '}
+          <span style={{ color: 'var(--color-text-bright)' }}>{compat.detected_os || '—'}</span>
+        </div>
+        <div>
+          <span style={{ color: 'var(--color-text-dim)' }}>Rule matched:</span>{' '}
+          <code style={{ fontFamily: 'var(--font-mono)' }}>{compat.matched_rule || '—'}</code>
+        </div>
+      </div>
+      {compat.reason && (
+        <p className="text-xs mb-2" style={{ color: 'var(--color-text-dim)' }}>
+          <strong style={{ color: 'var(--color-text-bright)' }}>Why:</strong> {compat.reason}
+        </p>
+      )}
+      {compat.alternative && (
+        <p className="text-xs mb-2" style={{ color: 'var(--color-text-dim)' }}>
+          <strong style={{ color: 'var(--color-text-bright)' }}>Alternative:</strong> {compat.alternative}
+        </p>
+      )}
+      {compat.prep_steps.length > 0 && (
+        <div className="mt-2">
+          <p className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--color-text-dim)' }}>
+            Prep steps required
+          </p>
+          <ol className="text-xs mt-1 list-decimal pl-4 space-y-0.5" style={{ color: 'var(--color-text-dim)' }}>
+            {compat.prep_steps.map((s, i) => <li key={i}>{s}</li>)}
+          </ol>
+        </div>
+      )}
+      {compat.notes.length > 0 && (
+        <ul className="text-[11px] mt-2 list-disc pl-4" style={{ color: 'var(--color-text-dim)' }}>
+          {compat.notes.map((n, i) => <li key={i}>{n}</li>)}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+
 function SoftwareInventoryCard({
   inventory,
 }: {
@@ -376,6 +453,7 @@ export default function ResourceDetailPanel({ resourceId }: { resourceId: string
     <div className="space-y-3">
       <SummaryStrip summary={data.summary} />
       <OCIMappingCard mapping={data.oci_mapping} />
+      <OCMCompatibilityCard compat={data.ocm_compatibility} />
       <RightsizingCard rightsizing={data.rightsizing} />
       {data.sections.map((s, i) => <SectionCard key={`${s.title}-${i}`} section={s} />)}
       <MetricsCard metrics={data.metrics} />

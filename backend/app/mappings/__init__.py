@@ -144,6 +144,30 @@ def oci_four_year_discount() -> float:
     return float(_load("pricing").get("oci_commitment_discounts", {}).get("four_year_flex", 0.50))
 
 
+# ─── OCM (Oracle Cloud Migrations) support matrix ────────────────────────────
+
+def ocm_support() -> dict[str, Any]:
+    """Full ocm_support.yaml document. Consumed by ocm_compatibility service
+    + the handoff skill's prompt context."""
+    return _load("ocm_support")
+
+
+def ocm_os_support_rules() -> list[dict[str, Any]]:
+    return _load("ocm_support").get("os_support", []) or []
+
+
+def ocm_disqualifiers() -> list[dict[str, Any]]:
+    return _load("ocm_support").get("disqualifiers", []) or []
+
+
+def ocm_target_shapes() -> list[str]:
+    return _load("ocm_support").get("target_shapes", []) or []
+
+
+def ocm_handoff_prereqs() -> list[dict[str, Any]]:
+    return _load("ocm_support").get("handoff_prereqs", []) or []
+
+
 # New-section accessors. These return the whole sub-dict so callers can pick
 # the specific rate they need without a thicket of individual getters.
 

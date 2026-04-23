@@ -1,0 +1,180 @@
+# Oracle Cloud Migrations (OCM) support matrix — what OCM can actually migrate.
+#
+# OCM is a managed Oracle service that replicates EC2 instances (and their
+# attached EBS volumes) block-level into OCI Block Volumes, then launches
+# OCI VMs from them. Our plan pipeline delegates EC2 compute migration to
+# OCM in hybrid mode; this matrix drives the per-instance compatibility
+# check that runs at assessment time.
+#
+# Sources:
+#   - https://docs.oracle.com/en-us/iaas/Content/cloud-migration/cloud-migration-requirements-specifications.htm
+#   - https://docs.oracle.com/en-us/iaas/Content/cloud-migration/cloud-migration-overview.htm
+#   - https://docs.oracle.com/en-us/iaas/Content/cloud-migration/cloud-migration-aws-credentials.htm
+#
+# Consumed by:
+#   • app.services.ocm_compatibility.check_ec2_compatibility
+#   • app.services.resource_details (surfaces the compat card)
+
+# ── Guest OS support ──────────────────────────────────────────────────────
+#
+# Each entry:
+#   match_platform    AWS Platform field match ("" / "linux" / "windows")
+#   match_keywords    lowercase substrings tested against OS name + platform_details
+#   level             full | with_prep | manual | unsupported
+#   prep_steps (opt)  ordered list of prerequisites the operator must do
+#                     before OCM replication will succeed
+#   notes      (opt)  advisory notes shown in the UI
+#
+# The first rule whose keywords all match wins. Rule order matters.
+
+os_support:
+  # Oracle's own distros — fully supported, no prep needed
+  - id: oracle-linux
+    match_keywords: ["oracle linux"]
+    level: full
+
+  - id: rocky-linux
+    match_keywords: ["rocky"]
+    level: full
+
+  - id: clear-linux
+    match_keywords: ["clear linux"]
+    level: full
+
+  # RHEL / CentOS 7.x through 9.x
+  - id: rhel
+    match_keywords: ["red hat", "rhel"]
+    level: full
+
+  - id: centos
+    match_keywords: ["centos"]
+    level: full
+
+  # Ubuntu LTS 14.04 through 24.04
+  - id: ubuntu
+    match_keywords: ["ubuntu"]
+    level: full
+
+  - id: debian
+    match_keywords: ["debian"]
+    level: full
+
+  - id: sles
+    match_keywords: ["suse", "sles"]
+    level: full
+
+  # Amazon Linux 2/2022/2023 — supported BUT requires manual virtio driver
+  # prep before OCM replication will boot on OCI hardware.
+  - id: amazon-linux
+    match_keywords: ["amazon linux", "amzn"]
+    level: with_prep
+    prep_steps:
+      - "SSH into the instance and install virtio drivers into initramfs"
+      - "Run: sudo dracut --add-drivers \"virtio virtio_blk virtio_net virtio_pci\" --force"
+      - "Reboot and verify the instance still boots before triggering OCM replication"
+    notes:
+      - "Without virtio prep the OCI instance will fail to boot after OCM hydrates the golden volume."
+
+  # Windows Server 2012-2022
+  - id: windows-server
+    match_platform: "windows"
+    match_keywords: ["server"]
+    level: full
+    notes:
+      - "Instance will register with Oracle KMS on first boot; ensure outbound to kms.oracle.com is open in OCI."
+    prep_steps:
+      - "Confirm the instance is NOT using AWS BYOL (license-included is fine; BYOL on shared tenancy is blocked by OCM)."
+
+  # Generic Windows catch — we don't know the edition
+  - id: windows-generic
+    match_platform: "windows"
+    level: with_prep
+    prep_steps:
+      - "Verify Windows edition is Server 2012/2016/2019/2022 Standard or Datacenter."
+      - "Verify the instance is not running BYOL on a shared-tenancy host."
+
+# ── Unsupported up-front ─────────────────────────────────────────────────
+# Hard blocks — OCM refuses or the docs say "not supported". Checked before
+# the OS rules above. First match wins.
+
+disqualifiers:
+  - id: arm-architecture
+    # OCM's supported-shape list is all x86 families (Standard2/3, E3/E4/E5,
+    # DenseIO2, VM.GPU3.x, Optimized3). aarch64 instances aren't listed.
+    condition: architecture
+    values: ["arm64", "aarch64"]
+    level: unsupported
+    reason: "OCM target shapes are x86-only — Graviton / ARM sources can't be replicated."
+    alternative: "Fall back to native ec2_translation (emit oci_core_instance HCL instead)."
+
+  - id: gpu-shape
+    condition: gpu
+    values: [true]
+    level: manual
+    reason: "OCM supports VM.GPU3.x as target but your source GPU family may not map cleanly. Manual shape selection required."
+    alternative: "Review the target shape; may need to switch to native Terraform with explicit GPU shape."
+
+  - id: instance-store-only
+    # OCM replicates EBS snapshots; instance-store-only (ephemeral root)
+    # sources can't be represented as an EBS snapshot.
+    condition: root_device_type
+    values: ["instance-store"]
+    level: unsupported
+    reason: "OCM replicates via EBS snapshots — instance-store root devices cannot be snapshotted."
+    alternative: "Rebuild instance from AMI or backup before migrating; or use native ec2_translation with fresh image."
+
+# ── Supported target shapes ──────────────────────────────────────────────
+# OCM's published whitelist of target shapes. Our rightsizer should prefer
+# these when OCM is the strategy; non-listed shapes force fallback to
+# native Terraform.
+#
+# Per .../cloud-migration-requirements-specifications.htm ("target shapes").
+
+target_shapes:
+  - VM.Standard2.1
+  - VM.Standard2.2
+  - VM.Standard2.4
+  - VM.Standard2.8
+  - VM.Standard2.16
+  - VM.Standard2.24
+  - VM.Standard.E3.Flex
+  - VM.Standard.E4.Flex
+  - VM.Standard.E5.Flex
+  - VM.Standard3.Flex
+  - VM.Optimized3.Flex
+  - VM.DenseIO2.8
+  - VM.DenseIO2.16
+  - VM.DenseIO2.24
+  - VM.GPU3.1
+  - VM.GPU3.2
+  - VM.GPU3.4
+
+# ── General notes surfaced in the UI ─────────────────────────────────────
+
+general_notes:
+  - "OCM does NOT migrate: RDS, S3, IAM, VPC/subnets, security groups, Lambda — those stay on native Terraform."
+  - "Networking prerequisite: pre-create the target VCN + subnets (our network_translation covers this)."
+  - "Billing: OCM itself is free; you pay only for temp hydration compute + staging bucket + final block volumes."
+
+# ── Handoff prerequisites ────────────────────────────────────────────────
+# Shown on the migration-plan output page so the operator knows what needs
+# to exist before they trigger OCM replication.
+
+handoff_prereqs:
+  - id: vault
+    title: "Vault + KMS master key"
+    detail: "OCM stores source AWS credentials encrypted in an OCI Vault; create one in the migration compartment before adding AWS source."
+  - id: dynamic-groups
+    title: "Dynamic groups + IAM policies"
+    detail: "Create a dynamic group matching OCM's work-request principals + the CloudMigrations tag namespace (5 required keys)."
+    doc_url: "https://docs.oracle.com/en-us/iaas/Content/cloud-migration/cloud-migration-ocm-iam-policies.htm"
+  - id: staging-bucket
+    title: "Private Object Storage bucket for replication staging"
+    detail: "OCM's hydration agent reads from this bucket during block-level replication. Create per-migration."
+  - id: target-vcn
+    title: "Target VCN + subnets pre-provisioned"
+    detail: "OCM's target_asset references VCN / subnet / NSG OCIDs — they must exist before the migration-plan is executed."
+  - id: aws-iam
+    title: "AWS IAM user with OCM's required permissions"
+    detail: "ec2:DescribeInstances/InstanceTypes/Volumes/Snapshots, ec2:CreateSnapshots/CreateTags, ebs:ListChangedBlocks/ListSnapshotBlocks/GetSnapshotBlock. Optionally: ce:GetCostAndUsageWithResources, cloudwatch:GetMetricStatistics for sizing."
+    doc_url: "https://docs.oracle.com/en-us/iaas/Content/cloud-migration/cloud-migration-aws-credentials.htm"

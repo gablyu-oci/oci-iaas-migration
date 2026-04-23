@@ -645,6 +645,126 @@ def test_resource_details_ec2_feeds_metrics_into_rightsizer():
     assert out["rightsizing"]["confidence"] == "high"
 
 
+def test_ocm_compatibility_full_for_oracle_linux():
+    """Oracle Linux 9 on x86 EBS-backed instance → fully OCM-ready."""
+    from app.services.ocm_compatibility import check_ec2_compatibility
+    r = check_ec2_compatibility(
+        {"instance_type": "m5.large", "architecture": "x86_64", "platform": "",
+         "root_device_type": "ebs"},
+        {"os_name": "Oracle Linux", "os_version": "9.3"},
+    )
+    assert r["level"] == "full"
+    assert r["supported"] is True
+    assert r["matched_rule"] == "oracle-linux"
+    assert r["prep_steps"] == []
+
+
+def test_ocm_compatibility_amazon_linux_needs_virtio_prep():
+    """Amazon Linux hits 'with_prep' with the virtio dracut steps."""
+    from app.services.ocm_compatibility import check_ec2_compatibility
+    r = check_ec2_compatibility(
+        {"instance_type": "m5.large", "architecture": "x86_64", "platform": "",
+         "root_device_type": "ebs"},
+        {"os_name": "Amazon Linux", "os_version": "2"},
+    )
+    assert r["level"] == "with_prep"
+    assert r["supported"] is True  # OCM can migrate AFTER prep
+    assert r["matched_rule"] == "amazon-linux"
+    assert any("virtio" in step for step in r["prep_steps"])
+
+
+def test_ocm_compatibility_graviton_unsupported():
+    """aarch64 hits the hard disqualifier — OCM target shapes are x86 only."""
+    from app.services.ocm_compatibility import check_ec2_compatibility
+    r = check_ec2_compatibility(
+        {"instance_type": "m7g.xlarge", "architecture": "arm64", "platform": "",
+         "root_device_type": "ebs"},
+        None,
+    )
+    assert r["level"] == "unsupported"
+    assert r["supported"] is False
+    assert r["matched_rule"] == "arm-architecture"
+    assert "alternative" in r and r["alternative"] != ""
+
+
+def test_ocm_compatibility_instance_store_unsupported():
+    """Instance-store root devices can't be snapshotted → OCM can't migrate them."""
+    from app.services.ocm_compatibility import check_ec2_compatibility
+    r = check_ec2_compatibility(
+        {"instance_type": "i3.large", "architecture": "x86_64", "platform": "",
+         "root_device_type": "instance-store"},
+        None,
+    )
+    assert r["level"] == "unsupported"
+    assert r["matched_rule"] == "instance-store-only"
+
+
+def test_ocm_compatibility_gpu_manual_review():
+    """GPU EC2 instances go to 'manual' — OCM has SOME GPU support but shape-match needed."""
+    from app.services.ocm_compatibility import check_ec2_compatibility
+    r = check_ec2_compatibility(
+        {"instance_type": "p4d.24xlarge", "architecture": "x86_64", "platform": "",
+         "root_device_type": "ebs"},
+        None,
+    )
+    assert r["level"] == "manual"
+    assert r["matched_rule"] == "gpu-shape"
+
+
+def test_ocm_compatibility_unknown_os_falls_through_to_manual():
+    """An OS with no matching rule returns 'manual' with an explanatory reason."""
+    from app.services.ocm_compatibility import check_ec2_compatibility
+    r = check_ec2_compatibility(
+        {"instance_type": "m5.large", "architecture": "x86_64", "platform": "",
+         "root_device_type": "ebs"},
+        {"os_name": "FreeBSD", "os_version": "14"},
+    )
+    assert r["level"] == "manual"
+    assert r["matched_rule"] is None
+    assert "FreeBSD" in r["reason"]
+
+
+def test_ocm_shape_whitelist_check():
+    """is_shape_supported_by_ocm reflects the ocm_support.yaml target_shapes list."""
+    from app.services.ocm_compatibility import is_shape_supported_by_ocm
+
+    # From the whitelist
+    assert is_shape_supported_by_ocm("VM.Standard.E5.Flex") is True
+    assert is_shape_supported_by_ocm("VM.Standard2.2") is True
+    assert is_shape_supported_by_ocm("VM.GPU3.2") is True
+    # Not on the OCM list (ARM, newer families, dense-io E5)
+    assert is_shape_supported_by_ocm("VM.Standard.A2.Flex") is False
+    assert is_shape_supported_by_ocm("VM.DenseIO.E5.Flex") is False
+    assert is_shape_supported_by_ocm(None) is False
+    assert is_shape_supported_by_ocm("") is False
+
+
+def test_resource_details_ec2_includes_ocm_compatibility():
+    """enrich() on EC2 surfaces the ocm_compatibility dict end-to-end."""
+    from app.services.resource_details import enrich
+    rc = {
+        "instance_id": "i-abc", "instance_type": "m5.large", "state": "running",
+        "architecture": "x86_64", "platform": "", "root_device_type": "ebs",
+        "vpc_id": "vpc-1",
+        "software_inventory": {
+            "os_name": "Amazon Linux", "os_version": "2023",
+            "inventory_collected": True,
+        },
+    }
+    out = enrich("AWS::EC2::Instance", rc)
+    assert out["ocm_compatibility"] is not None
+    assert out["ocm_compatibility"]["level"] == "with_prep"
+    assert out["ocm_compatibility"]["matched_rule"] == "amazon-linux"
+    assert out["ocm_compatibility"]["detected_os"].startswith("Amazon Linux")
+
+
+def test_resource_details_non_ec2_has_no_ocm_compat():
+    """Non-EC2 types don't get OCM enrichment (OCM only handles EC2)."""
+    from app.services.resource_details import enrich
+    out = enrich("AWS::RDS::DBInstance", {"db_instance_id": "db1", "engine": "postgres"})
+    assert out["ocm_compatibility"] is None
+
+
 def test_cfn_chunker_parse_json():
     """A JSON CFN template round-trips through parse_cfn_template."""
     from app.services.cfn_chunker import parse_cfn_template

@@ -376,6 +376,7 @@ export default function AssessmentDetail() {
                       <SortableHeader label="AWS Cost" sortKey="aws_monthly_cost" currentKey={sortKey} asc={sortAsc} onSort={handleSort} />
                       <SortableHeader label="OCI Cost" sortKey="oci_monthly_cost" currentKey={sortKey} asc={sortAsc} onSort={handleSort} />
                       <SortableHeader label="OS Status" sortKey="os_compat_status" currentKey={sortKey} asc={sortAsc} onSort={handleSort} />
+                      <th>OCM</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -402,6 +403,7 @@ export default function AssessmentDetail() {
                           {formatMoney(r.oci_monthly_cost)}
                         </td>
                         <td><OSCompatBadge status={r.os_compat_status} /></td>
+                        <td><OCMLevelBadge level={r.ocm_level} /></td>
                       </tr>
                     ))}
                   </tbody>
@@ -638,4 +640,25 @@ function SortableHeader({
 function shortType(awsType: string): string {
   const parts = awsType.split('::');
   return parts.length >= 3 ? parts.slice(1).join('::') : awsType;
+}
+
+function OCMLevelBadge({ level }: { level: string | null | undefined }) {
+  // Non-EC2 rows have no level — blank cell rather than "—" so the column
+  // doesn't look broken for every non-EC2 resource.
+  if (!level) return <span style={{ color: 'var(--color-text-dim)' }}>—</span>;
+  const map: Record<string, { label: string; bg: string; fg: string }> = {
+    full:        { label: 'ready',   bg: 'rgba(74, 153, 85, 0.12)', fg: 'var(--color-success, #4a9955)' },
+    with_prep:   { label: 'prep',    bg: 'rgba(217, 160, 32, 0.12)', fg: 'var(--color-warning, #d9a020)' },
+    manual:      { label: 'manual',  bg: 'rgba(217, 160, 32, 0.12)', fg: 'var(--color-warning, #d9a020)' },
+    unsupported: { label: 'no-go',   bg: 'rgba(217, 52, 52, 0.12)',  fg: 'var(--color-danger,  #d93434)' },
+  };
+  const style = map[level] ?? { label: level, bg: 'var(--color-well)', fg: 'var(--color-text-dim)' };
+  return (
+    <span
+      className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium"
+      style={{ background: style.bg, color: style.fg, fontFamily: 'var(--font-mono)' }}
+    >
+      {style.label}
+    </span>
+  );
 }
