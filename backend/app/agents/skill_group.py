@@ -28,7 +28,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from agents import Agent, Runner
+from agents import Agent, ModelSettings, Runner
 
 from app import mappings
 from app.agents.config import build_model
@@ -505,6 +505,21 @@ def _reviewer_instructions(spec: SkillSpec) -> str:
     ])
 
 
+# Max output tokens for writer agents. The openai-agents SDK + OpenAI's
+# chat-completions default to a few thousand tokens — enough for small
+# skill outputs (IAM policies, runbook markdown, single-instance HCL) but
+# **too small for synthesis merging a 30-resource stack**: a complete
+# main.tf for 30 resources is routinely 10k-20k tokens of HCL, so the
+# response was being silently truncated at ~5 resources with no error.
+# Set a high explicit cap so the writer can emit the full file. gpt-5.x
+# supports up to 128k output; 32k is conservative headroom for any
+# realistic enterprise stack.
+_WRITER_MAX_OUTPUT_TOKENS = 32_000
+
+# Reviewers emit a small structured JSON verdict, not HCL, so their cap
+# stays at the model default (setting max_tokens=None leaves it alone).
+
+
 def _build_writer(spec: SkillSpec) -> Agent:
     tools = [lookup_aws_mapping, list_resources_for_skill]
     if spec.needs_terraform_validate:
@@ -513,6 +528,7 @@ def _build_writer(spec: SkillSpec) -> Agent:
         name=f"{spec.display_name} (writer)",
         instructions=_writer_instructions(spec),
         model=build_model(get_model(spec.skill_type, "enhancement")),
+        model_settings=ModelSettings(max_tokens=_WRITER_MAX_OUTPUT_TOKENS),
         tools=tools,
     )
 
