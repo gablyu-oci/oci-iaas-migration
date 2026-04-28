@@ -55,6 +55,7 @@ def build_hybrid_bundle(
     synthesis_ok: bool = True,
     ocm_instance_count: int = 0,
     native_instance_count: int = 0,
+    graph: Any | None = None,
 ) -> dict[str, str]:
     """Reorganize completed_artifacts into the hybrid bundle layout.
 
@@ -109,23 +110,43 @@ def build_hybrid_bundle(
     # When OCM handoff artifacts exist, wire them as a child module of the
     # root Terraform stack so a single `terraform apply` covers both.
     if any(p.startswith("terraform/ocm/") for p in out):
-        net_tf = out.get("terraform/network.tf", "")
-
-        # Parse actual VCN and subnet labels from network.tf
-        import re
-        vcn_labels = re.findall(r'resource\s+"oci_core_vcn"\s+"([^"]+)"', net_tf)
-        subnet_labels = re.findall(r'resource\s+"oci_core_subnet"\s+"([^"]+)"', net_tf)
-
-        vcn_label = vcn_labels[0] if vcn_labels else None
-        # Prefer a private subnet; fall back to first subnet
+        vcn_label = None
         subnet_label = None
-        if subnet_labels:
-            for sl in subnet_labels:
-                if "private" in sl.lower():
-                    subnet_label = sl
-                    break
-            if subnet_label is None:
-                subnet_label = subnet_labels[0]
+
+        # Phase 2: use the resource graph if available
+        if graph is not None:
+            vcn_nodes = graph.find_by_template('core/vcn')
+            if not vcn_nodes:
+                vcn_nodes = graph.find_by_template('oci_core_vcn')
+            subnet_nodes = graph.find_by_template('core/subnet')
+            if not subnet_nodes:
+                subnet_nodes = graph.find_by_template('oci_core_subnet')
+
+            if vcn_nodes:
+                vcn_label = vcn_nodes[0].label
+            if subnet_nodes:
+                # Prefer a private subnet
+                for sn in subnet_nodes:
+                    if 'private' in sn.label.lower():
+                        subnet_label = sn.label
+                        break
+                if subnet_label is None:
+                    subnet_label = subnet_nodes[0].label
+        else:
+            # Legacy fallback: regex parse network.tf
+            net_tf = out.get("terraform/network.tf", "")
+            import re
+            vcn_labels = re.findall(r'resource\s+"oci_core_vcn"\s+"([^"]+)"', net_tf)
+            subnet_labels = re.findall(r'resource\s+"oci_core_subnet"\s+"([^"]+)"', net_tf)
+
+            vcn_label = vcn_labels[0] if vcn_labels else None
+            if subnet_labels:
+                for sl in subnet_labels:
+                    if "private" in sl.lower():
+                        subnet_label = sl
+                        break
+                if subnet_label is None:
+                    subnet_label = subnet_labels[0]
 
         if vcn_label and subnet_label:
             vcn_ref = f"oci_core_vcn.{vcn_label}.id"
@@ -151,7 +172,6 @@ def build_hybrid_bundle(
                 '  aws_credentials_secret_ocid  = var.aws_credentials_secret_ocid\n'
                 '}\n'
             )
-            # Log a gap so the operator knows wiring is incomplete.
             gap_text = (
                 "\n\n## WARNING — OCM module wired to free variables\n\n"
                 "No `oci_core_vcn` or `oci_core_subnet` resource was found in the "

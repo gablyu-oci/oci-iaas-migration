@@ -687,6 +687,64 @@ def _run_pipeline(
     except Exception as exc:
         logger.warning("Workload planning failed: %s", exc)
 
+    # ── Step 5b: Build resource graph from structured skill outputs ────
+    from app.services.resource_graph import ResourceGraph, ResourceNode, specs_to_graph
+
+    graph = ResourceGraph()
+
+    # Collect ResourceNodes from Phase-1 structured skills
+    for skill_type in skill_resources:
+        if skill_type not in ("network_translation", "ocm_handoff_translation", "loadbalancer_translation"):
+            continue
+        # Look for _template_specs in the completed artifacts
+        specs_key = f"{skill_type}/_template_specs"
+        specs_raw = completed_artifacts.get(specs_key)
+        if specs_raw and isinstance(specs_raw, str):
+            try:
+                specs = json.loads(specs_raw)
+            except (ValueError, TypeError):
+                specs = []
+        elif isinstance(specs_raw, list):
+            specs = specs_raw
+        else:
+            specs = []
+
+        if specs:
+            nodes, node_ids = specs_to_graph(specs, source_skill=skill_type)
+            for node in nodes:
+                try:
+                    graph.add_node(node)
+                except ValueError as exc:
+                    logger.warning("Graph: skipping duplicate node: %s", exc)
+
+    # Route non-Phase-1 skill HCL to graph.free_form_files
+    for key, content in completed_artifacts.items():
+        if "/" not in key:
+            continue
+        skill = key.split("/")[0]
+        if skill in ("network_translation", "ocm_handoff_translation", "loadbalancer_translation"):
+            continue  # Already in graph as nodes
+        if skill in ("workload_planning", "data_migration", "resource-mapping",
+                     "ocm_handoff_translation", "cfn_terraform"):
+            continue
+        fname = key.split("/", 1)[-1]
+        if fname.endswith(".tf"):
+            graph.free_form_files[key] = content
+
+    # Validate the graph
+    graph_errors = graph.validate()
+    if graph_errors:
+        for err in graph_errors:
+            logger.warning("Graph validation error: %s", err)
+            all_gaps.append({
+                "skill": "resource_graph",
+                "severity": "HIGH",
+                "description": f"Graph validation: {err}",
+                "recommendation": "Check resource references and fix cross-skill dependencies.",
+            })
+
+    _progress("resource_graph", f"Resource graph: {len(graph.nodes)} nodes, {len(graph.refs)} refs, {len(graph.free_form_files)} free-form files")
+
     # ── Step 6: Synthesis ──────────────────────────────────────────────
     # Deterministic merge of per-skill HCL into per-concern files
     # (network.tf, compute.tf, database.tf, …). Replaces an earlier LLM
@@ -717,15 +775,18 @@ def _run_pipeline(
         if fname.endswith(".tf"):
             skill_artifacts.setdefault(skill, {})[fname] = content
 
-    if skill_artifacts:
-        from app.services.synthesis_composer import compose_terraform
+    if graph.nodes or skill_artifacts:
         _progress(
             "synthesis",
-            f"Composing Terraform (deterministic merge of {len(skill_artifacts)} skill output(s) "
-            f"into per-concern .tf files)",
+            f"Composing Terraform (graph: {len(graph.nodes)} nodes + {len(skill_artifacts)} legacy skill output(s))",
         )
         try:
-            syn = compose_terraform(skill_artifacts, migration_name=ag.name)
+            if graph.nodes:
+                from app.services.synthesis_composer import compose_from_graph
+                syn = compose_from_graph(graph, migration_name=ag.name)
+            else:
+                from app.services.synthesis_composer import compose_terraform
+                syn = compose_terraform(skill_artifacts, migration_name=ag.name)
             for filename, content in syn.files.items():
                 completed_artifacts[f"synthesis/{filename}"] = content
             for w in syn.warnings:
@@ -798,6 +859,7 @@ def _run_pipeline(
             synthesis_ok=synthesis_ok,
             ocm_instance_count=_hybrid_ocm_count,
             native_instance_count=_hybrid_native_count,
+            graph=graph,
         )
         _progress(
             "complete",

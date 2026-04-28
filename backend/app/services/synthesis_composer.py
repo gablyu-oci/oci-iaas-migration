@@ -43,7 +43,10 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.services.resource_graph import ResourceGraph
 
 logger = logging.getLogger(__name__)
 
@@ -332,6 +335,117 @@ def compose_terraform(
 
     # Canonical providers.tf — exactly one provider block + required_providers.
     result.files["providers.tf"] = _render_providers_tf(migration_name)
+
+    return result
+
+
+def compose_from_graph(
+    graph: 'ResourceGraph',
+    migration_name: str = "migration",
+) -> SynthesisResult:
+    """Compose Terraform from a ResourceGraph.
+
+    Graph-aware alternative to compose_terraform(). Groups nodes by domain,
+    renders them via the graph's render() method, then applies the same
+    variable/output dedup + providers.tf generation as the string-based path.
+
+    Free-form files from graph.free_form_files are merged using the legacy
+    string-based HCL parsing path.
+    """
+    result = SynthesisResult()
+
+    # Render all graph nodes to HCL files
+    try:
+        rendered = graph.render()
+    except Exception as exc:
+        logger.error("Graph render failed: %s", exc)
+        result.warnings.append(f"Graph render failed: {exc}")
+        rendered = {}
+
+    # The graph renderer already groups by domain via the template renderer's
+    # DOMAIN_TO_FILE mapping. We still need to handle variable/output dedup
+    # and inject canonical root variables + providers.tf.
+
+    # Start with rendered graph output
+    for filename, content in rendered.items():
+        if filename.endswith('.tf'):
+            result.files[filename] = content
+
+    # Parse free-form files through the legacy string-based path
+    if graph.free_form_files:
+        # Convert free_form_files to the per_skill_artifacts format
+        # that compose_terraform expects
+        ff_artifacts: dict[str, dict[str, str]] = {}
+        for skill_path, content in graph.free_form_files.items():
+            # skill_path is like "ec2_translation/main.tf"
+            if '/' in skill_path:
+                skill, fname = skill_path.split('/', 1)
+            else:
+                skill = skill_path
+                fname = 'main.tf'
+            ff_artifacts.setdefault(skill, {})[fname] = content
+
+        # Use the existing compose_terraform for free-form files
+        ff_result = compose_terraform(ff_artifacts, migration_name)
+
+        # Merge free-form results, being careful about conflicts
+        for filename, content in ff_result.files.items():
+            if filename in result.files:
+                # Append free-form content to graph-rendered content
+                result.files[filename] += "\n" + content
+            else:
+                result.files[filename] = content
+        result.warnings.extend(ff_result.warnings)
+        result.skills_included.extend(ff_result.skills_included)
+
+    # Ensure canonical root variables + providers.tf
+    # Parse any variable/output blocks from the graph-rendered files
+    variable_blocks: dict[str, HclBlock] = {}
+    output_blocks: dict[str, HclBlock] = {}
+
+    for filename, content in list(result.files.items()):
+        blocks = _extract_blocks(content)
+        for blk in blocks:
+            if blk.kind == "variable":
+                name = blk.labels[0] if blk.labels else ""
+                if name and name not in variable_blocks:
+                    variable_blocks[name] = blk
+            elif blk.kind == "output":
+                name = blk.labels[0] if blk.labels else ""
+                if name and name not in output_blocks:
+                    output_blocks[name] = blk
+
+    # Inject canonical root variables
+    for var_def in CANONICAL_ROOT_VARS:
+        name = var_def["name"]
+        if name not in variable_blocks:
+            canonical_body = _render_canonical_var(var_def)
+            variable_blocks[name] = HclBlock(
+                kind="variable",
+                labels=(name,),
+                body=canonical_body,
+            )
+
+    if variable_blocks:
+        result.files["variables.tf"] = _render_file(
+            header_comment="# Variables consolidated across every skill that ran.\n"
+                           "# Populate terraform.tfvars or pass with -var.\n",
+            blocks=list(variable_blocks.values()),
+        )
+    if output_blocks:
+        result.files["outputs.tf"] = _render_file(
+            header_comment="# Outputs consolidated across every skill.\n",
+            blocks=list(output_blocks.values()),
+        )
+
+    # Canonical providers.tf
+    result.files["providers.tf"] = _render_providers_tf(migration_name)
+
+    # Track skills from graph nodes
+    skills_from_graph = set()
+    for node in graph.nodes.values():
+        skills_from_graph.add(node.source_skill)
+    result.skills_included = list(set(result.skills_included) | skills_from_graph)
 
     return result
 

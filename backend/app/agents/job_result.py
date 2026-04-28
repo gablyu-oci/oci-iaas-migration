@@ -100,6 +100,12 @@ def to_job_result(agent_result: dict) -> dict:
     if review:
         artifacts["review.json"] = json.dumps(review, indent=2, default=str)
 
+    # Phase 2: serialize template_specs as an artifact so plan_orchestrator
+    # can reconstruct the resource graph from structured skill outputs.
+    template_specs = agent_result.get("template_specs")
+    if template_specs and isinstance(template_specs, list):
+        artifacts["_template_specs"] = json.dumps(template_specs, default=str)
+
     confidence = float(review.get("confidence", 0.0) or 0.0)
     decision = review.get("decision") or "APPROVED"
     iterations = int(agent_result.get("iterations", 1))

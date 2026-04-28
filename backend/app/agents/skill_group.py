@@ -33,6 +33,7 @@ from agents import Agent, ModelSettings, Runner
 from app import mappings
 from app.agents.config import build_model
 from app.agents.context import MigrationContext
+from app.services.resource_graph import specs_to_graph
 from app.agents.tools import (
     list_resources_for_skill,
     lookup_aws_mapping,
@@ -824,13 +825,14 @@ class SkillRunResult:
     stopped_early: bool         # True if we broke out on confidence, False if we hit max
     writer_tool_calls: int
     reviewer_tool_calls: int
+    template_specs: list[dict] | None = None  # Phase 2: raw specs for resource graph
 
     @property
     def approved(self) -> bool:
         return self.review.get("decision") in ("APPROVED", "APPROVED_WITH_NOTES")
 
     def as_dict(self) -> dict:
-        return {
+        d = {
             "skill_type": self.skill_type,
             "draft": self.draft,
             "review": self.review,
@@ -840,6 +842,9 @@ class SkillRunResult:
             "writer_tool_calls": self.writer_tool_calls,
             "reviewer_tool_calls": self.reviewer_tool_calls,
         }
+        if self.template_specs is not None:
+            d["template_specs"] = self.template_specs
+        return d
 
 
 class SkillGroup:
@@ -985,7 +990,9 @@ class SkillGroup:
                 break
 
         # Post-process: render structured output specs to HCL files
+        _template_specs = None
         if self._is_structured_output():
+            _template_specs = self._extract_specs_from_draft(draft)
             draft = self._process_structured_output(draft)
 
         return SkillRunResult(
@@ -996,6 +1003,7 @@ class SkillGroup:
             stopped_early=stopped_early,
             writer_tool_calls=writer_tools,
             reviewer_tool_calls=reviewer_tools,
+            template_specs=_template_specs,
         )
 
     # ── Turn builders ──────────────────────────────────────────────────────
