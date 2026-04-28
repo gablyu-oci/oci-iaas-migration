@@ -23,6 +23,7 @@ from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
+from app.agents.skill_group import STRUCTURED_OUTPUT_SKILLS
 from app.db.models import (
     AppGroup,
     AppGroupMember,
@@ -604,6 +605,21 @@ def _run_pipeline(
                     _progress, _progress_cb, anthropic_client, max_iterations,
                     _collect_gaps,
                 )
+                # Per-skill validate for network_translation
+                if skill_type in STRUCTURED_OUTPUT_SKILLS:
+                    try:
+                        from app.services.per_skill_validator import per_skill_validate, make_validate_gap
+                        net_tf = {k.split("/", 1)[-1]: v for k, v in completed_artifacts.items()
+                                  if k.startswith("network_translation/") and k.endswith(".tf")}
+                        if net_tf:
+                            vr = per_skill_validate("network_translation", net_tf)
+                            if vr.valid:
+                                _progress("network_translation", "Per-skill validate [network_translation]: pass")
+                            else:
+                                _progress("network_translation", f"Per-skill validate [network_translation]: fail ({vr.error_count} errors)")
+                                all_gaps.append(make_validate_gap("network_translation", vr.errors_text))
+                    except Exception as exc:
+                        logger.warning("Per-skill validate for network_translation failed: %s", exc)
                 continue
             skill_input = _build_skill_input(skill_type, skill_resources[skill_type])
             result = _run_skill(skill_type, skill_input, _progress_cb, anthropic_client, max_iterations)
@@ -611,6 +627,43 @@ def _run_pipeline(
                 for name, content in result.get("artifacts", {}).items():
                     completed_artifacts[f"{skill_type}/{name}"] = content
                 _collect_gaps(skill_type, result)
+                # ── Per-skill terraform validate (Phase 3 checkpoint 1) ──
+                if skill_type in STRUCTURED_OUTPUT_SKILLS:
+                    try:
+                        from app.services.per_skill_validator import per_skill_validate, make_validate_gap
+                        # Collect .tf fragments for this skill
+                        skill_tf_fragments = {}
+                        for art_name, art_content in (result.get("artifacts") or {}).items():
+                            if art_name.endswith(".tf"):
+                                skill_tf_fragments[art_name] = art_content
+                        if skill_tf_fragments:
+                            vr = per_skill_validate(skill_type, skill_tf_fragments)
+                            if vr.valid:
+                                _progress(skill_type, f"Per-skill validate [{skill_type}]: pass")
+                            else:
+                                _progress(skill_type, f"Per-skill validate [{skill_type}]: fail ({vr.error_count} errors)")
+                                all_gaps.append(make_validate_gap(skill_type, vr.errors_text))
+                                # Trigger ONE retry of the skill with validate error context
+                                _progress(skill_type, f"Retrying {skill_label} with terraform validate errors in context")
+                                retry_input = skill_input + f"\n\n## TERRAFORM VALIDATE ERRORS FROM PREVIOUS ATTEMPT\nFix these errors:\n{vr.errors_text}\n"
+                                retry_result = _run_skill(skill_type, retry_input, _progress_cb, anthropic_client, max_iterations=1)
+                                if retry_result:
+                                    retry_tf = {}
+                                    for art_name, art_content in (retry_result.get("artifacts") or {}).items():
+                                        if art_name.endswith(".tf"):
+                                            retry_tf[art_name] = art_content
+                                    if retry_tf:
+                                        retry_vr = per_skill_validate(skill_type, retry_tf)
+                                        if retry_vr.valid:
+                                            # Replace artifacts with retried ones
+                                            for name, content in retry_result.get("artifacts", {}).items():
+                                                completed_artifacts[f"{skill_type}/{name}"] = content
+                                            _collect_gaps(skill_type, retry_result)
+                                            _progress(skill_type, f"Per-skill validate [{skill_type}] retry: pass")
+                                        else:
+                                            _progress(skill_type, f"Per-skill validate [{skill_type}] retry: still failing ({retry_vr.error_count} errors)")
+                    except Exception as exc:
+                        logger.warning("Per-skill validate for %s failed: %s", skill_type, exc)
                 _progress(skill_type, f"{skill_label} complete — confidence {result.get('confidence', 0):.0%}, {result.get('iterations', 1)} round(s)")
         except Exception as exc:
             _progress(skill_type, f"{skill_label} failed: {exc}")
@@ -897,6 +950,21 @@ def _run_pipeline(
             logger.warning("Synthesis polish failed: %s\n%s", exc, traceback.format_exc())
             _progress("polish", f"Synthesis polish failed: {exc!r}")
 
+    # ── Merged bundle validation (Phase 3 checkpoint 2) ──────────────
+    try:
+        from app.services.per_skill_validator import merged_bundle_validate
+        _progress("validation", "Running merged bundle terraform validate...")
+        mvr = merged_bundle_validate(completed_artifacts)
+        if mvr.valid:
+            _progress("validation", "Merged bundle validate: pass")
+        else:
+            _progress("validation", f"Merged bundle validate: fail ({mvr.error_count} errors)")
+            for gap in mvr.gaps:
+                all_gaps.append(gap)
+    except Exception as exc:
+        logger.warning("Merged bundle validate failed: %s", exc)
+        _progress("validation", f"Merged bundle validate error: {exc!r}")
+
     # ── Post-synthesis validate-and-repair ────────────────────────
     if getattr(settings, 'SYNTHESIS_VALIDATE_AND_REPAIR', True):
         try:
@@ -945,6 +1013,24 @@ def _run_pipeline(
         except Exception as exc:
             logger.warning("Post-synthesis validation failed: %s", exc)
             _progress("validation", f"Post-synthesis validation failed: {exc!r}")
+
+    # ── Final validation (Phase 3 checkpoint 3) ──────────────────────
+    try:
+        from app.services.per_skill_validator import final_validate
+        _progress("validation", "Running final terraform validate...")
+        fvr = final_validate(completed_artifacts)
+        if fvr.valid:
+            _progress("validation", "Final validate: pass")
+        else:
+            _progress("validation", f"Final validate: fail ({fvr.error_count} errors)")
+            for gap in fvr.gaps:
+                all_gaps.append(gap)
+            # Re-render gaps.md with final validation results
+            from app.services.bundle_builder import _render_gaps_md
+            completed_artifacts["reports/gaps.md"] = _render_gaps_md(all_gaps, skills_ran_list)
+    except Exception as exc:
+        logger.warning("Final validate failed: %s", exc)
+        _progress("validation", f"Final validate error: {exc!r}")
 
     _progress("complete", f"Plan generation complete in {elapsed}s")
 
