@@ -196,3 +196,34 @@ Dashboard JSON widgets don't translate cleanly to OCI Management Dashboards. Rec
 - **Custom metric namespaces** (`CWAgent`, app-emitted): HIGH — Compute Agent must be enabled on the target instance and the metric name must be re-published.
 - **CloudWatch Contributor Insights:** CRITICAL — no OCI equivalent.
 - **X-Ray tracing**: if any alarm references X-Ray metrics, flag CRITICAL (no OCI equivalent today).
+
+## Structured Output Format (Phase 4)
+
+This skill uses **structured JSON output** instead of free-form HCL.
+
+Your output MUST be a JSON array of resource specs:
+
+```json
+[
+  {
+    "template": "<domain/resource_type>",
+    "label": "<terraform_resource_label>",
+    "params": { ... matches the template's Pydantic schema ... }
+  }
+]
+```
+
+### Available Templates
+
+- `observability/log_group` -- OCI Logging log group (container for logs)
+- `observability/log` -- individual log stream within a log group
+- `observability/metric_alarm` -- OCI Monitoring alarm with metric query and notification destinations
+
+For resources not covered by any template, use the `free_form_hcl` fallback:
+```json
+{"template": "free_form_hcl", "label": "<label>", "params": {"hcl": "<raw HCL string>"}}
+```
+
+### Traceability
+
+Every spec's `params` MUST include `aws_source_id` with the original AWS resource identifier. Include `freeform_tags` with `aws_source_id` and `managed_by = "oci-iaas-migration"` where the OCI resource supports tags.

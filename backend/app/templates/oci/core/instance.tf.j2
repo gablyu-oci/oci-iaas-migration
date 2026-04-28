@@ -1,0 +1,54 @@
+# Adapted from compute.py InstanceParams schema
+# aws_source_id = {{ aws_source_id }}
+resource "oci_core_instance" "{{ label }}" {
+  compartment_id      = {{ compartment_id }}
+  availability_domain = "{{ availability_domain }}"
+  display_name        = "{{ display_name }}"
+  shape               = "{{ shape }}"
+
+{% if shape_config is defined and shape_config %}
+  shape_config {
+    ocpus         = {{ shape_config.ocpus }}
+    memory_in_gbs = {{ shape_config.memory_in_gbs }}
+  }
+{% endif %}
+
+  source_details {
+    source_type = "{{ source_details.source_type }}"
+    source_id   = {{ source_details.source_id }}
+{% if source_details.boot_volume_size_in_gbs is defined and source_details.boot_volume_size_in_gbs %}
+    boot_volume_size_in_gbs = {{ source_details.boot_volume_size_in_gbs }}
+{% endif %}
+  }
+
+{% if create_vnic_details is defined and create_vnic_details %}
+  create_vnic_details {
+    subnet_id = {{ create_vnic_details.subnet_id }}
+{% if create_vnic_details.assign_public_ip is defined and create_vnic_details.assign_public_ip is not none %}
+    assign_public_ip = {{ create_vnic_details.assign_public_ip | lower }}
+{% endif %}
+{% if create_vnic_details.nsg_ids is defined and create_vnic_details.nsg_ids %}
+    nsg_ids = [{{ create_vnic_details.nsg_ids | join(', ') }}]
+{% endif %}
+{% if create_vnic_details.display_name is defined and create_vnic_details.display_name %}
+    display_name = "{{ create_vnic_details.display_name }}"
+{% endif %}
+  }
+{% endif %}
+
+{% if metadata is defined and metadata %}
+  metadata = {
+{% for key, value in metadata.items() %}
+    {{ key }} = "{{ value }}"
+{% endfor %}
+  }
+{% endif %}
+
+{% if freeform_tags is defined and freeform_tags %}
+  freeform_tags = {
+{% for key, value in freeform_tags.items() %}
+    {{ key }} = "{{ value }}"
+{% endfor %}
+  }
+{% endif %}
+}

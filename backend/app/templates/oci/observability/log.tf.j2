@@ -1,0 +1,24 @@
+# Adapted from OCI Logging documentation
+resource "oci_logging_log" "{{ label }}" {
+  log_group_id = {{ log_group_id }}
+  display_name = "{{ display_name }}"
+  log_type     = "{{ log_type }}"
+{% if is_enabled is defined and is_enabled is not none %}
+  is_enabled   = {{ is_enabled | lower }}
+{% endif %}
+{% if retention_duration is defined and retention_duration %}
+  retention_duration = {{ retention_duration }}
+{% endif %}
+
+{% if configuration is defined and configuration %}
+  configuration {
+    source {
+      source_type  = "_custom"
+      service      = "{{ configuration.source.service }}"
+      resource     = {{ configuration.source.resource }}
+      category     = "{{ configuration.source.category }}"
+    }
+    compartment_id = {{ configuration.compartment_id }}
+  }
+{% endif %}
+}

@@ -183,6 +183,12 @@ STRUCTURED_OUTPUT_SKILLS: frozenset[str] = frozenset({
     "network_translation",
     "ocm_handoff_translation",
     "loadbalancer_translation",
+    "ec2_translation",
+    "storage_translation",
+    "iam_translation",
+    "security_translation",
+    "serverless_translation",
+    "observability_translation",
 })
 
 

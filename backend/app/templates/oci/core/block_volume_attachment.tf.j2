@@ -1,0 +1,19 @@
+# Adapted from compute.py BlockVolumeAttachmentParams schema
+# aws_source_id = {{ aws_source_id }}
+resource "oci_core_volume_attachment" "{{ label }}" {
+  instance_id     = {{ instance_id }}
+  volume_id       = {{ volume_id }}
+  attachment_type = "{{ attachment_type }}"
+{% if display_name is defined and display_name %}
+  display_name    = "{{ display_name }}"
+{% endif %}
+{% if is_read_only is defined and is_read_only is not none %}
+  is_read_only    = {{ is_read_only | lower }}
+{% endif %}
+{% if is_shareable is defined and is_shareable is not none %}
+  is_shareable    = {{ is_shareable | lower }}
+{% endif %}
+{% if device is defined and device %}
+  device          = "{{ device }}"
+{% endif %}
+}

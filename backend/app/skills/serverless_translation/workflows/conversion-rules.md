@@ -193,3 +193,33 @@ No OCI equivalent today (Application Performance Monitoring is close but require
 - **Lambda @ Edge:** CRITICAL — no OCI edge compute.
 - **Kinesis Analytics SQL apps:** CRITICAL — must be rewritten as OCI Functions or Data Flow.
 - **Custom runtimes** (`provided.al2`): HIGH — user must build a compatible Docker image.
+
+## Structured Output Format (Phase 4)
+
+This skill uses **structured JSON output** instead of free-form HCL.
+
+Your output MUST be a JSON array of resource specs:
+
+```json
+[
+  {
+    "template": "<domain/resource_type>",
+    "label": "<terraform_resource_label>",
+    "params": { ... matches the template's Pydantic schema ... }
+  }
+]
+```
+
+### Available Templates
+
+- `functions/application` -- OCI Functions application (container for functions; one per migration target)
+- `functions/function` -- individual OCI function within an application
+
+For resources not covered by any template, use the `free_form_hcl` fallback:
+```json
+{"template": "free_form_hcl", "label": "<label>", "params": {"hcl": "<raw HCL string>"}}
+```
+
+### Traceability
+
+Every spec's `params` MUST include `aws_source_id` with the original AWS resource identifier. Include `freeform_tags` with `aws_source_id` and `managed_by = "oci-iaas-migration"` where the OCI resource supports tags.

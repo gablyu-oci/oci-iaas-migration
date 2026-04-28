@@ -1,0 +1,27 @@
+# Adapted from OCI Functions documentation
+# aws_source_id = {{ aws_source_id }}
+resource "oci_functions_function" "{{ label }}" {
+  application_id = {{ application_id }}
+  display_name   = "{{ display_name }}"
+  image          = "{{ image }}"
+  memory_in_mbs  = {{ memory_in_mbs }}
+{% if timeout_in_seconds is defined and timeout_in_seconds %}
+  timeout_in_seconds = {{ timeout_in_seconds }}
+{% endif %}
+
+{% if config is defined and config %}
+  config = {
+{% for key, value in config.items() %}
+    {{ key }} = "{{ value }}"
+{% endfor %}
+  }
+{% endif %}
+
+{% if freeform_tags is defined and freeform_tags %}
+  freeform_tags = {
+{% for key, value in freeform_tags.items() %}
+    {{ key }} = "{{ value }}"
+{% endfor %}
+  }
+{% endif %}
+}

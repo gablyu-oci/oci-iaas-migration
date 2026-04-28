@@ -85,6 +85,30 @@ _TEMPLATE_TO_TF_TYPE: dict[str, str] = {
     'cloud_migrations/migration_plan': 'oci_cloud_migrations_migration_plan',
     'cloud_migrations/target_asset': 'oci_cloud_migrations_target_asset',
     'cloud_migrations/replication_schedule': 'oci_cloud_migrations_replication_schedule',
+    # Compute / EC2 — Phase 4
+    'core/instance': 'oci_core_instance',
+    'core/instance_configuration': 'oci_core_instance_configuration',
+    'core/instance_pool': 'oci_core_instance_pool',
+    'core/autoscaling_configuration': 'oci_autoscaling_auto_scaling_configuration',
+    'core/boot_volume': 'oci_core_boot_volume',
+    'core/block_volume': 'oci_core_volume',
+    'core/block_volume_attachment': 'oci_core_volume_attachment',
+    # Identity — Phase 4
+    'identity/dynamic_group': 'oci_identity_dynamic_group',
+    'identity/policy': 'oci_identity_policy',
+    'identity/group': 'oci_identity_group',
+    'identity/user': 'oci_identity_user',
+    # Vault — Phase 4
+    'vault/vault': 'oci_kms_vault',
+    'vault/key': 'oci_kms_key',
+    'vault/secret': 'oci_vault_secret',
+    # Functions — Phase 4
+    'functions/application': 'oci_functions_application',
+    'functions/function': 'oci_functions_function',
+    # Observability — Phase 4
+    'observability/log_group': 'oci_logging_log_group',
+    'observability/log': 'oci_logging_log',
+    'observability/metric_alarm': 'oci_monitoring_alarm',
 }
 
 # Domain → output filename
@@ -310,6 +334,10 @@ def specs_to_graph(
         'core': 'network',
         'load_balancer': 'loadbalancer',
         'cloud_migrations': 'ocm',
+        'identity': 'iam',
+        'vault': 'security',
+        'functions': 'serverless',
+        'observability': 'observability',
     }
 
     nodes: list[ResourceNode] = []

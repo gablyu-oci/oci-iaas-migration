@@ -1,0 +1,55 @@
+# Adapted from compute.py AutoScalingConfigurationParams schema
+# aws_source_id = {{ aws_source_id }}
+resource "oci_autoscaling_auto_scaling_configuration" "{{ label }}" {
+  compartment_id = {{ compartment_id }}
+  display_name   = "{{ display_name }}"
+
+  auto_scaling_resources {
+    id   = {{ auto_scaling_resources.id }}
+    type = "{{ auto_scaling_resources.type }}"
+  }
+
+{% if cool_down_in_seconds is defined and cool_down_in_seconds %}
+  cool_down_in_seconds = {{ cool_down_in_seconds }}
+{% endif %}
+{% if is_enabled is defined and is_enabled is not none %}
+  is_enabled = {{ is_enabled | lower }}
+{% endif %}
+
+{% for policy in policies %}
+  policies {
+    display_name = "{{ policy.display_name }}"
+    policy_type  = "{{ policy.policy_type }}"
+
+    capacity {
+      max     = {{ policy.capacity.max }}
+      min     = {{ policy.capacity.min }}
+      initial = {{ policy.capacity.initial }}
+    }
+
+{% for rule in policy.rules %}
+    rules {
+      display_name = "{{ rule.display_name }}"
+
+{% if rule.action is defined and rule.action %}
+      action {
+        type  = "{{ rule.action.type }}"
+        value = {{ rule.action.value }}
+      }
+{% endif %}
+
+{% if rule.metric is defined and rule.metric %}
+      metric {
+        metric_type = "{{ rule.metric.metric_type }}"
+
+        threshold {
+          operator = "{{ rule.metric.threshold.operator }}"
+          value    = {{ rule.metric.threshold.value }}
+        }
+      }
+{% endif %}
+    }
+{% endfor %}
+  }
+{% endfor %}
+}

@@ -26,17 +26,11 @@ class TestSkillGroupStructuredOutput:
         assert "loadbalancer_translation" in STRUCTURED_OUTPUT_SKILLS
 
     def test_structured_output_skills_count(self):
-        """Phase 1 has exactly 3 structured output skills."""
-        assert len(STRUCTURED_OUTPUT_SKILLS) == 3
+        """Phase 1 + Phase 4 gives exactly 9 structured output skills."""
+        assert len(STRUCTURED_OUTPUT_SKILLS) == 9
 
     def test_non_structured_skills_unchanged(self):
-        assert "ec2_translation" not in STRUCTURED_OUTPUT_SKILLS
-        assert "storage_translation" not in STRUCTURED_OUTPUT_SKILLS
-        assert "iam_translation" not in STRUCTURED_OUTPUT_SKILLS
         assert "database_translation" not in STRUCTURED_OUTPUT_SKILLS
-        assert "security_translation" not in STRUCTURED_OUTPUT_SKILLS
-        assert "serverless_translation" not in STRUCTURED_OUTPUT_SKILLS
-        assert "observability_translation" not in STRUCTURED_OUTPUT_SKILLS
 
     def test_all_structured_skills_have_specs(self):
         """Every STRUCTURED_OUTPUT_SKILLS entry has a SKILL_SPECS entry."""
@@ -421,7 +415,7 @@ class TestIsStructuredOutput:
 
     @pytest.mark.parametrize(
         "skill_type",
-        ["ec2_translation", "iam_translation", "storage_translation", "synthesis"],
+        ["synthesis", "database_translation"],
     )
     def test_non_structured_skills_return_false(self, skill_type):
         group = SkillGroup(SKILL_SPECS[skill_type])

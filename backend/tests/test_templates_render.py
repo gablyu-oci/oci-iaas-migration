@@ -215,15 +215,213 @@ VALID_PARAMS = {
             "}"
         ),
     },
+    # ── Phase 4 templates: compute, storage, identity, vault, functions, observability ──
+    "core/instance": {
+        "compartment_id": "var.compartment_id",
+        "availability_domain": "Uocm:US-ASHBURN-AD-1",
+        "display_name": "web-server-1",
+        "shape": "VM.Standard.E5.Flex",
+        "shape_config": {"ocpus": 2.0, "memory_in_gbs": 16.0},
+        "source_details": {
+            "source_type": "image",
+            "source_id": "ocid1.image.oc1..example",
+            "boot_volume_size_in_gbs": 50,
+        },
+        "create_vnic_details": {
+            "subnet_id": "oci_core_subnet.private.id",
+            "assign_public_ip": False,
+        },
+        "metadata": {"ssh_authorized_keys": "ssh-rsa AAAA..."},
+        "aws_source_id": "i-0abc123def456",
+    },
+    "core/instance_configuration": {
+        "compartment_id": "var.compartment_id",
+        "display_name": "web-launch-config",
+        "instance_details": {
+            "instance_type": "compute",
+            "launch_details": {
+                "shape": "VM.Standard.E5.Flex",
+                "shape_config": {"ocpus": 2.0, "memory_in_gbs": 16.0},
+                "source_details": {
+                    "source_type": "image",
+                    "source_id": "ocid1.image.oc1..example",
+                },
+            },
+        },
+        "aws_source_id": "lt-0abc123def456",
+    },
+    "core/instance_pool": {
+        "compartment_id": "var.compartment_id",
+        "display_name": "web-pool",
+        "instance_configuration_id": "oci_core_instance_configuration.web.id",
+        "size": 2,
+        "placement_configurations": [
+            {
+                "availability_domain": "Uocm:US-ASHBURN-AD-1",
+                "primary_subnet_id": "oci_core_subnet.private.id",
+            }
+        ],
+        "aws_source_id": "asg-0abc123def456",
+    },
+    "core/autoscaling_configuration": {
+        "compartment_id": "var.compartment_id",
+        "display_name": "web-autoscaling",
+        "auto_scaling_resources": {
+            "id": "oci_core_instance_pool.web.id",
+            "type": "instancePool",
+        },
+        "cool_down_in_seconds": 300,
+        "is_enabled": True,
+        "policies": [
+            {
+                "display_name": "scale-out-policy",
+                "policy_type": "threshold",
+                "capacity": {"max": 4, "min": 1, "initial": 2},
+                "rules": [
+                    {
+                        "display_name": "scale-out-rule",
+                        "action": {"type": "CHANGE_COUNT_BY", "value": 1},
+                        "metric": {
+                            "metric_type": "CPU_UTILIZATION",
+                            "threshold": {"operator": "GT", "value": 80},
+                        },
+                    }
+                ],
+            }
+        ],
+        "aws_source_id": "asg-policy-0abc123",
+    },
+    "core/boot_volume": {
+        "compartment_id": "var.compartment_id",
+        "availability_domain": "Uocm:US-ASHBURN-AD-1",
+        "display_name": "bv-web-server-1",
+        "size_in_gbs": 100,
+        "vpus_per_gb": 10,
+        "aws_source_id": "vol-0abc123def456",
+    },
+    "core/block_volume": {
+        "compartment_id": "var.compartment_id",
+        "availability_domain": "Uocm:US-ASHBURN-AD-1",
+        "display_name": "data-vol-1",
+        "size_in_gbs": 200,
+        "vpus_per_gb": 20,
+        "aws_source_id": "vol-0abc123def456",
+    },
+    "core/block_volume_attachment": {
+        "instance_id": "oci_core_instance.web.id",
+        "volume_id": "oci_core_volume.data.id",
+        "attachment_type": "paravirtualized",
+        "display_name": "data-attach",
+        "is_read_only": False,
+        "is_shareable": False,
+        "device": "/dev/oracleoci/oraclevdb",
+        "aws_source_id": "vol-attach-0abc123",
+    },
+    "identity/dynamic_group": {
+        "compartment_id": "var.tenancy_ocid",
+        "name": "migration-instance-dg",
+        "description": "Dynamic group for migrated instances",
+        "matching_rule": "ALL {instance.compartment.id = 'ocid1.compartment.oc1..example'}",
+        "aws_source_id": "arn:aws:iam::123456789012:role/my-role",
+    },
+    "identity/group": {
+        "compartment_id": "var.tenancy_ocid",
+        "name": "migration-admins",
+        "description": "Group for migration administrators",
+        "aws_source_id": "arn:aws:iam::123456789012:group/admins",
+    },
+    "identity/policy": {
+        "compartment_id": "var.tenancy_ocid",
+        "name": "migration-admin-policy",
+        "description": "Policy granting admin access to migrated resources",
+        "statements": [
+            "Allow group admins to manage all-resources in compartment migration"
+        ],
+        "aws_source_id": "arn:aws:iam::123456789012:policy/my-policy",
+    },
+    "identity/user": {
+        "compartment_id": "var.tenancy_ocid",
+        "name": "migration-svc-user",
+        "description": "Service user for migration workloads",
+        "email": "svc-user@example.com",
+        "aws_source_id": "arn:aws:iam::123456789012:user/svc-user",
+    },
+    "vault/vault": {
+        "compartment_id": "var.compartment_id",
+        "display_name": "migration-vault",
+        "vault_type": "DEFAULT",
+        "aws_source_id": "arn:aws:kms:us-east-1:123456789012:key/abc-def",
+    },
+    "vault/key": {
+        "compartment_id": "var.compartment_id",
+        "display_name": "migration-key",
+        "key_shape": {"algorithm": "AES", "length": 32},
+        "management_endpoint": "oci_kms_vault.main.management_endpoint",
+        "protection_mode": "SOFTWARE",
+        "aws_source_id": "arn:aws:kms:us-east-1:123456789012:key/abc-def",
+    },
+    "vault/secret": {
+        "compartment_id": "var.compartment_id",
+        "vault_id": "oci_kms_vault.main.id",
+        "key_id": "oci_kms_key.main.id",
+        "secret_name": "db-password",
+        "description": "Database password migrated from AWS Secrets Manager",
+        "secret_content": {"content": "cGxhY2Vob2xkZXI=", "content_type": "BASE64"},
+        "aws_source_id": "arn:aws:secretsmanager:us-east-1:123456789012:secret:db-password",
+    },
+    "functions/application": {
+        "compartment_id": "var.compartment_id",
+        "display_name": "migration-fn-app",
+        "subnet_ids": ["oci_core_subnet.private.id"],
+        "config": {"ENV": "production"},
+        "aws_source_id": "arn:aws:lambda:us-east-1:123456789012:function:my-function",
+    },
+    "functions/function": {
+        "application_id": "oci_functions_application.main.id",
+        "display_name": "my-function",
+        "image": "iad.ocir.io/namespace/repo:latest",
+        "memory_in_mbs": 256,
+        "timeout_in_seconds": 30,
+        "aws_source_id": "arn:aws:lambda:us-east-1:123456789012:function:my-function",
+    },
+    "observability/log_group": {
+        "compartment_id": "var.compartment_id",
+        "display_name": "migration-log-group",
+        "description": "Log group for migrated workloads",
+        "aws_source_id": "arn:aws:logs:us-east-1:123456789012:log-group:/aws/my-app",
+    },
+    "observability/log": {
+        "log_group_id": "oci_logging_log_group.main.id",
+        "display_name": "migration-app-log",
+        "log_type": "CUSTOM",
+        "is_enabled": True,
+        "retention_duration": 30,
+        "aws_source_id": "arn:aws:logs:us-east-1:123456789012:log-group:/aws/my-app:log-stream:stream1",
+    },
+    "observability/metric_alarm": {
+        "compartment_id": "var.compartment_id",
+        "display_name": "high-cpu-alarm",
+        "metric_compartment_id": "var.compartment_id",
+        "namespace": "oci_computeagent",
+        "query": "CpuUtilization[5m].mean() > 80",
+        "severity": "WARNING",
+        "body": "CPU utilization exceeded 80%",
+        "destinations": ["oci_ons_notification_topic.ops.id"],
+        "is_enabled": True,
+        "pending_duration": "PT5M",
+        "aws_source_id": "arn:aws:cloudwatch:us-east-1:123456789012:alarm:high-cpu",
+    },
 }
 
 
 class TestTemplateRegistry:
-    """Verify all 23 templates are registered and have valid schemas."""
+    """Verify all templates are registered and have valid schemas."""
 
-    def test_registry_has_23_templates(self):
-        assert len(TEMPLATE_REGISTRY) == 23, (
-            f"Expected 23 templates, got {len(TEMPLATE_REGISTRY)}. "
+    def test_registry_has_all_templates(self):
+        # Phase 1 added 23, Phase 4 added 19 more. Use >= so adding more
+        # templates later doesn't break this count check.
+        assert len(TEMPLATE_REGISTRY) >= 42, (
+            f"Expected at least 42 templates, got {len(TEMPLATE_REGISTRY)}. "
             f"Keys: {sorted(TEMPLATE_REGISTRY.keys())}"
         )
 

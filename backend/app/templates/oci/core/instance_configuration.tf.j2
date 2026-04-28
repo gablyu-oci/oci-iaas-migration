@@ -1,0 +1,62 @@
+# Adapted from compute.py InstanceConfigurationParams schema
+# aws_source_id = {{ aws_source_id }}
+resource "oci_core_instance_configuration" "{{ label }}" {
+  compartment_id = {{ compartment_id }}
+  display_name   = "{{ display_name }}"
+
+  instance_details {
+    instance_type = "{{ instance_details.instance_type }}"
+
+    launch_details {
+      shape = "{{ instance_details.launch_details.shape }}"
+
+{% if instance_details.launch_details.shape_config is defined and instance_details.launch_details.shape_config %}
+      shape_config {
+        ocpus         = {{ instance_details.launch_details.shape_config.ocpus }}
+        memory_in_gbs = {{ instance_details.launch_details.shape_config.memory_in_gbs }}
+      }
+{% endif %}
+
+{% if instance_details.launch_details.source_details is defined and instance_details.launch_details.source_details %}
+      source_details {
+        source_type = "{{ instance_details.launch_details.source_details.source_type }}"
+        source_id   = {{ instance_details.launch_details.source_details.source_id }}
+{% if instance_details.launch_details.source_details.boot_volume_size_in_gbs is defined and instance_details.launch_details.source_details.boot_volume_size_in_gbs %}
+        boot_volume_size_in_gbs = {{ instance_details.launch_details.source_details.boot_volume_size_in_gbs }}
+{% endif %}
+      }
+{% endif %}
+
+{% if instance_details.launch_details.create_vnic_details is defined and instance_details.launch_details.create_vnic_details %}
+      create_vnic_details {
+        subnet_id = {{ instance_details.launch_details.create_vnic_details.subnet_id }}
+{% if instance_details.launch_details.create_vnic_details.assign_public_ip is defined and instance_details.launch_details.create_vnic_details.assign_public_ip is not none %}
+        assign_public_ip = {{ instance_details.launch_details.create_vnic_details.assign_public_ip | lower }}
+{% endif %}
+{% if instance_details.launch_details.create_vnic_details.nsg_ids is defined and instance_details.launch_details.create_vnic_details.nsg_ids %}
+        nsg_ids = [{{ instance_details.launch_details.create_vnic_details.nsg_ids | join(', ') }}]
+{% endif %}
+{% if instance_details.launch_details.create_vnic_details.display_name is defined and instance_details.launch_details.create_vnic_details.display_name %}
+        display_name = "{{ instance_details.launch_details.create_vnic_details.display_name }}"
+{% endif %}
+      }
+{% endif %}
+
+{% if instance_details.launch_details.metadata is defined and instance_details.launch_details.metadata %}
+      metadata = {
+{% for key, value in instance_details.launch_details.metadata.items() %}
+        {{ key }} = "{{ value }}"
+{% endfor %}
+      }
+{% endif %}
+    }
+  }
+
+{% if freeform_tags is defined and freeform_tags %}
+  freeform_tags = {
+{% for key, value in freeform_tags.items() %}
+    {{ key }} = "{{ value }}"
+{% endfor %}
+  }
+{% endif %}
+}

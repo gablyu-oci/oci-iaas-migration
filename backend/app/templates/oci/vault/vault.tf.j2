@@ -1,0 +1,15 @@
+# Adapted from oci-vault-kms/main.tf
+# aws_source_id = {{ aws_source_id }}
+resource "oci_kms_vault" "{{ label }}" {
+  compartment_id = {{ compartment_id }}
+  display_name   = "{{ display_name }}"
+  vault_type     = "{{ vault_type }}"
+
+{% if freeform_tags is defined and freeform_tags %}
+  freeform_tags = {
+{% for key, value in freeform_tags.items() %}
+    {{ key }} = "{{ value }}"
+{% endfor %}
+  }
+{% endif %}
+}

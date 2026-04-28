@@ -1,0 +1,19 @@
+# Adapted from compute.py BlockVolumeParams schema
+# aws_source_id = {{ aws_source_id }}
+resource "oci_core_volume" "{{ label }}" {
+  compartment_id      = {{ compartment_id }}
+  availability_domain = "{{ availability_domain }}"
+  display_name        = "{{ display_name }}"
+  size_in_gbs         = {{ size_in_gbs }}
+{% if vpus_per_gb is defined and vpus_per_gb is not none %}
+  vpus_per_gb         = {{ vpus_per_gb }}
+{% endif %}
+
+{% if freeform_tags is defined and freeform_tags %}
+  freeform_tags = {
+{% for key, value in freeform_tags.items() %}
+    {{ key }} = "{{ value }}"
+{% endfor %}
+  }
+{% endif %}
+}

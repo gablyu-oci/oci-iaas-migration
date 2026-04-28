@@ -28,6 +28,10 @@ _DOMAIN_TO_FILE: dict[str, str] = {
     "core": "network.tf",
     "load_balancer": "loadbalancer.tf",
     "cloud_migrations": "ocm/main.tf",
+    "identity": "iam.tf",
+    "vault": "security.tf",
+    "functions": "serverless.tf",
+    "observability": "observability.tf",
 }
 
 # Fallback file if domain isn't recognized

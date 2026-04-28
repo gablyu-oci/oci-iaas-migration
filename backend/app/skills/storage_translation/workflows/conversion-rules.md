@@ -49,3 +49,33 @@ For `unknown` or unmapped, default to `10` and flag as MEDIUM.
 ## Tags
 
 - Copy every AWS tag to `freeform_tags`.
+
+## Structured Output Format (Phase 4)
+
+This skill uses **structured JSON output** instead of free-form HCL.
+
+Your output MUST be a JSON array of resource specs:
+
+```json
+[
+  {
+    "template": "<domain/resource_type>",
+    "label": "<terraform_resource_label>",
+    "params": { ... matches the template's Pydantic schema ... }
+  }
+]
+```
+
+### Available Templates
+
+- `core/block_volume` -- block volume (data volumes only; root volumes are handled by ec2_translation)
+- `core/block_volume_attachment` -- attachment linking a block volume to a compute instance
+
+For resources not covered by any template, use the `free_form_hcl` fallback:
+```json
+{"template": "free_form_hcl", "label": "<label>", "params": {"hcl": "<raw HCL string>"}}
+```
+
+### Traceability
+
+Every spec's `params` MUST include `aws_source_id` with the original AWS resource identifier. Include `freeform_tags` with `aws_source_id` and `managed_by = "oci-iaas-migration"` where the OCI resource supports tags.
