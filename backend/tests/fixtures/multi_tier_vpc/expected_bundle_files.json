@@ -1,0 +1,6 @@
+[
+  "network.tf",
+  "loadbalancer.tf",
+  "variables.tf",
+  "providers.tf"
+]

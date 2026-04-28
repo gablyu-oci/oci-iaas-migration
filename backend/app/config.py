@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     LLM_REVIEWER_MODEL: str = "oci/openai.gpt-5.4-mini"
     LLM_ORCHESTRATOR_MODEL: str = "oci/openai.gpt-5.4"
 
+    # Optional per-path overrides. Empty string → falls back to LLM_WRITER_MODEL.
+    # Templated skills emit small JSON via structured output and can use a
+    # fast non-reasoning model. Free-form skills (cfn_terraform) generate
+    # raw HCL and benefit from a reasoning-capable model.
+    LLM_TEMPLATED_WRITER_MODEL: str = ""  # empty → falls back to LLM_WRITER_MODEL
+    LLM_FREEFORM_WRITER_MODEL: str = ""   # empty → falls back to LLM_WRITER_MODEL
+
     SYNTHESIS_POLISH_ENABLED: bool = True
     SYNTHESIS_VALIDATE_AND_REPAIR: bool = True
 

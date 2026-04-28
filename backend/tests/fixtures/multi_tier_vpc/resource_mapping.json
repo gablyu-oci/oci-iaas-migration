@@ -1,0 +1,14 @@
+{
+  "resources": [
+    {"aws_type": "AWS::EC2::VPC", "aws_id": "vpc-abc123", "name": "main-vpc", "raw_config": {"vpc_id": "vpc-abc123", "cidr_block": "10.0.0.0/16", "name": "main-vpc"}},
+    {"aws_type": "AWS::EC2::Subnet", "aws_id": "subnet-pub1", "name": "public-subnet", "raw_config": {"subnet_id": "subnet-pub1", "cidr_block": "10.0.1.0/24", "availability_zone": "us-east-1a", "map_public_ip_on_launch": true}},
+    {"aws_type": "AWS::EC2::Subnet", "aws_id": "subnet-priv1", "name": "private-subnet", "raw_config": {"subnet_id": "subnet-priv1", "cidr_block": "10.0.2.0/24", "availability_zone": "us-east-1b", "map_public_ip_on_launch": false}},
+    {"aws_type": "AWS::EC2::InternetGateway", "aws_id": "igw-001", "name": "main-igw", "raw_config": {"internet_gateway_id": "igw-001"}},
+    {"aws_type": "AWS::EC2::NatGateway", "aws_id": "nat-001", "name": "main-nat", "raw_config": {"nat_gateway_id": "nat-001", "subnet_id": "subnet-pub1"}},
+    {"aws_type": "AWS::EC2::SecurityGroup", "aws_id": "sg-web", "name": "web-sg", "raw_config": {"group_id": "sg-web", "group_name": "web-sg", "ingress": [{"protocol": "tcp", "from_port": 80, "to_port": 80, "cidr_blocks": ["0.0.0.0/0"]}, {"protocol": "tcp", "from_port": 443, "to_port": 443, "cidr_blocks": ["0.0.0.0/0"]}], "egress": [{"protocol": "-1", "from_port": 0, "to_port": 0, "cidr_blocks": ["0.0.0.0/0"]}]}},
+    {"aws_type": "AWS::EC2::SecurityGroup", "aws_id": "sg-app", "name": "app-sg", "raw_config": {"group_id": "sg-app", "group_name": "app-sg", "ingress": [{"protocol": "tcp", "from_port": 8080, "to_port": 8080, "source_security_group_id": "sg-web"}], "egress": [{"protocol": "-1", "from_port": 0, "to_port": 0, "cidr_blocks": ["0.0.0.0/0"]}]}},
+    {"aws_type": "AWS::EC2::Instance", "aws_id": "i-web01", "name": "web-server-1", "raw_config": {"instance_id": "i-web01", "instance_type": "t3.medium", "ami": "ami-12345", "subnet_id": "subnet-pub1", "security_groups": ["sg-web"]}},
+    {"aws_type": "AWS::EC2::Instance", "aws_id": "i-app01", "name": "app-server-1", "raw_config": {"instance_id": "i-app01", "instance_type": "t3.large", "ami": "ami-67890", "subnet_id": "subnet-priv1", "security_groups": ["sg-app"]}},
+    {"aws_type": "AWS::ElasticLoadBalancingV2::LoadBalancer", "aws_id": "arn:aws:elasticloadbalancing:us-east-1:123456789:loadbalancer/app/web-lb/abc", "name": "web-lb", "raw_config": {"load_balancer_arn": "arn:aws:elasticloadbalancing:us-east-1:123456789:loadbalancer/app/web-lb/abc", "dns_name": "web-lb-123.us-east-1.elb.amazonaws.com", "scheme": "internet-facing", "type": "application"}}
+  ]
+}

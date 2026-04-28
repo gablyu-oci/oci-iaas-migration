@@ -1,0 +1,257 @@
+{
+  "network_translation": [
+    {
+      "template": "core/vcn",
+      "label": "main",
+      "params": {
+        "compartment_id": "var.compartment_id",
+        "cidr_blocks": ["10.0.0.0/16"],
+        "display_name": "main-vpc",
+        "dns_label": "mainvpc",
+        "aws_source_id": "vpc-abc123"
+      }
+    },
+    {
+      "template": "core/subnet",
+      "label": "public",
+      "params": {
+        "compartment_id": "var.compartment_id",
+        "vcn_id": "oci_core_vcn.main.id",
+        "cidr_block": "10.0.1.0/24",
+        "display_name": "public-subnet",
+        "dns_label": "pubsub",
+        "prohibit_public_ip_on_vnic": false,
+        "route_table_id": "oci_core_route_table.public.id",
+        "security_list_ids": ["oci_core_security_list.web.id"],
+        "aws_source_id": "subnet-pub1"
+      }
+    },
+    {
+      "template": "core/subnet",
+      "label": "private",
+      "params": {
+        "compartment_id": "var.compartment_id",
+        "vcn_id": "oci_core_vcn.main.id",
+        "cidr_block": "10.0.2.0/24",
+        "display_name": "private-subnet",
+        "dns_label": "privsub",
+        "prohibit_public_ip_on_vnic": true,
+        "route_table_id": "oci_core_route_table.private.id",
+        "security_list_ids": ["oci_core_security_list.app.id"],
+        "aws_source_id": "subnet-priv1"
+      }
+    },
+    {
+      "template": "core/internet_gateway",
+      "label": "main",
+      "params": {
+        "compartment_id": "var.compartment_id",
+        "vcn_id": "oci_core_vcn.main.id",
+        "display_name": "main-igw",
+        "enabled": true,
+        "aws_source_id": "igw-001"
+      }
+    },
+    {
+      "template": "core/nat_gateway",
+      "label": "main",
+      "params": {
+        "compartment_id": "var.compartment_id",
+        "vcn_id": "oci_core_vcn.main.id",
+        "display_name": "main-nat",
+        "block_traffic": false,
+        "aws_source_id": "nat-001"
+      }
+    },
+    {
+      "template": "core/route_table",
+      "label": "public",
+      "params": {
+        "compartment_id": "var.compartment_id",
+        "vcn_id": "oci_core_vcn.main.id",
+        "display_name": "rt-public",
+        "route_rules": [
+          {
+            "destination": "0.0.0.0/0",
+            "destination_type": "CIDR_BLOCK",
+            "network_entity_id": "oci_core_internet_gateway.main.id",
+            "description": "Default route to IGW"
+          }
+        ],
+        "aws_source_id": "rtb-pub1"
+      }
+    },
+    {
+      "template": "core/route_table",
+      "label": "private",
+      "params": {
+        "compartment_id": "var.compartment_id",
+        "vcn_id": "oci_core_vcn.main.id",
+        "display_name": "rt-private",
+        "route_rules": [
+          {
+            "destination": "0.0.0.0/0",
+            "destination_type": "CIDR_BLOCK",
+            "network_entity_id": "oci_core_nat_gateway.main.id",
+            "description": "Default route to NAT GW"
+          }
+        ],
+        "aws_source_id": "rtb-priv1"
+      }
+    },
+    {
+      "template": "core/security_list",
+      "label": "web",
+      "params": {
+        "compartment_id": "var.compartment_id",
+        "vcn_id": "oci_core_vcn.main.id",
+        "display_name": "sl-web",
+        "ingress_security_rules": [
+          {
+            "protocol": "6",
+            "source": "0.0.0.0/0",
+            "source_type": "CIDR_BLOCK",
+            "stateless": false,
+            "tcp_options": {"min": 80, "max": 80}
+          },
+          {
+            "protocol": "6",
+            "source": "0.0.0.0/0",
+            "source_type": "CIDR_BLOCK",
+            "stateless": false,
+            "tcp_options": {"min": 443, "max": 443}
+          }
+        ],
+        "egress_security_rules": [
+          {
+            "protocol": "all",
+            "destination": "0.0.0.0/0",
+            "destination_type": "CIDR_BLOCK",
+            "stateless": false
+          }
+        ],
+        "aws_source_id": "sg-web"
+      }
+    },
+    {
+      "template": "core/security_list",
+      "label": "app",
+      "params": {
+        "compartment_id": "var.compartment_id",
+        "vcn_id": "oci_core_vcn.main.id",
+        "display_name": "sl-app",
+        "ingress_security_rules": [
+          {
+            "protocol": "6",
+            "source": "10.0.1.0/24",
+            "source_type": "CIDR_BLOCK",
+            "stateless": false,
+            "tcp_options": {"min": 8080, "max": 8080}
+          }
+        ],
+        "egress_security_rules": [
+          {
+            "protocol": "all",
+            "destination": "0.0.0.0/0",
+            "destination_type": "CIDR_BLOCK",
+            "stateless": false
+          }
+        ],
+        "aws_source_id": "sg-app"
+      }
+    }
+  ],
+  "ec2_translation": [
+    {
+      "template": "core/instance",
+      "label": "web_server_1",
+      "params": {
+        "compartment_id": "var.compartment_id",
+        "availability_domain": "Uocm:US-ASHBURN-AD-1",
+        "display_name": "web-server-1",
+        "shape": "VM.Standard.E5.Flex",
+        "shape_config": {"ocpus": 2.0, "memory_in_gbs": 16.0},
+        "source_details": {
+          "source_type": "image",
+          "source_id": "ocid1.image.oc1..placeholder",
+          "boot_volume_size_in_gbs": 50
+        },
+        "create_vnic_details": {
+          "subnet_id": "oci_core_subnet.public.id",
+          "assign_public_ip": true
+        },
+        "aws_source_id": "i-web01"
+      }
+    },
+    {
+      "template": "core/instance",
+      "label": "app_server_1",
+      "params": {
+        "compartment_id": "var.compartment_id",
+        "availability_domain": "Uocm:US-ASHBURN-AD-2",
+        "display_name": "app-server-1",
+        "shape": "VM.Standard.E5.Flex",
+        "shape_config": {"ocpus": 4.0, "memory_in_gbs": 32.0},
+        "source_details": {
+          "source_type": "image",
+          "source_id": "ocid1.image.oc1..placeholder",
+          "boot_volume_size_in_gbs": 50
+        },
+        "create_vnic_details": {
+          "subnet_id": "oci_core_subnet.private.id",
+          "assign_public_ip": false
+        },
+        "aws_source_id": "i-app01"
+      }
+    }
+  ],
+  "loadbalancer_translation": [
+    {
+      "template": "load_balancer/load_balancer",
+      "label": "web",
+      "params": {
+        "compartment_id": "var.compartment_id",
+        "display_name": "web-lb",
+        "shape": "flexible",
+        "is_private": false,
+        "shape_details": {
+          "minimum_bandwidth_in_mbps": 10,
+          "maximum_bandwidth_in_mbps": 100
+        },
+        "subnet_ids": ["oci_core_subnet.public.id"],
+        "aws_source_id": "arn:aws:elasticloadbalancing:us-east-1:123456789:loadbalancer/app/web-lb/abc"
+      }
+    },
+    {
+      "template": "load_balancer/backend_set",
+      "label": "web",
+      "params": {
+        "load_balancer_id": "oci_load_balancer_load_balancer.web.id",
+        "name": "bs-web",
+        "policy": "ROUND_ROBIN",
+        "health_checker": {
+          "protocol": "HTTP",
+          "port": 80,
+          "url_path": "/health",
+          "interval_ms": 10000,
+          "timeout_in_millis": 3000,
+          "retries": 3,
+          "return_code": 200
+        },
+        "aws_source_id": "arn:aws:elasticloadbalancing:us-east-1:123456789:targetgroup/web-tg/def"
+      }
+    },
+    {
+      "template": "load_balancer/listener",
+      "label": "http",
+      "params": {
+        "load_balancer_id": "oci_load_balancer_load_balancer.web.id",
+        "name": "listener-http",
+        "default_backend_set_name": "bs-web",
+        "port": 80,
+        "protocol": "HTTP",
+        "aws_source_id": "arn:aws:elasticloadbalancing:us-east-1:123456789:listener/app/web-lb/abc/listener1"
+      }
+    }
+  ]
+}

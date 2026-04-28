@@ -66,6 +66,15 @@ _SKILL_TO_CONCERN: dict[str, str] = {
     "observability_translation":"observability.tf",
 }
 
+# Pinned provider versions. The upper bound prevents silent breakage when
+# the provider ships a new major version with backwards-incompatible changes.
+CANONICAL_PROVIDERS: dict[str, dict[str, str]] = {
+    "oci": {
+        "source": "oracle/oci",
+        "version": ">= 6.0.0, < 7.0.0",
+    },
+}
+
 # Canonical root variables that every synthesized Terraform module needs.
 # Provider auth vars are referenced in providers.tf; OCM module vars are
 # referenced in the ocm sub-module but must be declared at the root so
@@ -484,7 +493,12 @@ def _render_file(header_comment: str, blocks: list[HclBlock]) -> str:
 
 def _render_providers_tf(migration_name: str) -> str:
     """One clean provider block + required_providers. Individual skills'
-    provider blocks were dropped in the merge; this replaces them."""
+    provider blocks were dropped in the merge; this replaces them.
+
+    Uses ``CANONICAL_PROVIDERS`` for source and version so there is a single
+    place to update the pinned constraint (both lower *and* upper bound).
+    """
+    oci = CANONICAL_PROVIDERS["oci"]
     return (
         f'# Generated for "{migration_name}".\n'
         "# Single canonical oci provider + required_providers block for the module.\n"
@@ -493,8 +507,8 @@ def _render_providers_tf(migration_name: str) -> str:
         "  required_version = \">= 1.5\"\n"
         "  required_providers {\n"
         "    oci = {\n"
-        "      source  = \"oracle/oci\"\n"
-        "      version = \">= 6.0.0\"\n"
+        f'      source  = "{oci["source"]}"\n'
+        f'      version = "{oci["version"]}"\n'
         "    }\n"
         "  }\n"
         "}\n"

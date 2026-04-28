@@ -4,13 +4,21 @@ This module is the **single source of truth** for model selection. Every
 orchestrator and service that picks a model should call ``get_model(
 skill_type, agent_type)`` rather than hardcode a model ID.
 
-Model identities live in only three places:
+Model identities live in five places:
 
-    app.config.settings.LLM_WRITER_MODEL        # writer/enhancement/fix/runbook
-    app.config.settings.LLM_REVIEWER_MODEL      # review/classifier/anomalies
-    app.config.settings.LLM_ORCHESTRATOR_MODEL  # top-level orchestrator planning
+    app.config.settings.LLM_WRITER_MODEL              # default writer
+    app.config.settings.LLM_REVIEWER_MODEL            # review/classifier/anomalies
+    app.config.settings.LLM_ORCHESTRATOR_MODEL        # top-level orchestrator planning
+    app.config.settings.LLM_TEMPLATED_WRITER_MODEL    # templated (structured-output) skills
+    app.config.settings.LLM_FREEFORM_WRITER_MODEL     # free-form HCL generation skills
 
-``MODEL_ROUTING`` below binds each (skill, agent) pair to one of those three
+Templated skills (the 9 STRUCTURED_OUTPUT_SKILLS) emit small JSON payloads
+that the template renderer converts to HCL. They don't need reasoning and
+can run on a fast, cheap model. Free-form skills (cfn_terraform) generate
+raw HCL directly and benefit from a reasoning-capable model. Both fall back
+to ``LLM_WRITER_MODEL`` when no override is configured.
+
+``MODEL_ROUTING`` below binds each (skill, agent) pair to one of those
 roles. Change the env var (or override ``MODEL_ROUTING[...]`` at runtime)
 and every call site picks up the new model on next ``get_model`` invocation.
 """
@@ -33,34 +41,52 @@ def _orchestrator() -> str:
     return settings.LLM_ORCHESTRATOR_MODEL
 
 
+def _templated_writer() -> str:
+    """Fast non-reasoning model for templated skills (small JSON output)."""
+    return settings.LLM_TEMPLATED_WRITER_MODEL or settings.LLM_WRITER_MODEL
+
+
+def _freeform_writer() -> str:
+    """Reasoning model for free-form HCL generation (cfn_terraform)."""
+    return settings.LLM_FREEFORM_WRITER_MODEL or settings.LLM_WRITER_MODEL
+
+
 # skill_type -> agent_type -> role resolver.
 # Using callables (instead of materialized strings) so that changing the
 # settings values at runtime — e.g. in a test — is picked up immediately.
+#
+# Routing rationale:
+#   _templated_writer  — for STRUCTURED_OUTPUT_SKILLS that emit small JSON
+#                        (network, ec2, storage, loadbalancer, iam, security,
+#                        serverless, observability, ocm_handoff). These
+#                        don't need reasoning; a fast model reduces latency.
+#   _freeform_writer   — for cfn_terraform which generates raw HCL and
+#                        benefits from reasoning capability.
+#   _writer            — fallback / non-skill services.
+#   _reviewer          — review/scoring agents (always non-reasoning).
+#   _orchestrator      — top-level planning + dispatch.
 MODEL_ROUTING: dict[str, dict[str, object]] = {
+    # ── Free-form skill (raw HCL generation) ──────────────────────────
     "cfn_terraform": {
-        "enhancement": _writer,
+        "enhancement": _freeform_writer,
         "review": _reviewer,
-        "fix": _writer,
+        "fix": _freeform_writer,
     },
-    "iam_translation": {
-        "enhancement": _writer,
-        "review": _reviewer,
-        "fix": _writer,
-    },
-    "dependency_discovery": {
-        "runbook": _writer,
-        "anomalies": _reviewer,
-        "review": _reviewer,
-    },
+    # ── Templated / structured-output skills ──────────────────────────
     "network_translation": {
-        "enhancement": _writer,
+        "enhancement": _templated_writer,
         "review": _reviewer,
-        "fix": _writer,
+        "fix": _templated_writer,
     },
     "ec2_translation": {
-        "enhancement": _writer,
+        "enhancement": _templated_writer,
         "review": _reviewer,
-        "fix": _writer,
+        "fix": _templated_writer,
+    },
+    "storage_translation": {
+        "enhancement": _templated_writer,
+        "review": _reviewer,
+        "fix": _templated_writer,
     },
     "database_translation": {
         "enhancement": _writer,
@@ -68,14 +94,46 @@ MODEL_ROUTING: dict[str, dict[str, object]] = {
         "fix": _writer,
     },
     "loadbalancer_translation": {
-        "enhancement": _writer,
+        "enhancement": _templated_writer,
         "review": _reviewer,
-        "fix": _writer,
+        "fix": _templated_writer,
     },
-    "storage_translation": {
-        "enhancement": _writer,
+    "iam_translation": {
+        "enhancement": _templated_writer,
         "review": _reviewer,
-        "fix": _writer,
+        "fix": _templated_writer,
+    },
+    "security_translation": {
+        "enhancement": _templated_writer,
+        "review": _reviewer,
+        "fix": _templated_writer,
+    },
+    "serverless_translation": {
+        "enhancement": _templated_writer,
+        "review": _reviewer,
+        "fix": _templated_writer,
+    },
+    "observability_translation": {
+        "enhancement": _templated_writer,
+        "review": _reviewer,
+        "fix": _templated_writer,
+    },
+    "ocm_handoff_translation": {
+        "enhancement": _templated_writer,
+        "review": _reviewer,
+        "fix": _templated_writer,
+    },
+    # ── Non-templated planning skills ─────────────────────────────────
+    "data_migration_planning": {
+        "enhancement": _templated_writer,
+        "review": _reviewer,
+        "fix": _templated_writer,
+    },
+    # ── Other skills (keep on default _writer) ────────────────────────
+    "dependency_discovery": {
+        "runbook": _writer,
+        "anomalies": _reviewer,
+        "review": _reviewer,
     },
     "synthesis": {
         "enhancement": _writer,
@@ -85,11 +143,6 @@ MODEL_ROUTING: dict[str, dict[str, object]] = {
     "workload_planning": {
         "review": _reviewer,
         "enhancement": _writer,
-    },
-    "data_migration_planning": {
-        "enhancement": _writer,
-        "review": _reviewer,
-        "fix": _writer,
     },
     # Top-level orchestrator — separate model role because it does
     # multi-step planning + tool coordination, not drafting or reviewing.
