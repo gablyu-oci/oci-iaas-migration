@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select, delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -608,22 +608,169 @@ def _usage_summary(rc: dict) -> dict | None:
     }
 
 
-@router.get("/app-groups/{app_group_id}/resource-mapping")
-async def get_resource_mapping(
-    app_group_id: str,
-    tenant: Tenant = Depends(get_current_tenant),
-    db: AsyncSession = Depends(get_db),
-):
-    """Compute AWS → OCI resource mapping for an app group.
+def _mapping_inputs_fingerprint(
+    resource_dicts: list[dict],
+    ra_map: dict,
+    assessment_id: uuid.UUID,
+) -> str:
+    """Stable hash of the inputs that drive the LLM review.
 
-    Returns a deterministic mapping enriched by LLM review.
+    When the fingerprint matches the cached one, the cached review is
+    still valid and we can skip the LLM call entirely. Inputs that
+    matter: which resources are members, their aws_types, and each
+    resource's selected mapping type / recommended shape (those drive
+    the review's per-row notes).
     """
+    import hashlib
+    import json
+
+    parts = sorted(
+        (r["id"], r.get("aws_type", ""))
+        for r in resource_dicts
+    )
+    ra_parts = sorted(
+        (
+            rid,
+            (m or {}).get("selected_mapping_type"),
+            (m or {}).get("recommended_oci_shape"),
+        )
+        for rid, m in ra_map.items()
+    )
+    payload = json.dumps(
+        {"a": str(assessment_id), "r": parts, "ra": ra_parts},
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+async def _refresh_mapping_review(
+    app_group_id: uuid.UUID,
+    fingerprint: str,
+) -> None:
+    """Background task: run the LLM review and persist the result.
+
+    Opens its own DB session so the request handler is no longer holding
+    a pool slot while the LLM call runs. Reloads inputs from the DB
+    (rather than trusting captured state) so a slow review can't write
+    stale data over a fresh one — we only persist if the fingerprint we
+    started with still matches what the DB now says.
+    """
+    from app.db.base import async_session
     from app.services.resource_mapper import (
         compute_resource_mapping,
         review_mapping_with_llm,
     )
 
-    # Load app group
+    async with async_session() as db:
+        ag_result = await db.execute(
+            select(AppGroup).where(AppGroup.id == app_group_id)
+        )
+        ag = ag_result.scalar_one_or_none()
+        if not ag:
+            return
+
+        mem_result = await db.execute(
+            select(AppGroupMember).where(AppGroupMember.app_group_id == ag.id)
+        )
+        resource_ids = [m.resource_id for m in mem_result.scalars().all()]
+        if not resource_ids:
+            return
+
+        res_result = await db.execute(
+            select(Resource).where(Resource.id.in_(resource_ids))
+        )
+        resource_dicts = [
+            {
+                "id": str(r.id),
+                "name": r.name,
+                "aws_type": r.aws_type,
+                "raw_config": r.raw_config or {},
+            }
+            for r in res_result.scalars().all()
+        ]
+
+        ra_result = await db.execute(
+            select(ResourceAssessment).where(
+                ResourceAssessment.resource_id.in_(resource_ids),
+                ResourceAssessment.assessment_id == ag.assessment_id,
+            )
+        )
+        ra_map = {}
+        inv_map = {}
+        for ra in ra_result.scalars().all():
+            ra_map[str(ra.resource_id)] = {
+                "recommended_oci_shape": ra.recommended_oci_shape,
+                "recommended_oci_ocpus": ra.recommended_oci_ocpus,
+                "recommended_oci_memory_gb": ra.recommended_oci_memory_gb,
+                "projected_oci_monthly_cost_usd": ra.projected_oci_monthly_cost_usd,
+                "os_compat_status": ra.os_compat_status,
+                "alternative_mappings": ra.alternative_mappings,
+                "selected_mapping_type": ra.selected_mapping_type,
+                "metrics": ra.metrics,
+            }
+            if ra.software_inventory:
+                inv_map[str(ra.resource_id)] = ra.software_inventory
+
+        current_fp = _mapping_inputs_fingerprint(resource_dicts, ra_map, ag.assessment_id)
+        if current_fp != fingerprint:
+            # Inputs changed under us — let the request that triggered the
+            # newer state be the one to schedule the fresh review.
+            return
+
+        ag_name = ag.name
+        # Release the DB session for the duration of the LLM call.
+        await db.close()
+
+        entries = compute_resource_mapping(resource_dicts, ra_map, inv_map)
+
+        try:
+            from app.gateway.model_gateway import get_anthropic_client
+            client = get_anthropic_client()
+            entries = review_mapping_with_llm(entries, ag_name, client)
+            review_payload = [e.to_dict() for e in entries]
+            new_status = "ready"
+        except Exception:
+            logger.warning("Background LLM mapping review failed for app_group=%s", app_group_id, exc_info=True)
+            review_payload = None
+            new_status = "failed"
+
+    # Reopen for the write-back; only persist if no other run has
+    # raced ahead with a different fingerprint in the meantime.
+    async with async_session() as db:
+        ag = (await db.execute(
+            select(AppGroup).where(AppGroup.id == app_group_id)
+        )).scalar_one_or_none()
+        if not ag:
+            return
+        if ag.mapping_review_fingerprint not in (None, fingerprint):
+            return
+        if new_status == "ready":
+            ag.mapping_review = review_payload
+            ag.mapping_reviewed_at = datetime.utcnow()
+        ag.mapping_review_status = new_status
+        ag.mapping_review_fingerprint = fingerprint
+        await db.commit()
+
+
+@router.get("/app-groups/{app_group_id}/resource-mapping")
+async def get_resource_mapping(
+    app_group_id: str,
+    background_tasks: BackgroundTasks,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Compute AWS → OCI resource mapping for an app group.
+
+    Always returns synchronously: the deterministic mapping is computed
+    inline (fast). The LLM review pass is decoupled — if a cached review
+    with a matching input fingerprint exists, those enriched entries are
+    returned; otherwise a background task is scheduled and the
+    deterministic entries are returned. The frontend polls
+    ``/resource-mapping/review-status`` to learn when the cache flips
+    from ``pending`` to ``ready`` and refetches.
+    """
+    from app.services.resource_mapper import compute_resource_mapping
+
     ag_result = await db.execute(
         select(AppGroup).where(
             AppGroup.id == uuid.UUID(app_group_id),
@@ -634,7 +781,6 @@ async def get_resource_mapping(
     if not ag:
         raise HTTPException(status_code=404, detail="App group not found")
 
-    # Load member resources
     mem_result = await db.execute(
         select(AppGroupMember).where(AppGroupMember.app_group_id == ag.id)
     )
@@ -658,7 +804,6 @@ async def get_resource_mapping(
         for r in resources
     ]
 
-    # Load resource assessments for these resources
     ra_result = await db.execute(
         select(ResourceAssessment).where(
             ResourceAssessment.resource_id.in_(resource_ids),
@@ -674,22 +819,64 @@ async def get_resource_mapping(
             "recommended_oci_memory_gb": ra.recommended_oci_memory_gb,
             "projected_oci_monthly_cost_usd": ra.projected_oci_monthly_cost_usd,
             "os_compat_status": ra.os_compat_status,
+            "alternative_mappings": ra.alternative_mappings,
+            "selected_mapping_type": ra.selected_mapping_type,
+            "metrics": ra.metrics,
         }
         if ra.software_inventory:
             inv_map[str(ra.resource_id)] = ra.software_inventory
 
-    # Step 1: Deterministic mapping
+    fingerprint = _mapping_inputs_fingerprint(resource_dicts, ra_map, ag.assessment_id)
+    cached_ok = (
+        ag.mapping_review
+        and ag.mapping_review_status == "ready"
+        and ag.mapping_review_fingerprint == fingerprint
+    )
+
+    if cached_ok:
+        return ag.mapping_review
+
+    # Cache is missing or stale — return deterministic entries now and
+    # kick the LLM review into the background. Mark status pending so
+    # the status endpoint can report it accurately while the task runs.
+    if ag.mapping_review_status != "pending" or ag.mapping_review_fingerprint != fingerprint:
+        ag.mapping_review_status = "pending"
+        ag.mapping_review_fingerprint = fingerprint
+        await db.commit()
+
+    background_tasks.add_task(_refresh_mapping_review, ag.id, fingerprint)
+
     entries = compute_resource_mapping(resource_dicts, ra_map, inv_map)
-
-    # Step 2: LLM review
-    try:
-        from app.gateway.model_gateway import get_anthropic_client
-        client = get_anthropic_client()
-        entries = review_mapping_with_llm(entries, ag.name, client)
-    except Exception:
-        pass  # Fall back to deterministic mapping
-
     return [e.to_dict() for e in entries]
+
+
+@router.get("/app-groups/{app_group_id}/resource-mapping/review-status")
+async def get_resource_mapping_review_status(
+    app_group_id: str,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Tell the UI whether the LLM review for this app group is done.
+
+    Frontend polls this while ``status === 'pending'`` and refetches
+    ``/resource-mapping`` once it flips to ``ready`` or ``failed``.
+    """
+    ag_result = await db.execute(
+        select(AppGroup.mapping_review_status, AppGroup.mapping_reviewed_at, AppGroup.mapping_review_fingerprint)
+        .where(
+            AppGroup.id == uuid.UUID(app_group_id),
+            AppGroup.tenant_id == tenant.id,
+        )
+    )
+    row = ag_result.one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="App group not found")
+    status, reviewed_at, fingerprint = row
+    return {
+        "status": status,  # 'pending' | 'ready' | 'failed' | None
+        "updated_at": reviewed_at.isoformat() if reviewed_at else None,
+        "fingerprint": fingerprint,
+    }
 
 
 @router.get("/assessments/{assessment_id}/tco", response_model=TCOReportOut)
@@ -813,6 +1000,156 @@ async def get_workload_plan_results(
         "skills_ran": plan.get("skills_ran", []),
         "max_iterations": plan.get("max_iterations"),
         "completed_at": plan.get("completed_at"),
+    }
+
+
+class MappingOverride(BaseModel):
+    """A single user selection from the Resource Map UI."""
+    resource_id: str                 # our UUID for the AWS resource
+    selection: str                   # 'direct' or 'rightsized'
+
+
+class ApplyMappingOverridesIn(BaseModel):
+    overrides: list[MappingOverride]
+
+
+@router.post("/app-groups/{app_group_id}/mapping-overrides")
+async def apply_mapping_overrides(
+    app_group_id: str,
+    body: ApplyMappingOverridesIn,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Apply user shape selections from the Plan UI's Resource Map tab.
+
+    Does two things atomically:
+    1. Updates each ``ResourceAssessment`` in the group: flips
+       ``selected_mapping_type`` and copies the chosen alternative's
+       values into the active ``recommended_oci_*`` columns (so future
+       reads — TCO, subsequent plans — see the user's choice).
+    2. Patches the plan bundle's ``.tf`` files in place to reflect the
+       new shapes, using the deterministic HCL patcher. No LLM call.
+    """
+    from sqlalchemy import text
+    import json as _json
+    from app.services.mapping_patcher import apply_overrides as _apply_hcl_overrides
+
+    ag_result = await db.execute(
+        select(AppGroup).where(
+            AppGroup.id == uuid.UUID(app_group_id),
+            AppGroup.tenant_id == tenant.id,
+        )
+    )
+    ag = ag_result.scalar_one_or_none()
+    if not ag:
+        raise HTTPException(status_code=404, detail="App group not found")
+
+    asmt_result = await db.execute(
+        select(Assessment).where(Assessment.id == ag.assessment_id)
+    )
+    asmt = asmt_result.scalar_one_or_none()
+    if not asmt:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+
+    selection_by_rid = {o.resource_id: o.selection for o in body.overrides}
+    if not selection_by_rid:
+        return {"status": "noop", "applied": 0, "warnings": []}
+
+    # ── 1. Update ResourceAssessment rows ─────────────────────────────
+    ra_result = await db.execute(
+        select(ResourceAssessment).where(
+            ResourceAssessment.assessment_id == ag.assessment_id,
+            ResourceAssessment.resource_id.in_([uuid.UUID(r) for r in selection_by_rid]),
+        )
+    )
+    ras = ra_result.scalars().all()
+
+    # Also load the Resource rows so we can grab the AWS InstanceId — that's
+    # what the HCL patcher keys off (the writers emit it as aws_source_id).
+    res_result = await db.execute(
+        select(Resource).where(
+            Resource.id.in_([uuid.UUID(r) for r in selection_by_rid]),
+        )
+    )
+    resource_by_id = {str(r.id): r for r in res_result.scalars().all()}
+
+    hcl_overrides: dict[str, dict] = {}
+    warnings: list[str] = []
+    for ra in ras:
+        rid = str(ra.resource_id)
+        sel = selection_by_rid[rid]
+        alts = ra.alternative_mappings or {}
+        choice = alts.get(sel)
+        if not choice:
+            warnings.append(
+                f"Resource {rid}: no '{sel}' alternative stored — skipped."
+            )
+            continue
+        ra.selected_mapping_type = sel
+        ra.recommended_oci_shape = choice.get("recommended_oci_shape") or ra.recommended_oci_shape
+        if choice.get("ocpus") is not None:
+            ra.recommended_oci_ocpus = float(choice["ocpus"])
+        if choice.get("memory_gb") is not None:
+            ra.recommended_oci_memory_gb = float(choice["memory_gb"])
+        if choice.get("monthly_cost") is not None:
+            ra.projected_oci_monthly_cost_usd = float(choice["monthly_cost"])
+
+        # Build HCL override keyed by the AWS InstanceId the writers tagged.
+        src_res = resource_by_id.get(rid)
+        src_id = None
+        if src_res and src_res.raw_config:
+            src_id = (
+                src_res.raw_config.get("InstanceId")
+                or src_res.raw_config.get("instance_id")
+                or src_res.raw_config.get("DBInstanceIdentifier")
+                or src_res.raw_config.get("VolumeId")
+            )
+        if not src_id:
+            warnings.append(
+                f"Resource {rid}: no AWS source id on raw_config — "
+                "shape changed in DB but .tf file not patched."
+            )
+            continue
+        hcl_overrides[src_id] = {
+            "shape":     choice.get("recommended_oci_shape"),
+            "ocpus":     choice.get("ocpus"),
+            "memory_gb": choice.get("memory_gb"),
+        }
+
+    await db.commit()
+
+    # ── 2. Patch the plan bundle's .tf files ──────────────────────────
+    arts_root = asmt.dependency_artifacts or {}
+    workload_plans = arts_root.get("workload_plans", {})
+    plan = workload_plans.get(ag.name)
+    if not plan:
+        # No plan generated yet — selections saved in DB; nothing to patch.
+        return {
+            "status": "ok",
+            "applied_db": len(ras),
+            "patched_files": 0,
+            "warnings": warnings + ["No plan artifacts found yet; selections saved for next plan run."],
+        }
+
+    bundle = plan.get("artifacts") or {}
+    patch_res = _apply_hcl_overrides(bundle, hcl_overrides)
+    plan["artifacts"] = patch_res.files
+    workload_plans[ag.name] = plan
+    arts_root["workload_plans"] = workload_plans
+
+    await db.execute(
+        text("UPDATE assessments SET dependency_artifacts = :arts WHERE id = :id"),
+        {"arts": _json.dumps(arts_root), "id": str(asmt.id)},
+    )
+    await db.commit()
+
+    return {
+        "status": "ok",
+        "applied_db": len(ras),
+        "applied_hcl": len(patch_res.applied),
+        "patched_files": len({a["file"] for a in patch_res.applied}),
+        "details": patch_res.applied,
+        "warnings": warnings + patch_res.warnings,
     }
 
 

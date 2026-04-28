@@ -569,7 +569,11 @@ function DiscoverStep({
 
 // ── Plan Results Display ─────────────────────────────────────────────────────
 
-function PlanResults({ results }: { results: { resource_mapping?: Array<Record<string, unknown>>; artifacts?: Record<string, string>; skills_ran?: string[] } }) {
+function PlanResults({ results, appGroupId, onRefresh }: {
+  results: { resource_mapping?: Array<Record<string, unknown>>; artifacts?: Record<string, string>; skills_ran?: string[] };
+  appGroupId: string;
+  onRefresh?: () => void;
+}) {
   const [activeTab, setActiveTab] = useState<string>('summary');
   const [showDebug, setShowDebug] = useState(false);
 
@@ -592,7 +596,8 @@ function PlanResults({ results }: { results: { resource_mapping?: Array<Record<s
     if (key === 'manifest.json') { manifestJson = content; continue; }
     const top = key.split('/', 1)[0];
     if (top === 'terraform' || top === 'runbooks' || top === 'reports' || top === 'debug') {
-      bySection[top][key.slice(top.length + 1)] = content;
+      const subKey = key.slice(top.length + 1);
+      bySection[top][subKey] = content;
     } else {
       legacyFallback[key] = content;
     }
@@ -637,6 +642,16 @@ function PlanResults({ results }: { results: { resource_mapping?: Array<Record<s
         </div>
       )}
 
+      {hasTf && Object.keys(bySection.terraform).length > 0 && Object.keys(bySection.terraform).every(k => k.startsWith('ocm/')) && (
+        <div className="rounded-lg px-4 py-3 text-xs font-medium" style={{
+          background: 'var(--color-warning-bg, #fef3cd)',
+          border: '1px solid var(--color-warning-border, #ffc107)',
+          color: 'var(--color-warning-text, #856404)',
+        }}>
+          No primary IaC artifacts in this bundle — every .tf is under the OCM submodule. Re-run plan or check skill failures.
+        </div>
+      )}
+
       {/* Tabs */}
       <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--color-rule)', background: 'var(--color-surface)' }}>
         <div className="flex gap-0 px-2 pt-2" style={{ borderBottom: '1px solid var(--color-rule)' }}>
@@ -669,7 +684,7 @@ function PlanResults({ results }: { results: { resource_mapping?: Array<Record<s
             </div>
           )}
           {currentTab === 'mapping' && (
-            <PlanMappingTable mapping={mapping} />
+            <PlanMappingTable mapping={mapping} appGroupId={appGroupId} onApplied={onRefresh} />
           )}
           {currentTab === 'terraform' && (
             <ArtifactList artifacts={bySection.terraform} showDownloadAll downloadPrefix="terraform" />
@@ -718,14 +733,155 @@ function PlanResults({ results }: { results: { resource_mapping?: Array<Record<s
   );
 }
 
-function PlanMappingTable({ mapping }: { mapping: Array<Record<string, unknown>> }) {
+type MappingAlt = {
+  recommended_oci_shape?: string;
+  ocpus?: number;
+  memory_gb?: number;
+  monthly_cost?: number;
+  notes?: string[];
+};
+
+function PlanMappingTable({ mapping: frozenMapping, appGroupId, onApplied }: {
+  mapping: Array<Record<string, unknown>>;
+  appGroupId: string;
+  onApplied?: () => void;
+}) {
   const [detailIdx, setDetailIdx] = useState<number | null>(null);
+  // Fetch fresh mapping (with alternatives + per-row selections from the
+  // live assessment state) from the API. Fall back to the plan's frozen
+  // snapshot if the fetch fails — old snapshots lack the ``alternatives``
+  // field and that's where the UI radios come from.
+  const [liveMapping, setLiveMapping] = useState<Array<Record<string, unknown>> | null>(null);
+  useEffect(() => {
+    if (!appGroupId) return;
+    client.get(`/api/app-groups/${appGroupId}/resource-mapping`)
+      .then(res => setLiveMapping(Array.isArray(res.data) ? res.data : null))
+      .catch(() => setLiveMapping(null));
+  }, [appGroupId]);
+  const mapping = liveMapping ?? frozenMapping;
+  // Per-row user selection. Initialized from the server's selected_mapping_type
+  // (which is 'rightsized' by default). Only rows with both alternatives are
+  // editable; everything else is frozen at whatever the plan produced.
+  const [selections, setSelections] = useState<Record<string, 'direct' | 'rightsized'>>({});
+  useEffect(() => {
+    const out: Record<string, 'direct' | 'rightsized'> = {};
+    for (const m of mapping) {
+      const rid = String(m.aws_resource_id || '');
+      const sel = m.selected_mapping_type as 'direct' | 'rightsized' | undefined;
+      if (rid && sel) out[rid] = sel;
+    }
+    setSelections(out);
+  }, [mapping]);
+  const [applying, setApplying] = useState(false);
+  const [applyError, setApplyError] = useState<string | null>(null);
+  const [applyNote, setApplyNote] = useState<string | null>(null);
+
   if (mapping.length === 0) return <p className="text-xs" style={{ color: 'var(--color-text-dim)' }}>No mapping data</p>;
+
+  // ── Cost math: uses each row's current effective OCI cost (alternative
+  // cost when the user picked one, otherwise the frozen oci_monthly_cost).
+  const ociCostFor = (m: Record<string, unknown>): number => {
+    const rid = String(m.aws_resource_id || '');
+    const alts = m.alternatives as { direct?: MappingAlt; rightsized?: MappingAlt } | undefined;
+    const pick = selections[rid];
+    if (alts && pick && alts[pick]?.monthly_cost != null) return Number(alts[pick]!.monthly_cost);
+    return Number(m.oci_monthly_cost || 0);
+  };
+  const awsTotal = mapping.reduce((s, m) => s + Number(m.aws_monthly_cost || 0), 0);
+  const ociTotal = mapping.reduce((s, m) => s + ociCostFor(m), 0);
+  const savings = awsTotal > 0 ? Math.round((1 - ociTotal / awsTotal) * 100) : 0;
+
+  // ── Detect pending unsaved changes (any row where the user's choice
+  // differs from the server's persisted choice).
+  const pending = mapping.filter(m => {
+    const rid = String(m.aws_resource_id || '');
+    const server = (m.selected_mapping_type as string | undefined) || null;
+    const local = selections[rid];
+    return !!local && !!(m.alternatives) && local !== server;
+  });
+
+  const handleApply = async () => {
+    if (pending.length === 0) return;
+    setApplying(true);
+    setApplyError(null);
+    setApplyNote(null);
+    try {
+      const res = await client.post(`/api/app-groups/${appGroupId}/mapping-overrides`, {
+        overrides: pending.map(m => ({
+          resource_id: String(m.aws_resource_id),
+          selection: selections[String(m.aws_resource_id)],
+        })),
+      });
+      const applied_hcl = res.data?.applied_hcl ?? 0;
+      const patched = res.data?.patched_files ?? 0;
+      const warns = res.data?.warnings || [];
+      setApplyNote(
+        `Patched ${applied_hcl} attribute${applied_hcl === 1 ? '' : 's'} across ${patched} file${patched === 1 ? '' : 's'}.`
+        + (warns.length ? ` ${warns.length} warning${warns.length === 1 ? '' : 's'}.` : '')
+      );
+      if (onApplied) onApplied();
+    } catch (err) {
+      setApplyError(err instanceof Error ? err.message : 'Failed to apply');
+    } finally {
+      setApplying(false);
+    }
+  };
 
   const detail = detailIdx !== null ? mapping[detailIdx] : null;
 
   return (
     <>
+      {/* Sticky cost summary — updates live as user flips radios */}
+      <div
+        className="rounded-lg px-4 py-3 mb-3 flex items-center gap-6 text-xs"
+        style={{ background: 'var(--color-raised)', border: '1px solid var(--color-rule)' }}
+      >
+        <div>
+          <div style={{ color: 'var(--color-text-dim)', fontSize: '0.625rem' }}>AWS Monthly</div>
+          <div style={{ color: '#FF9900', fontWeight: 700, fontFamily: 'var(--font-mono)', fontSize: '0.9rem' }}>
+            ${awsTotal.toFixed(2)}
+          </div>
+        </div>
+        <span style={{ color: 'var(--color-rail)', fontSize: '1.1rem' }}>→</span>
+        <div>
+          <div style={{ color: 'var(--color-text-dim)', fontSize: '0.625rem' }}>OCI Monthly (current selections)</div>
+          <div style={{ color: '#F80000', fontWeight: 700, fontFamily: 'var(--font-mono)', fontSize: '0.9rem' }}>
+            ${ociTotal.toFixed(2)}
+          </div>
+        </div>
+        {awsTotal > 0 && (
+          <div>
+            <div style={{ color: 'var(--color-text-dim)', fontSize: '0.625rem' }}>Savings</div>
+            <div style={{
+              color: savings >= 0 ? '#16a34a' : '#dc2626',
+              fontWeight: 700, fontFamily: 'var(--font-mono)', fontSize: '0.9rem',
+            }}>
+              {savings >= 0 ? '-' : '+'}${Math.abs(awsTotal - ociTotal).toFixed(2)} ({Math.abs(savings)}%)
+            </div>
+          </div>
+        )}
+        <div className="ml-auto flex items-center gap-3">
+          {applyNote && (
+            <span className="text-xs" style={{ color: '#16a34a' }}>{applyNote}</span>
+          )}
+          {applyError && (
+            <span className="text-xs" style={{ color: '#dc2626' }}>{applyError}</span>
+          )}
+          {pending.length > 0 && (
+            <span className="text-xs" style={{ color: 'var(--color-text-dim)' }}>
+              {pending.length} pending change{pending.length === 1 ? '' : 's'}
+            </span>
+          )}
+          <button
+            onClick={handleApply}
+            disabled={applying || pending.length === 0}
+            className="btn btn-primary btn-sm"
+          >
+            {applying ? <><span className="spinner" />Applying…</> : 'Apply selections'}
+          </button>
+        </div>
+      </div>
+
       <div style={{ overflowX: 'auto' }}>
         <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
           <thead>
@@ -738,39 +894,106 @@ function PlanMappingTable({ mapping }: { mapping: Array<Record<string, unknown>>
             </tr>
           </thead>
           <tbody>
-            {mapping.map((m, i) => (
-              <tr key={i} style={{ borderBottom: '1px solid var(--color-rule)' }}>
-                <td className="px-3 py-2">
-                  <span className="font-medium" style={{ color: 'var(--color-text-bright)' }}>{String(m.aws_name || '')}</span>
-                  <br />
-                  <span style={{ color: 'var(--color-text-dim)', fontSize: '0.625rem' }}>{String(m.aws_config_summary || '')}</span>
-                </td>
-                <td className="px-1" style={{ color: 'var(--color-ember)' }}>→</td>
-                <td className="px-3 py-2">
-                  <span className="font-medium" style={{ color: '#F80000' }}>{String(m.oci_resource_type || '')}</span>
-                  <br />
-                  <span style={{ color: 'var(--color-text-dim)', fontSize: '0.625rem' }}>{String(m.oci_config_summary || '').slice(0, 60)}{String(m.oci_config_summary || '').length > 60 ? '…' : ''}</span>
-                </td>
-                <td className="px-3 py-2 text-center">
-                  <span className="badge" style={{
-                    fontSize: '0.5625rem',
-                    background: m.mapping_confidence === 'high' ? 'rgba(22,163,74,0.1)' : m.mapping_confidence === 'medium' ? 'rgba(217,119,6,0.1)' : 'rgba(220,38,38,0.1)',
-                    color: m.mapping_confidence === 'high' ? '#16a34a' : m.mapping_confidence === 'medium' ? '#d97706' : '#dc2626',
-                  }}>
-                    {String(m.mapping_confidence || 'low')}
-                  </span>
-                </td>
-                <td className="px-3 py-2 text-center">
-                  <button
-                    onClick={() => setDetailIdx(i)}
-                    className="text-xs font-medium"
-                    style={{ color: 'var(--color-ember)', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', fontFamily: 'inherit' }}
+            {mapping.map((m, i) => {
+              const rid = String(m.aws_resource_id || '');
+              const alts = m.alternatives as { direct?: MappingAlt; rightsized?: MappingAlt } | undefined;
+              const currentPick = selections[rid];
+              const hasAlts = !!(alts?.direct && alts?.rightsized);
+              const renderAltCard = (type: 'direct' | 'rightsized', alt: MappingAlt, label: string) => {
+                const selected = currentPick === type;
+                return (
+                  <label
+                    key={type}
+                    className="flex items-start gap-2 cursor-pointer flex-1"
+                    style={{
+                      padding: '6px 8px', borderRadius: 6,
+                      background: selected ? 'var(--color-ember-dim)' : 'var(--color-well)',
+                      border: selected ? '1px solid var(--color-ember)' : '1px solid var(--color-rule)',
+                      minWidth: 0,
+                    }}
                   >
-                    View
-                  </button>
-                </td>
-              </tr>
-            ))}
+                    <input
+                      type="radio"
+                      name={`pick-${rid}`}
+                      checked={selected}
+                      onChange={() => setSelections(s => ({ ...s, [rid]: type }))}
+                      style={{ marginTop: 2 }}
+                    />
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: '0.5625rem', color: 'var(--color-text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                        {label}
+                      </div>
+                      <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.625rem', color: 'var(--color-text-bright)' }}>
+                        {alt.recommended_oci_shape || '—'}
+                      </div>
+                      <div style={{ color: 'var(--color-text-dim)', fontSize: '0.625rem' }}>
+                        {alt.ocpus ?? '?'} OCPU · {alt.memory_gb ?? '?'} GB
+                      </div>
+                      {alt.monthly_cost != null && (
+                        <div style={{ color: '#F80000', fontFamily: 'var(--font-mono)', fontSize: '0.625rem', fontWeight: 600 }}>
+                          ${Number(alt.monthly_cost).toFixed(2)}/mo
+                        </div>
+                      )}
+                    </div>
+                  </label>
+                );
+              };
+              return (
+                <tr key={i} style={{ borderBottom: '1px solid var(--color-rule)' }}>
+                  <td className="px-3 py-2" style={{ verticalAlign: 'top' }}>
+                    <span className="font-medium" style={{ color: 'var(--color-text-bright)' }}>{String(m.aws_name || '')}</span>
+                    <br />
+                    <span style={{ color: 'var(--color-text-dim)', fontSize: '0.625rem' }}>{String(m.aws_config_summary || '')}</span>
+                    {m.aws_monthly_cost != null && (
+                      <div style={{ color: '#FF9900', fontFamily: 'var(--font-mono)', fontSize: '0.625rem', fontWeight: 600, marginTop: 2 }}>
+                        ${Number(m.aws_monthly_cost).toFixed(2)}/mo
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-1" style={{ color: 'var(--color-ember)', verticalAlign: 'top', paddingTop: 10 }}>→</td>
+                  <td className="px-3 py-2" style={{ verticalAlign: 'top' }}>
+                    {hasAlts ? (
+                      <div className="flex gap-2">
+                        {renderAltCard('direct',     alts!.direct!,     'Direct 1:1')}
+                        {renderAltCard('rightsized', alts!.rightsized!, 'Rightsized')}
+                      </div>
+                    ) : (
+                      <div>
+                        <span className="font-medium" style={{ color: '#F80000' }}>{String(m.oci_resource_type || '')}</span>
+                        <br />
+                        <span style={{ color: 'var(--color-text-dim)', fontSize: '0.625rem' }}>
+                          {String(m.oci_config_summary || '').slice(0, 80)}
+                          {String(m.oci_config_summary || '').length > 80 ? '…' : ''}
+                        </span>
+                        {m.oci_monthly_cost != null && (
+                          <div style={{ color: '#F80000', fontFamily: 'var(--font-mono)', fontSize: '0.625rem', fontWeight: 600, marginTop: 2 }}>
+                            ${Number(m.oci_monthly_cost).toFixed(2)}/mo
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-center" style={{ verticalAlign: 'top' }}>
+                    <span className="badge" style={{
+                      fontSize: '0.5625rem',
+                      background: m.mapping_confidence === 'high' ? 'rgba(22,163,74,0.1)' : m.mapping_confidence === 'medium' ? 'rgba(217,119,6,0.1)' : 'rgba(220,38,38,0.1)',
+                      color: m.mapping_confidence === 'high' ? '#16a34a' : m.mapping_confidence === 'medium' ? '#d97706' : '#dc2626',
+                    }}>
+                      {String(m.mapping_confidence || 'low')}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-center" style={{ verticalAlign: 'top' }}>
+                    <button
+                      onClick={() => setDetailIdx(i)}
+                      className="text-xs font-medium"
+                      style={{ color: 'var(--color-ember)', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', fontFamily: 'inherit' }}
+                    >
+                      View
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -870,6 +1093,17 @@ function ArtifactList({ artifacts, showDownloadAll, downloadPrefix }: { artifact
   const entries = Object.entries(artifacts);
   if (entries.length === 0) return <p className="text-xs" style={{ color: 'var(--color-text-dim)' }}>No artifacts</p>;
 
+  // Detect basename collisions — when multiple entries share a basename,
+  // display the full path instead of just the filename.
+  const basenameCounts = new Map<string, number>();
+  for (const [key] of entries) {
+    const base = key.split('/').pop() || key;
+    basenameCounts.set(base, (basenameCounts.get(base) || 0) + 1);
+  }
+  const collidingBasenames = new Set(
+    [...basenameCounts.entries()].filter(([, count]) => count > 1).map(([base]) => base)
+  );
+
   return (
     <>
       {showDownloadAll && entries.length > 1 && (
@@ -882,7 +1116,8 @@ function ArtifactList({ artifacts, showDownloadAll, downloadPrefix }: { artifact
       )}
       <div className="space-y-1.5">
         {entries.map(([key, content]) => {
-          const name = key.split('/').pop() || key;
+          const basename = key.split('/').pop() || key;
+          const name = collidingBasenames.has(basename) ? key : basename;
           const isMd = name.endsWith('.md');
           return (
             <div key={key} className="flex items-center justify-between px-3 py-2.5 rounded-lg" style={{ border: '1px solid var(--color-rule)', background: 'var(--color-surface)' }}>
@@ -1685,7 +1920,18 @@ function PlanStep({
           <button onClick={() => { setViewState('configure'); setPlanResults(null); }} className="btn btn-secondary">Regenerate</button>
         </div>
       </div>
-      {planResults && <PlanResults results={planResults} />}
+      {planResults && (
+        <PlanResults
+          results={planResults}
+          appGroupId={selected.id}
+          onRefresh={async () => {
+            try {
+              const res = await client.get(`/api/app-groups/${selected.id}/plan-results`);
+              setPlanResults(res.data);
+            } catch { /* swallow */ }
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -2031,38 +2277,94 @@ function MigrateSubStepper({
   };
 
   return (
-    <div className="rounded-xl p-3 flex gap-2" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)' }}>
-      {steps.map((s, i) => {
+    <div
+      className="rounded-xl p-3"
+      style={{ background: 'var(--color-surface)', border: '1px solid var(--color-rule)', boxShadow: 'var(--shadow-card)' }}
+    >
+      {steps.map((s, idx) => {
         const active = current === s.id;
         const done = isDone(s.id);
-        const disabled = s.optional;
+        const disabled = !!s.optional;
         return (
-          <button
-            key={s.id}
-            onClick={() => onChange(s.id)}
-            disabled={disabled}
-            className="flex-1 flex flex-col items-start gap-0.5 px-4 py-2.5 rounded-lg text-left transition-colors"
-            style={{
-              background: active ? 'var(--color-ember-dim)' : done ? 'rgba(22,163,74,0.08)' : 'var(--color-well)',
-              border: active ? '1px solid var(--color-ember)' : '1px solid transparent',
-              color: disabled ? 'var(--color-text-dim)' : 'var(--color-text-bright)',
-              cursor: disabled ? 'not-allowed' : 'pointer',
-              opacity: disabled ? 0.5 : 1,
-              fontFamily: 'inherit',
-            }}
-            aria-current={active ? 'step' : undefined}
-          >
-            <div className="flex items-center gap-2 text-xs font-semibold">
-              {done && (
-                <svg className="w-3 h-3" style={{ color: '#16a34a' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                </svg>
-              )}
-              <span>{s.label}</span>
-              {disabled && <span className="text-[10px]" style={{ color: 'var(--color-text-dim)' }}>(n/a)</span>}
-            </div>
-            <span className="text-[11px]" style={{ color: 'var(--color-text-dim)' }}>{s.desc}</span>
-          </button>
+          <div key={s.id} className="relative">
+            {/* Connector line to next step */}
+            {idx < steps.length - 1 && (
+              <div
+                style={{
+                  position: 'absolute',
+                  left: '19px',
+                  top: '36px',
+                  bottom: '-4px',
+                  width: '2px',
+                  background: done ? 'var(--color-ember)' : 'var(--color-rule)',
+                  zIndex: 0,
+                }}
+              />
+            )}
+            <button
+              onClick={() => onChange(s.id)}
+              disabled={disabled}
+              className="relative w-full flex items-start gap-3 p-2 rounded-lg text-left transition-colors"
+              style={{
+                background: active ? 'var(--color-ember-dim)' : 'transparent',
+                marginBottom: idx < steps.length - 1 ? '4px' : 0,
+                zIndex: 1,
+                cursor: disabled ? 'not-allowed' : 'pointer',
+                opacity: disabled ? 0.55 : 1,
+              }}
+              aria-current={active ? 'step' : undefined}
+            >
+              {/* Circle indicator */}
+              <div
+                className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5"
+                style={{
+                  background: done ? 'var(--color-ember)' : active ? 'var(--color-surface)' : 'var(--color-well)',
+                  border: active ? '2px solid var(--color-ember)' : done ? 'none' : '2px solid var(--color-fence)',
+                  color: done ? 'white' : active ? 'var(--color-ember)' : 'var(--color-rail)',
+                  fontSize: '0.625rem',
+                  fontWeight: 700,
+                }}
+              >
+                {done ? (
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                  </svg>
+                ) : (
+                  idx + 1
+                )}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <p
+                    className="text-xs font-semibold"
+                    style={{ color: active ? 'var(--color-ember)' : disabled ? 'var(--color-text-dim)' : 'var(--color-text-bright)' }}
+                  >
+                    {s.label}
+                  </p>
+                  {disabled && (
+                    <span
+                      style={{
+                        fontSize: '0.5rem',
+                        fontWeight: 700,
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.08em',
+                        color: 'var(--color-rail)',
+                        background: 'var(--color-well)',
+                        padding: '1px 5px',
+                        borderRadius: 2,
+                        border: '1px solid var(--color-rule)',
+                      }}
+                    >
+                      N/A
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-dim)' }}>
+                  {s.desc}
+                </p>
+              </div>
+            </button>
+          </div>
         );
       })}
     </div>
@@ -2232,32 +2534,38 @@ function MigrateStepTabbed({ migrationId, migration }: {
   }
 
   return (
-    <div className="space-y-4">
-      <MigrateSubStepper
-        current={subStep}
-        onChange={setSubStep}
-        status={status}
-        hasOCM={hasOCM}
-      />
-      {subStep === 'prereqs' && (
-        <PrereqsPanel
-          migrationId={migrationId}
-          ocmPrereqsMd={ocmPrereqsMd}
-          onContinue={() => setSubStep('terraform')}
-        />
-      )}
-      {subStep === 'terraform' && (
-        <MigrateStep migrationId={migrationId} migration={migration} />
-      )}
-      {subStep === 'ocm' && hasOCM && (
-        <OCMActionsPanel migrationId={migrationId} />
-      )}
-      {subStep === 'data' && (
-        <DataTransferPanel
-          dataRunbooks={dataRunbooks}
-          cutoverRunbooks={cutoverRunbooks}
-        />
-      )}
+    <div className="flex gap-5">
+      <aside className="w-60 flex-shrink-0">
+        <div className="sticky top-4">
+          <MigrateSubStepper
+            current={subStep}
+            onChange={setSubStep}
+            status={status}
+            hasOCM={hasOCM}
+          />
+        </div>
+      </aside>
+      <main className="flex-1 min-w-0 space-y-4">
+        {subStep === 'prereqs' && (
+          <PrereqsPanel
+            migrationId={migrationId}
+            ocmPrereqsMd={ocmPrereqsMd}
+            onContinue={() => setSubStep('terraform')}
+          />
+        )}
+        {subStep === 'terraform' && (
+          <MigrateStep migrationId={migrationId} migration={migration} />
+        )}
+        {subStep === 'ocm' && hasOCM && (
+          <OCMActionsPanel migrationId={migrationId} />
+        )}
+        {subStep === 'data' && (
+          <DataTransferPanel
+            dataRunbooks={dataRunbooks}
+            cutoverRunbooks={cutoverRunbooks}
+          />
+        )}
+      </main>
     </div>
   );
 }

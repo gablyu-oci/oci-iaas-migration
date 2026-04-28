@@ -740,7 +740,7 @@ Output Requirements:
 
 OCI provider version: 5.x
 Region: {target_region}
-Compartment: {compartment_ocid}
+Compartment: {compartment_id}
 ```
 
 ### Phase 3: Manual Review & Refinement

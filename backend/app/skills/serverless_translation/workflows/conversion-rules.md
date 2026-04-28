@@ -31,7 +31,7 @@ OCI Functions requires an **Application** scope before any function. Emit exactl
 
 ```hcl
 resource "oci_functions_application" "main" {
-  compartment_id = var.compartment_ocid
+  compartment_id = var.compartment_id
   display_name   = "migration-app"
   subnet_ids     = [var.functions_subnet_ocid]
 }
@@ -140,7 +140,7 @@ Decision flow:
 For Container Instances:
 ```hcl
 resource "oci_container_instances_container_instance" "app" {
-  compartment_id      = var.compartment_ocid
+  compartment_id      = var.compartment_id
   availability_domain = data.oci_identity_availability_domains.ads.availability_domains[0].name
   shape               = "CI.Standard.E4.Flex"
   shape_config {

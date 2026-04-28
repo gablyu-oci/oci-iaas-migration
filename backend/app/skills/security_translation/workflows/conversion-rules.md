@@ -21,13 +21,13 @@ Prose guidance that doesn't fit in the mapping table.
 
 ```hcl
 resource "oci_kms_vault" "main" {
-  compartment_id = var.compartment_ocid
+  compartment_id = var.compartment_id
   display_name   = "migration-vault"
   vault_type     = "DEFAULT"     # or "VIRTUAL_PRIVATE" for dedicated HSM
 }
 
 resource "oci_kms_key" "app" {
-  compartment_id      = var.compartment_ocid
+  compartment_id      = var.compartment_id
   display_name        = "app-key"
   management_endpoint = oci_kms_vault.main.management_endpoint
   key_shape {
@@ -110,7 +110,7 @@ All certs referenced by load balancers (HTTPS listeners) must be provisioned bef
 ## Cross-resource references
 
 Write a `variables.tf` that exposes:
-- `var.compartment_ocid` (always required).
+- `var.compartment_id` (always required).
 - One `var.<name>_secret_value` per secret, marked `sensitive = true`.
 - `var.kms_master_key_id` (optional — defaults to the vault's first key if omitted).
 

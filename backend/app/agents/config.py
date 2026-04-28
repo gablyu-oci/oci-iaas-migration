@@ -14,6 +14,7 @@ from functools import lru_cache
 from openai import AsyncOpenAI
 
 from app.config import settings
+from app.gateway.reasoning import is_reasoning_model
 
 _log = logging.getLogger(__name__)
 
@@ -31,6 +32,41 @@ def disable_external_telemetry() -> None:
         _log.warning("couldn't disable openai-agents tracing; continuing")
 
 
+class _ReasoningAwareCompletions:
+    """Proxy around ``AsyncCompletions`` that adapts kwargs for reasoning models.
+
+    OpenAI reasoning models (gpt-5.x, o1/o3/o4) reject ``max_tokens`` and
+    require ``max_completion_tokens``; they also reject non-default
+    ``temperature``.  The openai-agents SDK sends ``max_tokens`` as-is from
+    ``ModelSettings``, so we intercept here to translate before the request
+    hits the wire.
+    """
+
+    def __init__(self, original):
+        self._original = original
+
+    async def create(self, **kwargs):
+        model = str(kwargs.get("model", ""))
+        if is_reasoning_model(model):
+            # Swap max_tokens -> max_completion_tokens
+            if "max_tokens" in kwargs:
+                val = kwargs.pop("max_tokens")
+                # Preserve omit/None semantics from the SDK
+                try:
+                    from openai import Omit
+                    is_omit = isinstance(val, Omit)
+                except ImportError:
+                    is_omit = val is None
+                if not is_omit and val is not None:
+                    kwargs["max_completion_tokens"] = val
+            # Reasoning models reject non-default temperature
+            kwargs.pop("temperature", None)
+        return await self._original.create(**kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._original, name)
+
+
 @lru_cache(maxsize=1)
 def build_client() -> AsyncOpenAI:
     """Return the single ``AsyncOpenAI`` client every agent should use.
@@ -42,19 +78,25 @@ def build_client() -> AsyncOpenAI:
     **Timeout + retries tuned for reasoning models + large prompts.**
     The Llama Stack nginx gateway times out individual requests at ~60s,
     but a ``gpt-5.4`` reasoning call on a 30 KB CloudFormation template
-    can easily need longer. We give the client a 5-minute per-request
-    timeout, and the SDK already retries on 5xx — but we bump the retry
-    count so a transient upstream hiccup doesn't kill a long-running
-    skill-group run.
+    can easily need longer. We give the client a 20-minute read timeout
+    (reasoning models with large inputs routinely take 5-15 minutes), and
+    the SDK already retries on 5xx — but we bump the retry count so a
+    transient upstream hiccup doesn't kill a long-running skill-group run.
     """
     import httpx
     disable_external_telemetry()
-    return AsyncOpenAI(
+    client = AsyncOpenAI(
         base_url=settings.LLM_BASE_URL,
         api_key=settings.LLM_API_KEY or "anonymous",
-        timeout=httpx.Timeout(connect=10.0, read=300.0, write=60.0, pool=10.0),
+        # read=1200s (20 min): reasoning models on large CFN templates
+        # routinely take 5-15 minutes; 300s was causing read timeouts.
+        timeout=httpx.Timeout(connect=10.0, read=1200.0, write=60.0, pool=10.0),
         max_retries=5,
     )
+    # Wrap chat.completions so reasoning models get max_completion_tokens
+    # instead of max_tokens (which they reject with HTTP 400).
+    client.chat.completions = _ReasoningAwareCompletions(client.chat.completions)
+    return client
 
 
 def build_model(model_id: str):

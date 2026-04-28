@@ -31,12 +31,19 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.gateway.reasoning import is_reasoning_model
+
 logger = logging.getLogger(__name__)
 
 # If the full network input serializes under this many chars, we skip
 # chunking entirely. Empirically tuned so sub-threshold inputs fit in a
 # single gpt-5.4 response within nginx's upstream timeout.
 DEFAULT_SIZE_THRESHOLD = 20_000
+
+# Reasoning models (gpt-5.x, o1/o3/o4) take much longer per token; even
+# sub-threshold inputs can exceed nginx's upstream timeout. Use a tighter
+# threshold to force chunking earlier.
+REASONING_SIZE_THRESHOLD = 5_000
 
 
 @dataclass
@@ -104,7 +111,8 @@ def _vpc_of(item: dict) -> str:
 
 def chunk_network_input(
     network_input: dict,
-    size_threshold: int = DEFAULT_SIZE_THRESHOLD,
+    size_threshold: int | None = None,
+    model: str | None = None,
 ) -> list[NetworkChunkSpec]:
     """Return a list of chunks, each small enough for one writer turn.
 
@@ -112,7 +120,16 @@ def chunk_network_input(
     containing the whole thing (``scope="global"``). For large inputs,
     returns one chunk per unique VPC id + one trailing global chunk
     covering cross-VPC resources.
+
+    If *model* identifies a reasoning model, a tighter threshold is used
+    by default to avoid 504s caused by the longer inference times.
     """
+    if size_threshold is None:
+        if model and is_reasoning_model(model):
+            size_threshold = REASONING_SIZE_THRESHOLD
+        else:
+            size_threshold = DEFAULT_SIZE_THRESHOLD
+
     if not isinstance(network_input, dict) or not network_input:
         return []
 

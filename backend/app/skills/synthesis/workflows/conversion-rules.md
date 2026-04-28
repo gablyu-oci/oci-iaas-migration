@@ -82,7 +82,7 @@ corresponding OCI resource in the final stack.
   matches).
 
 ### Variables
-- Dedupe by name: if two jobs both declare `variable "compartment_ocid"
+- Dedupe by name: if two jobs both declare `variable "compartment_id"
   {}`, keep one. If they declare the same variable with *different*
   types or defaults, keep the stricter one (e.g. `sensitive = true`
   wins over `sensitive = false`) and add a comment noting the conflict.
@@ -140,7 +140,7 @@ output that fails `terraform validate`.
 - **Provider version mismatch**: if input jobs targeted different
   `hashicorp/oci` versions, pick the newest and warn in
   special-attention.md.
-- **Credential conflicts**: if two jobs expect `var.compartment_ocid`
+- **Credential conflicts**: if two jobs expect `var.compartment_id`
   and one expects `var.compartment_id`, pick one name, rewrite the
   references, and flag.
 - **Any skill input that was empty or trivially wrong**: surface as

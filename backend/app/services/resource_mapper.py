@@ -68,6 +68,14 @@ class ResourceMappingEntry:
     gaps: list[str]
     aws_monthly_cost: float | None = None
     oci_monthly_cost: float | None = None
+    # When the resource is a compute / database shape-picking resource, the
+    # Plan UI can offer two alternatives: direct 1:1 lift or usage-driven
+    # rightsize. ``alternatives`` is ``{"direct": {shape, ocpus, memory_gb,
+    # monthly_cost, notes}, "rightsized": {...}}``. ``selected_mapping_type``
+    # is whichever one is currently active ('direct' | 'rightsized'). Both
+    # are None for resources where it doesn't apply (EBS, LB, IAM, etc.).
+    alternatives: dict | None = None
+    selected_mapping_type: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -246,6 +254,19 @@ def _map_ec2(rid: str, name: str, raw: dict, ra: dict) -> ResourceMappingEntry:
 
     confidence = "high" if oci_shape and aws_spec else "medium" if oci_shape else "low"
 
+    # Pass-through both alternatives so the Plan UI can show direct vs. rightsized.
+    # Stored as ``{"direct": {...}, "rightsized": {...}}`` by assessment_runner.
+    # Fallback: if this ResourceAssessment predates the column (NULL), compute
+    # both options on the fly so older assessments still offer the choice.
+    alternatives = ra.get("alternative_mappings") or None
+    if not alternatives and instance_type:
+        try:
+            from app.services.rightsizing_engine import compute_both_mappings
+            alternatives = compute_both_mappings(instance_type, ra.get("metrics") or {})
+        except Exception:
+            alternatives = None
+    selected = ra.get("selected_mapping_type") or ("rightsized" if alternatives else None)
+
     return ResourceMappingEntry(
         aws_resource_id=rid,
         aws_type="AWS::EC2::Instance",
@@ -259,6 +280,8 @@ def _map_ec2(rid: str, name: str, raw: dict, ra: dict) -> ResourceMappingEntry:
         gaps=gaps,
         aws_monthly_cost=aws_cost,
         oci_monthly_cost=oci_cost,
+        alternatives=alternatives,
+        selected_mapping_type=selected,
     )
 
 
@@ -441,10 +464,16 @@ def review_mapping_with_llm(
             logger.warning("LLM review returned non-list, keeping draft")
             return entries
 
+        # Preserve fields the LLM doesn't know about (alternatives, selected
+        # mapping type) by joining on aws_resource_id against the draft.
+        draft_by_id = {e.aws_resource_id: e for e in entries}
+
         result = []
         for item in reviewed:
+            rid = item.get("aws_resource_id", "")
+            draft = draft_by_id.get(rid)
             result.append(ResourceMappingEntry(
-                aws_resource_id=item.get("aws_resource_id", ""),
+                aws_resource_id=rid,
                 aws_type=item.get("aws_type", ""),
                 aws_name=item.get("aws_name", ""),
                 aws_config_summary=item.get("aws_config_summary", ""),
@@ -454,8 +483,10 @@ def review_mapping_with_llm(
                 mapping_confidence=item.get("mapping_confidence", "medium"),
                 notes=item.get("notes", []),
                 gaps=item.get("gaps", []),
-                aws_monthly_cost=item.get("aws_monthly_cost"),
-                oci_monthly_cost=item.get("oci_monthly_cost"),
+                aws_monthly_cost=item.get("aws_monthly_cost") if item.get("aws_monthly_cost") is not None else (draft.aws_monthly_cost if draft else None),
+                oci_monthly_cost=item.get("oci_monthly_cost") if item.get("oci_monthly_cost") is not None else (draft.oci_monthly_cost if draft else None),
+                alternatives=draft.alternatives if draft else None,
+                selected_mapping_type=draft.selected_mapping_type if draft else None,
             ))
 
         # Filter out any hallucinated entries not in the original set

@@ -39,6 +39,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.gateway.reasoning import is_reasoning_model
+
 logger = logging.getLogger(__name__)
 
 # Chunk size: number of CFN Resources per writer call.
@@ -50,6 +52,10 @@ logger = logging.getLogger(__name__)
 # actually accept on a given day, and we only pay the bisect cost when
 # a chunk is genuinely too big.
 DEFAULT_CHUNK_SIZE = 20
+
+# Reasoning models are slower per token; keep chunks small to stay within
+# the nginx upstream timeout window.
+REASONING_CHUNK_SIZE = 6
 
 
 # ─── Parsing ─────────────────────────────────────────────────────────────────
@@ -162,7 +168,8 @@ class ChunkSpec:
 
 def chunk_cfn_template(
     template: str | dict | None,
-    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    chunk_size: int | None = None,
+    model: str | None = None,
 ) -> list[ChunkSpec]:
     """Split a CFN template's ``Resources`` map into chunks of ``chunk_size``.
 
@@ -171,7 +178,16 @@ def chunk_cfn_template(
     graph regardless of declaration order, and each chunk carries the
     full logical-ID list so the writer can emit cross-chunk references
     correctly. Outputs are attached to the last chunk only.
+
+    If *model* identifies a reasoning model, a smaller default chunk
+    size is used to avoid 504s from longer inference times.
     """
+    if chunk_size is None:
+        if model and is_reasoning_model(model):
+            chunk_size = REASONING_CHUNK_SIZE
+        else:
+            chunk_size = DEFAULT_CHUNK_SIZE
+
     parsed = parse_cfn_template(template)
     resources = parsed.get("Resources") or {}
     if not isinstance(resources, dict) or not resources:

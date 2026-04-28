@@ -135,7 +135,7 @@ def _build_skill_input(skill_type: str, resources: list[dict]) -> str:
             "instances": instances,
             "ocm_prereqs": prereqs,
             "target_shape_whitelist": whitelist,
-            "target_compartment_var": "compartment_ocid",
+            "target_compartment_var": "compartment_id",
             "target_vcn_var": "target_vcn_ocid",
             "target_subnet_var": "target_subnet_ocid",
         }, indent=2)
@@ -744,7 +744,30 @@ def _run_pipeline(
         except Exception as exc:
             _progress("synthesis", f"Synthesis composer failed: {exc!r}")
             logger.warning("Synthesis composer failed: %s\n%s", exc, traceback.format_exc())
+            all_gaps.append({
+                "skill": "synthesis",
+                "severity": "HIGH",
+                "description": f"Synthesis composer failed: {exc!r}",
+                "recommendation": "Check logs for the full traceback and re-run the plan.",
+            })
     else:
+        expected_hcl_skills = [
+            s for s in skill_resources
+            if s not in ("workload_planning", "data_migration", "resource-mapping",
+                         "ocm_handoff_translation", "cfn_terraform")
+        ]
+        if expected_hcl_skills:
+            logger.warning(
+                "Synthesis skipped: skills %s were expected to produce HCL but none did",
+                ", ".join(expected_hcl_skills),
+            )
+        skill_names = ", ".join(expected_hcl_skills) if expected_hcl_skills else "(none)"
+        all_gaps.append({
+            "skill": "synthesis",
+            "severity": "HIGH",
+            "description": f"Synthesis skipped because skills {skill_names} produced no HCL artifacts.",
+            "recommendation": "Check translation_jobs for failures or missing skill runs. Re-run the plan after resolving skill issues.",
+        })
         _progress("synthesis", "No translation artifacts to compose — skipping")
 
     # ── Step 7: Build the hybrid bundle ────────────────────────────────
@@ -788,6 +811,78 @@ def _run_pipeline(
     except Exception as exc:
         logger.warning("bundle rebuild failed: %s\n%s", exc, traceback.format_exc())
         completed_artifacts.pop("_review_gaps_sentinel", None)
+
+    # ── Post-synthesis agentic polish (optional) ────────────────────
+    if getattr(settings, 'SYNTHESIS_POLISH_ENABLED', True):
+        try:
+            from app.agents.synthesis_polish import polish_sync
+            _progress("polish", "Running synthesis polish agent...")
+            completed_artifacts, polish_iters, polish_clean = polish_sync(
+                bundle=completed_artifacts,
+                resource_mapping=resource_mapping,
+                _progress=_progress,
+            )
+            tf_status = "pass" if polish_clean else "fail"
+            _progress(
+                "polish",
+                f"Synthesis polish: {polish_iters} iteration(s), terraform_validate {tf_status}",
+            )
+            logger.info(
+                "Synthesis polish: %d iteration(s), terraform_validate %s",
+                polish_iters, tf_status,
+            )
+        except Exception as exc:
+            logger.warning("Synthesis polish failed: %s\n%s", exc, traceback.format_exc())
+            _progress("polish", f"Synthesis polish failed: {exc!r}")
+
+    # ── Post-synthesis validate-and-repair ────────────────────────
+    if getattr(settings, 'SYNTHESIS_VALIDATE_AND_REPAIR', True):
+        try:
+            from app.services.synthesis_validator import validate_and_repair
+            _progress("validation", "Running post-synthesis validation...")
+            # Retrieve accumulated log lines from the DB progress entry
+            # so the validator can scan them for skill failure signals.
+            _val_row = session.execute(
+                _t("SELECT dependency_artifacts FROM assessments WHERE id = :id"),
+                {"id": str(assess_id)},
+            ).fetchone()
+            _val_logs: list[str] = []
+            if _val_row:
+                _val_arts = _val_row[0] or {}
+                _val_plan = _val_arts.get("workload_plans", {}).get(ag.name, {})
+                _val_logs = _val_plan.get("logs", [])
+
+            repaired_bundle, remaining_gaps = validate_and_repair(
+                bundle=completed_artifacts,
+                resource_mapping=resource_mapping,
+                skill_logs=_val_logs,
+                max_iterations=2,
+            )
+            completed_artifacts = repaired_bundle
+            if remaining_gaps:
+                for gap in remaining_gaps:
+                    if gap.get("severity") != "INFO":
+                        all_gaps.append({
+                            "skill": gap.get("skill", "synthesis_validator"),
+                            "severity": gap.get("severity", "HIGH"),
+                            "description": gap.get("description", ""),
+                            "recommendation": "Review and fix manually or re-run the plan.",
+                        })
+            # Re-render gaps.md so validator findings are included
+            # (the original render happened inside build_hybrid_bundle,
+            #  before validate_and_repair had a chance to run).
+            from app.services.bundle_builder import _render_gaps_md
+            completed_artifacts["reports/gaps.md"] = _render_gaps_md(
+                all_gaps, skills_ran_list,
+            )
+
+            _progress(
+                "validation",
+                f"Post-synthesis validation: {len(remaining_gaps)} gap(s) remaining after repair",
+            )
+        except Exception as exc:
+            logger.warning("Post-synthesis validation failed: %s", exc)
+            _progress("validation", f"Post-synthesis validation failed: {exc!r}")
 
     _progress("complete", f"Plan generation complete in {elapsed}s")
 

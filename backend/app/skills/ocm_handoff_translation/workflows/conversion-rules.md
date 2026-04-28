@@ -31,7 +31,7 @@ into OCI Block Volumes, then launches replacement instances from them.
   ],
   "ocm_prereqs": [ /* from ocm_support.yaml handoff_prereqs */ ],
   "target_shape_whitelist": [ "VM.Standard.E5.Flex", ... ],
-  "target_compartment_var": "compartment_ocid",
+  "target_compartment_var": "compartment_id",
   "target_vcn_var": "target_vcn_ocid",
   "target_subnet_var": "target_subnet_ocid"
 }
@@ -48,7 +48,7 @@ NOT emit HCL for them (emit a `resource_mappings.skipped` entry instead).
 
 ```hcl
 resource "oci_cloud_migrations_migration" "main" {
-  compartment_id = var.compartment_ocid
+  compartment_id = var.compartment_id
   display_name   = "aws-to-oci-${var.migration_name}"
   freeform_tags  = { source = "aws", strategy = "ocm-hybrid" }
 }
@@ -58,7 +58,7 @@ resource "oci_cloud_migrations_migration" "main" {
 
 ```hcl
 resource "oci_cloud_migrations_migration_plan" "plan" {
-  compartment_id = var.compartment_ocid
+  compartment_id = var.compartment_id
   migration_id   = oci_cloud_migrations_migration.main.id
   display_name   = "plan-${var.migration_name}"
   strategies {
@@ -72,23 +72,27 @@ resource "oci_cloud_migrations_migration_plan" "plan" {
 
 ```hcl
 resource "oci_cloud_migrations_target_asset" "asset_<instance_id_sanitized>" {
-  compartment_id     = var.compartment_ocid
+  compartment_id     = var.compartment_id
   migration_plan_id  = oci_cloud_migrations_migration_plan.plan.id
   type               = "INSTANCE"
   is_excluded_from_execution = false
-  # Source linkage — filled in by the operator after running OCM discovery:
-  compatibility_messages {
-    # OCM returns these; left here for documentation
+  # Target shape — bucket type only (VM or BM):
+  preferred_shape_type = "VM"  # bucket: VM or BM, NOT the full shape name
+  # Actual rightsized shape goes in user_spec:
+  user_spec {
+    shape = "VM.Standard.E5.Flex"  # the actual rightsized shape, from target_shape_whitelist
+    shape_config {
+      ocpus         = 4    # from rightsizing
+      memory_in_gbs = 64   # from rightsizing
+    }
   }
-  # Target shape — from our whitelist, picked to match source CPU/mem:
-  preferred_shape_type = "<VM.Standard.E5.Flex or similar>"
-  # Target networking — MUST reference variables the operator supplies:
+  # Block volume performance — top-level field, NOT inside user_spec:
   block_volumes_performance = 10    # Balanced (vpus=10); use 20 for io1/io2 sources
 }
 ```
 
 Rules for the target asset:
-- `preferred_shape_type` **must** be on `target_shape_whitelist`. If the
+- `preferred_shape_type` **must** be either `"VM"` or `"BM"` (the shape bucket). The specific shape goes in `user_spec.shape` and **must** be on `target_shape_whitelist`. If the
   source doesn't map to a whitelisted shape, flag it as `manual` in the
   mapping output (the operator picks the shape in OCM).
 - `block_volumes_performance` reflects the source EBS volume's tier:
@@ -103,7 +107,7 @@ sync before cutover:
 
 ```hcl
 resource "oci_cloud_migrations_replication_schedule" "weekly" {
-  compartment_id = var.compartment_ocid
+  compartment_id = var.compartment_id
   display_name   = "weekly-sync"
   execution_recurrences = "FREQ=WEEKLY;BYDAY=SU;BYHOUR=2"
 }
@@ -112,12 +116,12 @@ resource "oci_cloud_migrations_replication_schedule" "weekly" {
 ## Variables (variables.tf)
 
 Emit at minimum:
-- `var.compartment_ocid` — sensitive = false, description pointing at
+- `var.compartment_id` — MODULE INPUT from parent module; sensitive = false, description pointing at
   the migration compartment
-- `var.migration_name` — short label for display_name
-- `var.target_vcn_ocid` — OCID of the pre-provisioned target VCN
-- `var.target_subnet_ocid` — OCID of the pre-provisioned target subnet
-- `var.aws_credentials_secret_ocid` — the Vault secret holding AWS creds
+- `var.migration_name` — MODULE INPUT from parent module; short label for display_name
+- `var.target_vcn_ocid` — MODULE INPUT from parent `modules.tf`; OCID of the target VCN (resolved from `oci_core_vcn.main.id` or a free var fallback)
+- `var.target_subnet_ocid` — MODULE INPUT from parent `modules.tf`; OCID of the target subnet (resolved from `oci_core_subnet.private[0].id` or a free var fallback)
+- `var.aws_credentials_secret_ocid` — operator-supplied; the Vault secret holding AWS creds
   (OCM needs this to discover + replicate)
 
 ## Outputs (outputs.tf)
@@ -129,7 +133,7 @@ Emit at minimum:
 ## handoff.md (the runbook)
 
 Structure:
-1. **Before `terraform apply`** — the handoff_prereqs checklist (Vault
+1. **Before `terraform apply`** — run `cd terraform && terraform apply` (one command provisions both the native stack and the OCM submodule). Before that, complete the handoff_prereqs checklist (Vault
    + secret, dynamic groups + policies, staging bucket, target VCN/subnet,
    AWS IAM user with required permissions). List each with a ✅ checkbox.
 2. **Trigger OCM discovery** — `oci cloud-migrations source add-aws-source`
@@ -173,3 +177,22 @@ Structure:
   with volume count; warn the operator on the runbook. LOW.
 - **Outdated source OS** (RHEL 5/6, Ubuntu 12.04 LTS): not in the support
   matrix. CRITICAL — operator must upgrade before migrating.
+
+## Output format enforcement
+
+Your response MUST be a single JSON object with these file keys (no markdown fences wrapping it — just raw JSON):
+
+```json
+{
+  "main.tf": "<full HCL content with oci_cloud_migrations_migration + migration_plan + one target_asset per eligible instance>",
+  "variables.tf": "<full HCL variable declarations>",
+  "outputs.tf": "<full HCL output declarations>",
+  "handoff.md": "<full markdown runbook>",
+  "resource_mappings": {...},
+  "gaps": [...]
+}
+```
+
+**CRITICAL**: The `main.tf` value MUST contain at least one `oci_cloud_migrations_target_asset` block for each eligible instance (those with `ocm_compatibility.level` in `full`, `with_prep`, `manual`). An empty `main.tf` or one with only Migration + MigrationPlan but no target_asset blocks is a FAILURE — the reviewer will reject it.
+
+Never wrap the JSON in markdown fences (` ```json ... ``` `). Emit only the raw JSON object.

@@ -365,6 +365,21 @@ async def run_skill_group(
     import time as _time
     from app.agents.skill_group import get_skill_group
 
+    # Synthesis is handled deterministically by compose_terraform() in
+    # plan_orchestrator — never via an LLM skill group.  Reject early so
+    # the orchestrator agent doesn't waste tokens on a call that should
+    # not go through the LLM path.
+    if skill_type == "synthesis":
+        return json.dumps({
+            "skill_type": "synthesis",
+            "error": (
+                "The 'synthesis' step is handled deterministically by "
+                "compose_terraform() — do not run it as an LLM skill group. "
+                "All per-skill drafts are merged automatically after the "
+                "translation skills finish."
+            ),
+        })
+
     t0 = _time.perf_counter()
     try:
         group = get_skill_group(
@@ -429,6 +444,15 @@ async def run_skills_parallel(
         inp = spec.get("input_content")
         if not skill or inp is None:
             return {"error": "missing skill_type or input_content", "spec": spec}
+        # Block synthesis from the LLM path (same guard as run_skill_group)
+        if skill == "synthesis":
+            return {
+                "skill_type": "synthesis",
+                "error": (
+                    "The 'synthesis' step is handled deterministically by "
+                    "compose_terraform() — do not run it as an LLM skill group."
+                ),
+            }
         max_iter = int(spec.get("max_iterations", 3))
         conf = float(spec.get("confidence_threshold", 0.90))
         t0 = _time.perf_counter()

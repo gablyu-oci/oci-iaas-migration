@@ -2,8 +2,17 @@
 Pytest configuration: patch Postgres-specific types (JSONB, BYTEA, UUID)
 to SQLite-compatible equivalents so tests run without a live Postgres.
 """
+import os
+import sys
 import pytest
 from sqlalchemy import JSON, LargeBinary, String
+
+# Ensure the repo root is on sys.path so that modules using
+# ``from backend.app.gateway.reasoning import ...`` resolve correctly
+# when pytest runs from the ``backend/`` directory.
+_repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
 from sqlalchemy.dialects.postgresql import JSONB, BYTEA
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 

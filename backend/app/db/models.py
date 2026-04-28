@@ -423,6 +423,14 @@ class ResourceAssessment(Base):
     rightsizing_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     rightsizing_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Plan UI shows the user two options per compute resource: a direct 1:1
+    # lift and a usage-driven rightsized pick. ``alternative_mappings`` holds
+    # both; the ``recommended_oci_*`` columns above reflect whichever one is
+    # currently selected (defaults to 'rightsized'). ``selected_mapping_type``
+    # is 'direct', 'rightsized', or NULL (= default/rightsized).
+    alternative_mappings: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    selected_mapping_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+
     # OS Compatibility
     os_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     os_version: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
@@ -471,6 +479,15 @@ class AppGroup(Base):
     total_aws_cost_usd: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     total_oci_cost_usd: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     metadata_: Mapped[Optional[dict]] = mapped_column("metadata", JSONB, nullable=True)
+    # Cached LLM review of the deterministic resource mapping. Populated by
+    # the background task scheduled from the resource-mapping endpoint.
+    # ``mapping_review_fingerprint`` is a hash of the inputs that produced
+    # the review — when it doesn't match the current inputs, the cache is
+    # stale and a refresh is scheduled.
+    mapping_review: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    mapping_reviewed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    mapping_review_status: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    mapping_review_fingerprint: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
 
     assessment: Mapped["Assessment"] = relationship(back_populates="app_groups")

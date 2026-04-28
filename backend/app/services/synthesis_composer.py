@@ -63,6 +63,43 @@ _SKILL_TO_CONCERN: dict[str, str] = {
     "observability_translation":"observability.tf",
 }
 
+# Canonical root variables that every synthesized Terraform module needs.
+# Provider auth vars are referenced in providers.tf; OCM module vars are
+# referenced in the ocm sub-module but must be declared at the root so
+# `terraform plan` doesn't fail with "undeclared variable" errors.
+CANONICAL_ROOT_VARS: list[dict[str, Any]] = [
+    {"name": "tenancy_ocid", "type": "string", "description": "OCID of the OCI tenancy"},
+    {"name": "user_ocid", "type": "string", "description": "OCID of the OCI user for API key auth"},
+    {"name": "fingerprint", "type": "string", "description": "Fingerprint for the OCI API signing key"},
+    {"name": "private_key_path", "type": "string", "description": "Path to the private key for OCI API signing"},
+    {"name": "region", "type": "string", "description": "OCI region identifier (e.g. us-ashburn-1)"},
+    {"name": "compartment_id", "type": "string", "description": "OCID of the target OCI compartment"},
+    {"name": "migration_name", "type": "string", "description": "Short label for the migration", "default": "migration"},
+    {"name": "target_vcn_ocid", "type": "string", "description": "OCID of the target VCN (when no VCN is synthesized)", "default": "null"},
+    {"name": "target_subnet_ocid", "type": "string", "description": "OCID of the target subnet (when no subnet is synthesized)", "default": "null"},
+    {"name": "aws_credentials_secret_ocid", "type": "string", "description": "OCI Vault secret OCID holding AWS credentials for OCM discovery", "default": "null", "sensitive": True},
+]
+
+
+def _render_canonical_var(var_def: dict) -> str:
+    """Render a single canonical variable definition as an HCL block string."""
+    lines = [f'variable "{var_def["name"]}" {{']
+    lines.append(f'  type        = {var_def["type"]}')
+    lines.append(f'  description = "{var_def["description"]}"')
+    if var_def.get("sensitive"):
+        lines.append(f'  sensitive   = true')
+    if "default" in var_def:
+        d = var_def["default"]
+        if d == "null":
+            lines.append(f'  default     = null')
+        elif isinstance(d, str):
+            lines.append(f'  default     = "{d}"')
+        else:
+            lines.append(f'  default     = {d}')
+    lines.append("}")
+    return "\n".join(lines)
+
+
 # Top-level HCL block regexes. Not a full HCL parser — brace-balanced
 # scanner finds the block body. Works for well-formed LLM output.
 _BLOCK_TYPES = ("resource", "data", "module", "variable", "output",
@@ -267,6 +304,19 @@ def compose_terraform(
                            f"{filename.replace('.tf','')} resources.\n",
             blocks=blocks,
         )
+
+    # Inject canonical root variables that no skill declared. These are
+    # required by providers.tf and the OCM sub-module but aren't emitted
+    # by any individual skill writer.
+    for var_def in CANONICAL_ROOT_VARS:
+        name = var_def["name"]
+        if name not in variable_blocks:
+            canonical_body = _render_canonical_var(var_def)
+            variable_blocks[name] = HclBlock(
+                kind="variable",
+                labels=(name,),
+                body=canonical_body,
+            )
 
     if variable_blocks:
         result.files["variables.tf"] = _render_file(

@@ -39,11 +39,11 @@ When unsure, emit the alarm with a TODO comment and the original AWS namespace/m
 
 ```hcl
 resource "oci_monitoring_alarm" "cpu_high" {
-  compartment_id          = var.compartment_ocid
+  compartment_id          = var.compartment_id
   destinations            = [oci_ons_notification_topic.alerts.id]
   display_name            = "cpu-high"
   is_enabled              = true
-  metric_compartment_id   = var.compartment_ocid
+  metric_compartment_id   = var.compartment_id
   namespace               = "oci_computeagent"
   query                   = "CpuUtilization[1m].mean() > 80"
   severity                = "CRITICAL"
@@ -82,7 +82,7 @@ OCI's model: **Log Group** is a container, **Log** is the queryable stream insid
 
 ```hcl
 resource "oci_logging_log_group" "app" {
-  compartment_id = var.compartment_ocid
+  compartment_id = var.compartment_id
   display_name   = "app-logs"
 }
 
@@ -106,10 +106,10 @@ AWS `SubscriptionFilter` → OCI Service Connector Hub flow. Do NOT attempt to c
 ```hcl
 resource "oci_sch_service_connector" "logs_to_stream" {
   display_name   = "app-logs-to-kafka"
-  compartment_id = var.compartment_ocid
+  compartment_id = var.compartment_id
   source {
     kind = "logging"
-    log_sources { compartment_id = var.compartment_ocid
+    log_sources { compartment_id = var.compartment_id
                    log_group_id   = oci_logging_log_group.app.id
                    log_id         = oci_logging_log.app_access.id }
   }

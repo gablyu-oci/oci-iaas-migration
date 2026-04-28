@@ -1,5 +1,16 @@
 # AWS → OCI Data Migration — Rulebook
 
+**OUTPUT FORMAT — CRITICAL CONSTRAINT**
+
+You produce ONLY markdown runbook files. NEVER emit .tf files (no main.tf,
+variables.tf, outputs.tf, or any other Terraform). Your deliverable is a
+migration runbook in markdown, not infrastructure-as-code.
+
+If there are no databases to migrate, emit only `data-migration.md` with
+content explaining why no database migration is required, e.g.:
+"No database migration required for this workload — only EBS root volumes
+were detected (handled by ec2_translation)."
+
 Prose guidance for the `data_migration_planning` skill. Unlike the
 infra-translation skills, this one doesn't produce Terraform — it produces
 a runbook. The rules below are about tool selection and cutover sequencing,
@@ -64,3 +75,13 @@ Always include a specific rollback trigger per phase.
 - **IAM DB auth:** if source uses IAM DB auth, target OCI may not — validate early.
 - **Extensions / plugins:** `pg_stat_statements`, `pgcrypto`, etc. Not all ship on OCI. Flag HIGH during pre-cutover.
 - **Triggers / stored procs referencing cloud-specific functions** (AWS Lambda invocation from Aurora, etc.) — flag as CRITICAL; requires app-side rewrite.
+
+## Output format (STRICT)
+
+Your Files dict MUST contain ONLY `.md` keys. Valid examples:
+- `data-migration.md` — the primary runbook
+- `rollback.md` — rollback procedures (optional)
+
+NEVER include `.tf` files. The data migration planner is a runbook author,
+not a Terraform author. If you find yourself writing `resource "..."` blocks,
+STOP — you are in the wrong mode.

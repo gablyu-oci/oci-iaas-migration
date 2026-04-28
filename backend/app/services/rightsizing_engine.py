@@ -127,6 +127,107 @@ def _fallback_default(
     }
 
 
+def compute_direct_mapping(instance_type: str) -> dict[str, Any]:
+    """Direct 1:1 lift-and-shift mapping — allocate the SAME vCPU + memory as
+    the source AWS instance on the family-preferred OCI shape. No CloudWatch
+    usage considered.
+
+    Used to give the Plan UI a "lift-and-shift" alternative next to the
+    rightsized recommendation, so users can pick whether to trust the usage
+    data or match the source 1:1.
+    """
+    aws_spec = AWS_INSTANCE_SPECS.get(instance_type)
+    if aws_spec is None:
+        return _fallback_default(instance_type)
+
+    aws_vcpus: int = aws_spec["vcpus"]
+    aws_memory: float = aws_spec["memory_gb"]
+    aws_cost: float = aws_spec["monthly_cost_usd"]
+    aws_arch: str = aws_spec.get("arch", "x86_64")
+    aws_is_gpu: bool = bool(aws_spec.get("gpu", False))
+    aws_family = _family_of(instance_type)
+
+    # GPU path — reuse the fixed-shape mapping; direct == rightsized here
+    # since fixed shapes don't size per OCPU.
+    if aws_is_gpu:
+        gpu_rec = _gpu_recommendation(instance_type, aws_spec, aws_cost, {})
+        if gpu_rec is not None:
+            gpu_rec["notes"] = ["Direct 1:1 GPU mapping — same GPU class as source."] + gpu_rec["notes"]
+            return gpu_rec
+
+    # Flex path — match source specs exactly (no utilisation-based downsizing,
+    # no comfort factor; we want the lift-and-shift envelope).
+    preferred_name = AWS_FAMILY_TO_OCI.get(aws_family)
+    arch_matched: list[str] = [
+        name for name, shape in OCI_FLEX_SHAPES.items()
+        if shape.get("arch") == aws_arch
+    ]
+    if preferred_name and preferred_name in OCI_FLEX_SHAPES:
+        pref_arch = OCI_FLEX_SHAPES[preferred_name].get("arch")
+        if pref_arch == aws_arch and preferred_name not in arch_matched:
+            arch_matched.insert(0, preferred_name)
+
+    # Exact match on AWS vCPU/memory (clamped to shape envelopes).
+    effective_cpu = max(1, int(math.ceil(aws_vcpus)))
+    effective_mem = max(1, int(math.ceil(aws_memory)))
+
+    fitting = [
+        name for name in arch_matched
+        if OCI_FLEX_SHAPES[name]["min_ocpu"] <= effective_cpu <= OCI_FLEX_SHAPES[name]["max_ocpu"]
+        and OCI_FLEX_SHAPES[name]["min_mem"] <= effective_mem <= OCI_FLEX_SHAPES[name]["max_mem"]
+    ]
+
+    if preferred_name and preferred_name in fitting:
+        best_shape_name = preferred_name
+    elif fitting:
+        best_shape_name = min(
+            fitting,
+            key=lambda n: _monthly_cost(OCI_FLEX_SHAPES[n], effective_cpu, effective_mem),
+        )
+    else:
+        best_shape_name = DEFAULT_ARM_SHAPE if aws_arch == "aarch64" else DEFAULT_X86_SHAPE
+        shape = OCI_FLEX_SHAPES[best_shape_name]
+        effective_cpu = min(effective_cpu, shape["max_ocpu"])
+        effective_mem = min(effective_mem, shape["max_mem"])
+
+    best_cost = _monthly_cost(OCI_FLEX_SHAPES[best_shape_name], effective_cpu, effective_mem)
+
+    notes = [
+        f"Direct 1:1 lift-and-shift: match source {aws_vcpus} vCPU / "
+        f"{aws_memory:g} GB on {best_shape_name}.",
+        "No CloudWatch usage applied — capacity assumes worst case (peak AWS spec).",
+    ]
+    if best_cost < aws_cost:
+        savings_pct = round((1 - best_cost / aws_cost) * 100, 1)
+        notes.append(f"Estimated {savings_pct}% monthly savings vs. AWS On-Demand.")
+
+    return {
+        "recommended_oci_shape": best_shape_name,
+        "ocpus": effective_cpu,
+        "memory_gb": effective_mem,
+        "monthly_cost": best_cost,
+        "aws_monthly_cost": aws_cost,
+        "confidence": "high",
+        "notes": notes,
+    }
+
+
+def compute_both_mappings(
+    instance_type: str,
+    metrics: dict[str, Any] | None = None,
+    comfort_factor: float = 1.2,
+) -> dict[str, dict[str, Any]]:
+    """Return both the direct 1:1 and the usage-driven rightsized mappings.
+
+    The plan UI shows both side-by-side and lets the user pick which one the
+    generated Terraform should use.
+    """
+    return {
+        "direct":     compute_direct_mapping(instance_type),
+        "rightsized": compute_rightsizing(instance_type, metrics, comfort_factor),
+    }
+
+
 def compute_rightsizing(
     instance_type: str,
     metrics: dict[str, Any] | None = None,

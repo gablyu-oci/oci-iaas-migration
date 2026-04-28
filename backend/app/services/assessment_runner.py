@@ -30,7 +30,7 @@ from app.db.models import (
 )
 from app.services.cloudwatch_collector import collect_metrics
 from app.services.ssm_inventory import collect_inventory
-from app.services.rightsizing_engine import compute_rightsizing
+from app.services.rightsizing_engine import compute_both_mappings, compute_rightsizing
 from app.services.os_compat_checker import check_os_compatibility
 from app.services.readiness_scorer import compute_readiness_score
 from app.services.tco_calculator import compute_tco
@@ -259,13 +259,15 @@ def run_assessment(assessment_id: str) -> None:
         # Step 3: Rightsizing
         # ================================================================
         _update_step(session, assessment_id, "rightsizing")
+        alternatives_by_resource_id: dict[str, dict] = {}
         for r in ec2_resources:
             iid = _extract_instance_id(r)
             instance_type = _extract_instance_type(r)
             metrics = metrics_by_instance.get(iid, {}) if iid else {}
             try:
-                result = compute_rightsizing(instance_type, metrics)
-                rightsizing_by_resource_id[str(r.id)] = result
+                both = compute_both_mappings(instance_type, metrics)
+                rightsizing_by_resource_id[str(r.id)] = both["rightsized"]
+                alternatives_by_resource_id[str(r.id)] = both
             except Exception as exc:
                 logger.warning("Rightsizing failed for %s: %s", r.name, exc)
 
@@ -570,6 +572,8 @@ def run_assessment(assessment_id: str) -> None:
                     rightsizing.get("confidence", "low")
                 ),
                 rightsizing_notes="\n".join(rightsizing.get("notes", [])),
+                alternative_mappings=alternatives_by_resource_id.get(rid) or None,
+                selected_mapping_type=None,  # default = rightsized
                 os_type=os_compat.get("os_type"),
                 os_version=os_compat.get("os_version"),
                 os_compat_status=os_compat.get("status"),

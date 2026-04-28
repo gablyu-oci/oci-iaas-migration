@@ -1014,7 +1014,7 @@ def test_ocm_handoff_input_includes_compat_and_prereqs():
     # Template-level context the writer needs for variables.tf + handoff.md
     assert parsed["target_shape_whitelist"]    # non-empty
     assert parsed["ocm_prereqs"]               # non-empty
-    assert parsed["target_compartment_var"] == "compartment_ocid"
+    assert parsed["target_compartment_var"] == "compartment_id"
 
 
 def test_ocm_compatibility_target_shape_not_on_whitelist_downgrades_to_manual():
@@ -1202,7 +1202,7 @@ def test_synthesis_composer_splits_per_skill_into_concern_files():
                 '  cidr_block = "10.0.1.0/24"\n'
                 '}\n'
             ),
-            "variables.tf": 'variable "compartment_ocid" { type = string }\n',
+            "variables.tf": 'variable "compartment_id" { type = string }\n',
             "outputs.tf":   'output "vcn_id" { value = oci_core_vcn.main.id }\n',
         },
         "ec2_translation": {
@@ -1212,7 +1212,7 @@ def test_synthesis_composer_splits_per_skill_into_concern_files():
                 '  shape     = "VM.Standard.E5.Flex"\n'
                 '}\n'
             ),
-            "variables.tf": 'variable "compartment_ocid" { type = string }\n',  # dup
+            "variables.tf": 'variable "compartment_id" { type = string }\n',  # dup
         },
         "database_translation": {
             "main.tf": (
@@ -1239,7 +1239,7 @@ def test_synthesis_composer_splits_per_skill_into_concern_files():
     assert 'resource "oci_core_subnet" "primary"' in res.files["network.tf"]
 
     # Duplicate variable deduped (once, not twice)
-    assert res.files["variables.tf"].count('variable "compartment_ocid"') == 1
+    assert res.files["variables.tf"].count('variable "compartment_id"') == 1
 
     # Providers.tf is the canonical one (single provider block + required_providers)
     assert res.files["providers.tf"].count('provider "oci"') == 1
@@ -1317,8 +1317,9 @@ def test_synthesis_composer_ignores_unmapped_skills():
         },
     }
     res = compose_terraform(per_skill)
-    # No concern file emitted because no mapped skill produced HCL
-    assert all(not k.endswith(".tf") or k == "providers.tf"
+    # No concern-specific .tf emitted; only providers.tf and variables.tf
+    # (canonical root vars are always injected by compose_terraform)
+    assert all(not k.endswith(".tf") or k in ("providers.tf", "variables.tf")
                for k in res.files.keys())
 
 
@@ -1643,12 +1644,12 @@ def test_cfn_chunker_merge_deduplicates_variables_and_outputs():
     chunks = [
         {
             "main.tf": 'resource "oci_core_vcn" "a" { cidr_block = "10.0.0.0/16" }',
-            "variables.tf": 'variable "compartment_ocid" {\n  type = string\n}',
+            "variables.tf": 'variable "compartment_id" {\n  type = string\n}',
             "outputs.tf": 'output "vcn_id" {\n  value = oci_core_vcn.a.id\n}',
         },
         {
             "main.tf": 'resource "oci_core_subnet" "b" { cidr_block = "10.0.1.0/24" }',
-            "variables.tf": 'variable "compartment_ocid" {\n  type = string\n}\n\nvariable "subnet_cidr" {\n  type = string\n}',
+            "variables.tf": 'variable "compartment_id" {\n  type = string\n}\n\nvariable "subnet_cidr" {\n  type = string\n}',
             "outputs.tf": 'output "subnet_id" {\n  value = oci_core_subnet.b.id\n}',
         },
     ]
@@ -1659,8 +1660,8 @@ def test_cfn_chunker_merge_deduplicates_variables_and_outputs():
     assert "oci_core_subnet" in merged["main.tf"]
     assert "# --- chunk 0 ---" in merged["main.tf"]
     assert "# --- chunk 1 ---" in merged["main.tf"]
-    # compartment_ocid appears once — duplicate dropped
-    assert merged["variables.tf"].count('variable "compartment_ocid"') == 1
+    # compartment_id appears once — duplicate dropped
+    assert merged["variables.tf"].count('variable "compartment_id"') == 1
     # subnet_cidr is unique to chunk 1, preserved
     assert 'variable "subnet_cidr"' in merged["variables.tf"]
     # Both outputs survive (different names)

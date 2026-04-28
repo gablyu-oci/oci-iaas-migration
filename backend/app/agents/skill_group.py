@@ -453,12 +453,46 @@ def _writer_instructions(spec: SkillSpec) -> str:
         "resources, your output has ≥ 30 resource blocks. Long HCL is fine — "
         "truncated HCL is a failure that causes missing OCI resources at apply time.",
         "",
+        "## Traceability — REQUIRED on every resource / data / module block",
+        "",
+        "Every resource block you emit MUST carry its source AWS identifier so "
+        "the backend can locate the block later (e.g. to re-shape a compute "
+        "instance when the user picks a different OCI shape on the Plan UI).",
+        "",
+        "For each block, include BOTH of these:",
+        "",
+        "1. A trailing comment on the line after the opening brace:",
+        "   `# aws_source_id = <source-id>` where <source-id> is the original",
+        "   AWS resource id from the input (EC2 InstanceId `i-0abc123`, RDS",
+        "   DBInstanceIdentifier, EBS VolumeId `vol-0def456`, etc.).",
+        "",
+        "2. A `freeform_tags` attribute that also carries the source id when",
+        "   the OCI resource supports freeform_tags (most `oci_core_*`, "
+        "   `oci_database_*`, `oci_load_balancer_*` resources do):",
+        "",
+        "   ```hcl",
+        "   resource \"oci_core_instance\" \"web_server_prod\" {",
+        "     # aws_source_id = i-0abc1234567890abc",
+        "     ...",
+        "     freeform_tags = {",
+        "       aws_source_id = \"i-0abc1234567890abc\"",
+        "       managed_by    = \"oci-iaas-migration\"",
+        "     }",
+        "   }",
+        "   ```",
+        "",
+        "If the source resource has no stable AWS id (e.g. synthesised from a "
+        "CloudFormation template with no physical ids), use the CFN logical id "
+        "prefixed with `cfn:<LogicalId>` instead. If the OCI resource type has "
+        "no `freeform_tags`, the trailing comment is sufficient. Never omit "
+        "both — a block with neither cannot be patched later.",
+        "",
         _common_context_section(spec),
     ])
 
 
 def _reviewer_instructions(spec: SkillSpec) -> str:
-    return "\n".join([
+    base = "\n".join([
         f"You are the **{spec.display_name}** reviewer agent.",
         "",
         "Your only job is to score a draft translation and return structured "
@@ -493,6 +527,10 @@ def _reviewer_instructions(spec: SkillSpec) -> str:
         "",
         "Decision rules:",
         "- Any CRITICAL → NEEDS_FIXES.",
+        "- If the draft's file keys (`main.tf`, `variables.tf`, `outputs.tf`) are empty strings "
+        "or missing, that is CRITICAL — the writer failed to produce output. Set "
+        "decision=NEEDS_FIXES, confidence=0.0, and add a CRITICAL issue stating "
+        "'Writer produced empty or missing file content for <key>. Must regenerate.'",
         "- HIGH issues → NEEDS_FIXES unless the writer explicitly noted them as gaps.",
         "- Only MEDIUM/LOW → APPROVED_WITH_NOTES.",
         "- No issues → APPROVED.",
@@ -503,6 +541,26 @@ def _reviewer_instructions(spec: SkillSpec) -> str:
         "",
         _common_context_section(spec),
     ])
+
+    # Skill-specific reviewer guards
+    guards = []
+    if spec.skill_type == "data_migration_planning":
+        guards.append(
+            "\n## CRITICAL guard — no .tf files\n\n"
+            "If the writer's Files dict contains ANY key ending in `.tf` "
+            "(e.g. `main.tf`, `variables.tf`, `outputs.tf`), you MUST:\n"
+            "- Set decision = NEEDS_FIXES\n"
+            "- Set confidence = 0.0\n"
+            "- Add a CRITICAL issue: 'data_migration_planning emitted .tf "
+            "files; should be markdown only. Remove all .tf files and emit "
+            "only .md runbook files.'\n\n"
+            "This skill produces runbooks, not Terraform."
+        )
+
+    if guards:
+        base += "\n" + "\n".join(guards)
+
+    return base
 
 
 # Max output tokens for writer agents. The openai-agents SDK + OpenAI's
@@ -544,25 +602,73 @@ def _build_reviewer(spec: SkillSpec) -> Agent:
 
 # ─── The loop ─────────────────────────────────────────────────────────────────
 
-_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+_JSON_FENCE_RE = re.compile(r"```(?:json|JSON)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 
 def _extract_json(text: str) -> dict:
-    """Best-effort JSON extraction from a writer or reviewer response."""
+    """Best-effort JSON extraction from a writer or reviewer response.
+
+    Strategy:
+    1. Try the whole text as JSON (fastest path for well-behaved writers).
+    2. Try fenced code blocks (```json ... ```).
+    3. Find the LARGEST balanced { ... } substring and parse that.
+    4. Fall back to {"raw": text} if nothing works.
+    """
     if not isinstance(text, str):
         return {"raw": text}
     s = text.strip()
-    m = _JSON_FENCE_RE.search(s)
-    if m:
-        s = m.group(1)
-    else:
-        a, b = s.find("{"), s.rfind("}") + 1
-        if a != -1 and b > a:
-            s = s[a:b]
+
+    # 1. Direct parse
     try:
-        return json.loads(s)
-    except json.JSONDecodeError:
-        return {"raw": text}
+        result = json.loads(s)
+        if isinstance(result, dict):
+            return result
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # 2. Fenced code blocks — try all matches, pick the one that parses
+    #    as the largest dict (most keys).
+    best_fenced: dict | None = None
+    for m in _JSON_FENCE_RE.finditer(s):
+        try:
+            candidate = json.loads(m.group(1))
+            if isinstance(candidate, dict):
+                if best_fenced is None or len(candidate) > len(best_fenced):
+                    best_fenced = candidate
+        except (json.JSONDecodeError, ValueError):
+            continue
+    if best_fenced is not None:
+        return best_fenced
+
+    # 3. Find the largest balanced { ... } — scan for every top-level '{',
+    #    brace-balance to its '}', try to parse, keep the largest dict.
+    best_brace: dict | None = None
+    i = 0
+    while i < len(s):
+        if s[i] == '{':
+            depth = 0
+            j = i
+            while j < len(s):
+                if s[j] == '{':
+                    depth += 1
+                elif s[j] == '}':
+                    depth -= 1
+                    if depth == 0:
+                        candidate_str = s[i:j+1]
+                        try:
+                            candidate = json.loads(candidate_str)
+                            if isinstance(candidate, dict):
+                                if best_brace is None or len(candidate) > len(best_brace):
+                                    best_brace = candidate
+                        except (json.JSONDecodeError, ValueError):
+                            pass
+                        break
+                j += 1
+        i += 1
+    if best_brace is not None:
+        return best_brace
+
+    return {"raw": text}
 
 
 def _count_tool_calls(result) -> int:

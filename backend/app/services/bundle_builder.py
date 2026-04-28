@@ -106,6 +106,70 @@ def build_hybrid_bundle(
         )
         sections["reports"].append("reports/ocm-prereqs.md")
 
+    # When OCM handoff artifacts exist, wire them as a child module of the
+    # root Terraform stack so a single `terraform apply` covers both.
+    if any(p.startswith("terraform/ocm/") for p in out):
+        net_tf = out.get("terraform/network.tf", "")
+
+        # Parse actual VCN and subnet labels from network.tf
+        import re
+        vcn_labels = re.findall(r'resource\s+"oci_core_vcn"\s+"([^"]+)"', net_tf)
+        subnet_labels = re.findall(r'resource\s+"oci_core_subnet"\s+"([^"]+)"', net_tf)
+
+        vcn_label = vcn_labels[0] if vcn_labels else None
+        # Prefer a private subnet; fall back to first subnet
+        subnet_label = None
+        if subnet_labels:
+            for sl in subnet_labels:
+                if "private" in sl.lower():
+                    subnet_label = sl
+                    break
+            if subnet_label is None:
+                subnet_label = subnet_labels[0]
+
+        if vcn_label and subnet_label:
+            vcn_ref = f"oci_core_vcn.{vcn_label}.id"
+            subnet_ref = f"oci_core_subnet.{subnet_label}.id"
+            modules_tf = (
+                'module "ocm" {\n'
+                '  source                       = "./ocm"\n'
+                '  compartment_id             = var.compartment_id\n'
+                '  migration_name               = var.migration_name\n'
+                f'  target_vcn_ocid              = {vcn_ref}\n'
+                f'  target_subnet_ocid           = {subnet_ref}\n'
+                '  aws_credentials_secret_ocid  = var.aws_credentials_secret_ocid\n'
+                '}\n'
+            )
+        else:
+            modules_tf = (
+                'module "ocm" {\n'
+                '  source                       = "./ocm"\n'
+                '  compartment_id             = var.compartment_id\n'
+                '  migration_name               = var.migration_name\n'
+                '  target_vcn_ocid              = var.target_vcn_ocid\n'
+                '  target_subnet_ocid           = var.target_subnet_ocid\n'
+                '  aws_credentials_secret_ocid  = var.aws_credentials_secret_ocid\n'
+                '}\n'
+            )
+            # Log a gap so the operator knows wiring is incomplete.
+            gap_text = (
+                "\n\n## WARNING — OCM module wired to free variables\n\n"
+                "No `oci_core_vcn` or `oci_core_subnet` resource was found in the "
+                "synthesis output. The OCM child module's `target_vcn_ocid` and "
+                "`target_subnet_ocid` inputs fall back to `var.target_vcn_ocid` / "
+                "`var.target_subnet_ocid` — the operator must supply these at apply time.\n"
+            )
+            if "reports/gaps.md" in out:
+                out["reports/gaps.md"] += gap_text
+            else:
+                out["reports/gaps.md"] = gap_text
+            logger.warning(
+                "OCM module wired to free vars because no oci_core_vcn/subnet "
+                "found in synthesis output"
+            )
+        out["terraform/modules.tf"] = modules_tf
+        sections["terraform"].append("terraform/modules.tf")
+
     readme = _render_readme(
         migration_name=migration_name,
         resource_count=resource_count,
@@ -354,7 +418,7 @@ def _render_readme(
         "",
         "## Directory layout",
         "",
-        f"- `terraform/` ({tf_count} file(s)) — the HCL you `terraform apply`. If `terraform/ocm/` exists, that's a parallel stack for OCM-handed-off EC2 instances; apply it after the main `terraform/`.",
+        f"- `terraform/` ({tf_count} file(s)) — the HCL you `terraform apply`. If `terraform/ocm/` exists, it's wired as a child Terraform module via `modules.tf` — one apply covers both.",
         f"- `runbooks/` ({runbook_count} file(s)) — human-ordered checklists:",
         "  - `handoff.md` — OCM handoff prerequisites + asset-link + execute steps (present only in hybrid mode)",
         "  - `data-migration/` — per-DB and per-volume migration recipes with downtime estimates",
@@ -372,7 +436,7 @@ def _render_readme(
         "2. Verify OCI credentials, target compartment, and pre-existing Vault / IAM policies.",
         "3. `cd terraform && terraform init && terraform plan` — inspect the plan.",
         "4. `terraform apply` — provisions the unified stack.",
-        "5. If `terraform/ocm/` exists: `cd terraform/ocm && terraform apply` — kicks off OCM replication; monitor via the OCM progress card in the UI or `oci work-requests work-request list`.",
+        "5. The OCM submodule (if present) is applied automatically as part of step 4 — monitor via the OCM progress card in the UI or `oci work-requests work-request list`.",
         "6. Follow `runbooks/data-migration/` for any DB / volume data moves.",
         "7. Follow `runbooks/cutover/` for the ordered switchover.",
         "8. Run post-cutover validation per `runbooks/cutover/validation.md` (if present).",

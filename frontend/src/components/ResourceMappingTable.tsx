@@ -26,20 +26,63 @@ function shortType(awsType: string): string {
   return awsType.replace('AWS::', '').replace('Local DB', 'DB');
 }
 
+type ReviewStatus = 'pending' | 'ready' | 'failed' | null;
+
 export default function ResourceMappingTable({ appGroupId }: { appGroupId: string }) {
   const [mappings, setMappings] = useState<ResourceMapping[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [reviewStatus, setReviewStatus] = useState<ReviewStatus>(null);
 
+  // Initial load: deterministic mapping comes back immediately; the LLM
+  // review may be cached (status 'ready' on first request) or scheduled
+  // in the background by the backend (status 'pending').
   useEffect(() => {
     if (!appGroupId) return;
+    let cancelled = false;
     setLoading(true);
     setError(null);
     client
       .get(`/api/app-groups/${appGroupId}/resource-mapping`)
-      .then((res) => setMappings(res.data))
-      .catch((err) => setError(err?.message || 'Failed to load mapping'))
-      .finally(() => setLoading(false));
+      .then((res) => { if (!cancelled) setMappings(res.data); })
+      .catch((err) => { if (!cancelled) setError(err?.message || 'Failed to load mapping'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [appGroupId]);
+
+  // Poll review status while pending. When it flips to ready, refetch
+  // the main endpoint so the table swaps in the LLM-enriched entries.
+  useEffect(() => {
+    if (!appGroupId) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const poll = async () => {
+      try {
+        const res = await client.get(`/api/app-groups/${appGroupId}/resource-mapping/review-status`);
+        if (cancelled) return;
+        const next: ReviewStatus = res.data?.status ?? null;
+        setReviewStatus((prev) => {
+          if (prev === 'pending' && next === 'ready') {
+            client
+              .get(`/api/app-groups/${appGroupId}/resource-mapping`)
+              .then((r) => { if (!cancelled) setMappings(r.data); })
+              .catch(() => { /* keep deterministic table on refetch error */ });
+          }
+          return next;
+        });
+        if (!cancelled && next === 'pending') {
+          timer = setTimeout(poll, 3000);
+        }
+      } catch {
+        if (!cancelled) timer = setTimeout(poll, 5000);
+      }
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, [appGroupId]);
 
   if (loading) {
@@ -81,8 +124,45 @@ export default function ResourceMappingTable({ appGroupId }: { appGroupId: strin
     );
   }
 
+  const reviewBadge = (() => {
+    if (reviewStatus === 'pending') {
+      return (
+        <span className="inline-flex items-center gap-1.5 text-xs" style={{ color: 'var(--color-text-dim)' }}>
+          <span className="spinner" style={{ width: '10px', height: '10px' }} />
+          AI review in progress…
+        </span>
+      );
+    }
+    if (reviewStatus === 'ready') {
+      return (
+        <span className="text-xs" style={{ color: 'var(--color-success, #16a34a)' }}>
+          ✓ AI-reviewed
+        </span>
+      );
+    }
+    if (reviewStatus === 'failed') {
+      return (
+        <span className="text-xs" style={{ color: 'var(--color-text-dim)' }}>
+          AI review unavailable — showing deterministic mapping
+        </span>
+      );
+    }
+    return null;
+  })();
+
   return (
     <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--color-rule)' }}>
+      {reviewBadge && (
+        <div
+          className="px-3 py-1.5"
+          style={{
+            background: 'var(--color-raised)',
+            borderBottom: '1px solid var(--color-rule)',
+          }}
+        >
+          {reviewBadge}
+        </div>
+      )}
       <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
         <thead>
           <tr style={{ background: 'var(--color-raised)', borderBottom: '1px solid var(--color-rule)' }}>

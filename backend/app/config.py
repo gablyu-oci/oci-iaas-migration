@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     LLM_REVIEWER_MODEL: str = "oci/openai.gpt-5.4-mini"
     LLM_ORCHESTRATOR_MODEL: str = "oci/openai.gpt-5.4"
 
+    SYNTHESIS_POLISH_ENABLED: bool = True
+    SYNTHESIS_VALIDATE_AND_REPAIR: bool = True
+
     JWT_SECRET: str = "change-me-in-production"
     JWT_EXPIRE_MINUTES: int = 1440
     model_config = {"env_file": ".env", "extra": "ignore"}
