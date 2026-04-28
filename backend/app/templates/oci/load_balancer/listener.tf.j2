@@ -1,0 +1,34 @@
+# Adapted from cfn output/web-app-stack-terraform/main.tf
+# aws_source_id = {{ aws_source_id }}
+resource "oci_load_balancer_listener" "{{ label }}" {
+  load_balancer_id         = {{ load_balancer_id }}
+  name                     = "{{ name }}"
+  default_backend_set_name = {{ default_backend_set_name }}
+  port                     = {{ port }}
+  protocol                 = "{{ protocol }}"
+
+{% if ssl_configuration is defined and ssl_configuration %}
+  ssl_configuration {
+    certificate_name        = "{{ ssl_configuration.certificate_name }}"
+    verify_peer_certificate = {{ ssl_configuration.verify_peer_certificate | default(false) | lower }}
+  }
+{% endif %}
+
+{% if connection_configuration is defined and connection_configuration %}
+  connection_configuration {
+    idle_timeout_in_seconds = {{ connection_configuration.idle_timeout_in_seconds }}
+  }
+{% endif %}
+
+{% if hostname_names is defined and hostname_names %}
+  hostname_names = {{ hostname_names | tojson }}
+{% endif %}
+
+{% if path_route_set_name is defined and path_route_set_name %}
+  path_route_set_name = "{{ path_route_set_name }}"
+{% endif %}
+
+{% if rule_set_names is defined and rule_set_names %}
+  rule_set_names = {{ rule_set_names | tojson }}
+{% endif %}
+}

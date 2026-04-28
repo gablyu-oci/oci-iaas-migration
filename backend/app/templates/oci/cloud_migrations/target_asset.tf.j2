@@ -1,0 +1,21 @@
+# Adapted from ocm_handoff_translation/conversion-rules.md
+# aws_source_id = {{ aws_source_id }}
+resource "oci_cloud_migrations_target_asset" "{{ label }}" {
+{% if compartment_id is defined and compartment_id %}
+  compartment_id             = {{ compartment_id }}
+{% endif %}
+  migration_plan_id          = {{ migration_plan_id }}
+  type                       = "{{ type | default('INSTANCE') }}"
+  is_excluded_from_execution = {{ is_excluded_from_execution | default(false) | lower }}
+  preferred_shape_type       = "{{ preferred_shape_type | default('VM') }}"
+
+  user_spec {
+    shape = "{{ shape }}"
+    shape_config {
+      ocpus         = {{ ocpus }}
+      memory_in_gbs = {{ memory_in_gbs }}
+    }
+  }
+
+  block_volumes_performance = {{ block_volumes_performance | default(10) }}
+}

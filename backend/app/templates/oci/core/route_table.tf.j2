@@ -1,0 +1,26 @@
+# Adapted from ai-accelerator-tf/network.tf
+# aws_source_id = {{ aws_source_id }}
+resource "oci_core_route_table" "{{ label }}" {
+  compartment_id = {{ compartment_id }}
+  vcn_id         = {{ vcn_id }}
+  display_name   = "{{ display_name }}"
+
+{% for rule in route_rules %}
+  route_rules {
+{% if rule.description is defined and rule.description %}
+    description       = "{{ rule.description }}"
+{% endif %}
+    destination       = "{{ rule.destination }}"
+    destination_type  = "{{ rule.destination_type }}"
+    network_entity_id = {{ rule.network_entity_id }}
+  }
+
+{% endfor %}
+{% if freeform_tags is defined and freeform_tags %}
+  freeform_tags = {
+{% for key, value in freeform_tags.items() %}
+    {{ key }} = "{{ value }}"
+{% endfor %}
+  }
+{% endif %}
+}

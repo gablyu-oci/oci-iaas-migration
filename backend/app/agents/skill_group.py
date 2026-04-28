@@ -177,6 +177,13 @@ KNOWN_AWS_TYPES: frozenset[str] = frozenset().union(*(
     s for s in SKILL_TO_AWS_TYPES.values() if s is not None
 ))
 
+# Skills migrated to structured JSON output + template rendering (Phase 1)
+STRUCTURED_OUTPUT_SKILLS: frozenset[str] = frozenset({
+    "network_translation",
+    "ocm_handoff_translation",
+    "loadbalancer_translation",
+})
+
 
 SKILL_SPECS: dict[str, SkillSpec] = {
     "cfn_terraform": SkillSpec(
@@ -491,6 +498,93 @@ def _writer_instructions(spec: SkillSpec) -> str:
     ])
 
 
+def _structured_writer_instructions(spec: SkillSpec) -> str:
+    """Writer instructions for skills using structured JSON output."""
+    from app.templates.schemas import get_schemas_for_skill
+
+    # Get the JSON schemas for templates relevant to this skill
+    schemas_json = get_schemas_for_skill(spec.skill_type)
+
+    tool_tips = []
+    tool_tips.append(
+        "- `lookup_aws_mapping(aws_type)`: resolve an AWS type's canonical "
+        "OCI target from the YAML. Prefer this over guessing."
+    )
+    tool_tips.append(
+        "- `list_resources_for_skill(skill)`: list every AWS type this skill "
+        "can translate."
+    )
+    # Note: terraform_validate is NOT needed for structured output skills
+    # since the renderer guarantees valid HCL. But we keep it available
+    # for edge cases.
+    if spec.needs_terraform_validate:
+        tool_tips.append(
+            "- `terraform_validate(main_tf, variables_tf, outputs_tf)`: OPTIONAL — "
+            "the template renderer validates schema, but you can double-check "
+            "complex free_form_hcl blocks."
+        )
+
+    return "\n".join([
+        f"You are the **{spec.display_name}** writer agent.",
+        "",
+        spec.description.strip(),
+        "",
+        f"Expected input shape: {spec.input_shape_hint}",
+        "",
+        "## IMPORTANT: Structured Output Mode",
+        "",
+        "You produce a **JSON array of resource specs**, NOT raw HCL.",
+        "Each spec is an object with exactly these keys:",
+        "",
+        "```json",
+        "[",
+        "  {",
+        '    "template": "<domain/resource_type>",',
+        '    "label": "<terraform_label>",',
+        '    "params": { ... }',
+        "  }",
+        "]",
+        "```",
+        "",
+        "The `template` field selects which Jinja2 template renders the resource.",
+        "The `label` becomes the Terraform resource label (e.g., `oci_core_vcn.main`).",
+        "The `params` must conform to the template's JSON Schema (below).",
+        "",
+        "For resources not covered by any template, use:",
+        '  `{"template": "free_form_hcl", "label": "<label>", "params": {"hcl": "<the_hcl_string>"}}`',
+        "",
+        "## Available Templates and Their Schemas",
+        "",
+        schemas_json,
+        "",
+        "## Tools available to you",
+        "",
+        "\n".join(tool_tips),
+        "",
+        "## Workflow",
+        "",
+        "1. If reviewer feedback was included, treat listed issues as the ONLY work — "
+        "do not regenerate from scratch.",
+        "2. Otherwise produce a complete first draft as a JSON array of specs.",
+        "3. Call tools to verify your mappings.",
+        "4. Return the finished spec array as raw JSON (no markdown fences).",
+        "",
+        "## Completeness",
+        "",
+        "Translate EVERY resource the input asks about. Each AWS resource becomes "
+        "one or more specs in the array. If the input has 30 resources, your output "
+        "has >= 30 spec entries.",
+        "",
+        "## Traceability",
+        "",
+        "Every spec's params MUST include `aws_source_id` with the original AWS "
+        "resource id. Also include `freeform_tags` with `aws_source_id` and "
+        "`managed_by = \"oci-iaas-migration\"` where the OCI resource supports tags.",
+        "",
+        _common_context_section(spec),
+    ])
+
+
 def _reviewer_instructions(spec: SkillSpec) -> str:
     base = "\n".join([
         f"You are the **{spec.display_name}** reviewer agent.",
@@ -582,9 +676,16 @@ def _build_writer(spec: SkillSpec) -> Agent:
     tools = [lookup_aws_mapping, list_resources_for_skill]
     if spec.needs_terraform_validate:
         tools.append(terraform_validate)
+
+    # Use structured output instructions for Phase 1 skills
+    if spec.skill_type in STRUCTURED_OUTPUT_SKILLS:
+        instructions = _structured_writer_instructions(spec)
+    else:
+        instructions = _writer_instructions(spec)
+
     return Agent(
         name=f"{spec.display_name} (writer)",
-        instructions=_writer_instructions(spec),
+        instructions=instructions,
         model=build_model(get_model(spec.skill_type, "enhancement")),
         model_settings=ModelSettings(max_tokens=_WRITER_MAX_OUTPUT_TOKENS),
         tools=tools,
@@ -603,6 +704,7 @@ def _build_reviewer(spec: SkillSpec) -> Agent:
 # ─── The loop ─────────────────────────────────────────────────────────────────
 
 _JSON_FENCE_RE = re.compile(r"```(?:json|JSON)?\s*(\{.*?\})\s*```", re.DOTALL)
+_JSON_ARRAY_FENCE_RE = re.compile(r"```(?:json|JSON)?\s*(\[.*?\])\s*```", re.DOTALL)
 
 
 def _extract_json(text: str) -> dict:
@@ -623,6 +725,8 @@ def _extract_json(text: str) -> dict:
         result = json.loads(s)
         if isinstance(result, dict):
             return result
+        if isinstance(result, list):
+            return {"specs": result}
     except (json.JSONDecodeError, ValueError):
         pass
 
@@ -639,6 +743,15 @@ def _extract_json(text: str) -> dict:
             continue
     if best_fenced is not None:
         return best_fenced
+
+    # 2b. Fenced array blocks — try all ```json [...] ``` matches
+    for m in _JSON_ARRAY_FENCE_RE.finditer(s):
+        try:
+            candidate = json.loads(m.group(1))
+            if isinstance(candidate, list):
+                return {"specs": candidate}
+        except (json.JSONDecodeError, ValueError):
+            continue
 
     # 3. Find the largest balanced { ... } — scan for every top-level '{',
     #    brace-balance to its '}', try to parse, keep the largest dict.
@@ -667,6 +780,29 @@ def _extract_json(text: str) -> dict:
         i += 1
     if best_brace is not None:
         return best_brace
+
+    # 3b. Find the largest balanced [ ... ] — for structured output arrays.
+    i = 0
+    while i < len(s):
+        if s[i] == '[':
+            depth = 0
+            j = i
+            while j < len(s):
+                if s[j] == '[':
+                    depth += 1
+                elif s[j] == ']':
+                    depth -= 1
+                    if depth == 0:
+                        candidate_str = s[i:j+1]
+                        try:
+                            candidate = json.loads(candidate_str)
+                            if isinstance(candidate, list):
+                                return {"specs": candidate}
+                        except (json.JSONDecodeError, ValueError):
+                            pass
+                        break
+                j += 1
+        i += 1
 
     return {"raw": text}
 
@@ -721,6 +857,73 @@ class SkillGroup:
         self.writer = _build_writer(spec)
         self.reviewer = _build_reviewer(spec)
 
+    def _is_structured_output(self) -> bool:
+        """Whether this skill uses structured JSON output + template rendering."""
+        return self.spec.skill_type in STRUCTURED_OUTPUT_SKILLS
+
+    def _process_structured_output(self, draft: dict) -> dict:
+        """For structured output skills, render specs to HCL files.
+
+        Takes the writer's output (which should contain a JSON array of specs),
+        renders through the template engine, and returns a dict matching the
+        standard {filename: content} format downstream expects.
+        """
+        from app.services.template_renderer import render_specs, TemplateRenderError
+
+        specs = self._extract_specs_from_draft(draft)
+
+        if not specs:
+            _log.warning(
+                "%s: structured output produced no specs; returning draft as-is",
+                self.spec.skill_type,
+            )
+            return draft
+
+        try:
+            rendered_files = render_specs(specs)
+        except TemplateRenderError as exc:
+            _log.error(
+                "%s: template rendering failed: %s", self.spec.skill_type, exc,
+            )
+            draft["_render_error"] = str(exc)
+            return draft
+
+        result = {}
+        for filename, content in rendered_files.items():
+            result[filename] = content
+
+        # Preserve non-HCL fields from draft (resource_mappings, gaps, etc.)
+        for key in ("resource_mappings", "gaps", "migration_prerequisites",
+                     "handoff.md", "variables.tf", "outputs.tf"):
+            if key in draft:
+                result[key] = draft[key]
+
+        # Store the original specs for debugging/review
+        result["_template_specs"] = specs
+        return result
+
+    @staticmethod
+    def _extract_specs_from_draft(draft: dict) -> list[dict]:
+        """Extract template specs from the writer's structured output."""
+        if isinstance(draft, list):
+            return draft
+        if "specs" in draft and isinstance(draft["specs"], list):
+            return draft["specs"]
+        if "resources" in draft and isinstance(draft["resources"], list):
+            return draft["resources"]
+        if "raw" in draft:
+            raw = draft["raw"]
+            if isinstance(raw, str):
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, list):
+                        return parsed
+                except (json.JSONDecodeError, ValueError):
+                    pass
+        if "template" in draft and "label" in draft and "params" in draft:
+            return [draft]
+        return []
+
     async def run(
         self,
         input_content: str,
@@ -744,6 +947,22 @@ class SkillGroup:
             writer_tools += _count_tool_calls(wr)
             draft = _extract_json(wr.final_output)
 
+            # For structured output skills, also try parsing as a JSON array
+            if self._is_structured_output():
+                raw_output = wr.final_output
+                if isinstance(raw_output, str):
+                    import json as _json
+                    stripped = raw_output.strip()
+                    try:
+                        parsed = _json.loads(stripped)
+                        if isinstance(parsed, list):
+                            draft = {"specs": parsed}
+                        elif isinstance(parsed, dict):
+                            draft = parsed
+                    except (_json.JSONDecodeError, ValueError):
+                        # Fall back to existing extraction (already done above)
+                        pass
+
             # ── Reviewer turn ──────────────────────────────────────────────
             review_prompt = self._build_reviewer_turn(input_content, draft)
             rr = await Runner.run(self.reviewer, input=review_prompt, context=ctx)
@@ -764,6 +983,10 @@ class SkillGroup:
             if decision in ("APPROVED", "APPROVED_WITH_NOTES") and confidence >= self.confidence_threshold:
                 stopped_early = iteration < self.max_iterations
                 break
+
+        # Post-process: render structured output specs to HCL files
+        if self._is_structured_output():
+            draft = self._process_structured_output(draft)
 
         return SkillRunResult(
             skill_type=self.spec.skill_type,
@@ -800,6 +1023,96 @@ class SkillGroup:
             f"## Draft To Review\n```json\n{draft_text}\n```\n\n"
             "Score this draft per your contract."
         )
+
+    # ── Structured output helpers ─────────────────────────────────────────
+
+    def _is_structured_output(self) -> bool:
+        """Whether this skill uses structured JSON output."""
+        return self.spec.skill_type in STRUCTURED_OUTPUT_SKILLS
+
+    def _process_structured_output(self, draft: dict) -> dict:
+        """For structured output skills, render specs to HCL files.
+
+        Takes the writer's output (which should contain a JSON array of specs),
+        renders through the template engine, and returns a dict matching the
+        standard {filename: content} format downstream expects.
+        """
+        from app.services.template_renderer import render_specs, TemplateRenderError
+
+        # The writer output might be wrapped in various ways. Extract the specs list.
+        specs = self._extract_specs_from_draft(draft)
+
+        if not specs:
+            _log.warning(
+                "%s: structured output produced no specs; falling back to draft as-is",
+                self.spec.skill_type,
+            )
+            return draft
+
+        try:
+            rendered_files = render_specs(specs)
+        except TemplateRenderError as exc:
+            _log.error(
+                "%s: template rendering failed: %s",
+                self.spec.skill_type, exc,
+            )
+            # Include error in draft so reviewer can catch it
+            draft["_render_error"] = str(exc)
+            return draft
+
+        # Merge rendered HCL into the standard draft format
+        result = {}
+        for filename, content in rendered_files.items():
+            result[filename] = content
+
+        # Preserve non-HCL fields from draft (resource_mappings, gaps, etc.)
+        for key in ("resource_mappings", "gaps", "migration_prerequisites", "handoff.md"):
+            if key in draft:
+                result[key] = draft[key]
+
+        # Store the original specs for debugging/review
+        result["_template_specs"] = specs
+
+        return result
+
+    @staticmethod
+    def _extract_specs_from_draft(draft: dict) -> list[dict]:
+        """Extract template specs from the writer's structured output.
+
+        The writer might return:
+        - A list directly (if we parsed it as a list)
+        - A dict with a "specs" key containing the list
+        - A dict with a "raw" key containing JSON text of the list
+        """
+        # If draft is already a list (shouldn't happen after _extract_json,
+        # but defensive)
+        if isinstance(draft, list):
+            return draft
+
+        # Check for "specs" key
+        if "specs" in draft and isinstance(draft["specs"], list):
+            return draft["specs"]
+
+        # Check for "resources" key
+        if "resources" in draft and isinstance(draft["resources"], list):
+            return draft["resources"]
+
+        # Check for "raw" key (fallback from _extract_json)
+        if "raw" in draft:
+            raw = draft["raw"]
+            if isinstance(raw, str):
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, list):
+                        return parsed
+                except (json.JSONDecodeError, ValueError):
+                    pass
+
+        # Check if the draft itself looks like a single spec
+        if "template" in draft and "label" in draft and "params" in draft:
+            return [draft]
+
+        return []
 
 
 # ─── Convenience ───────────────────────────────────────────────────────────────

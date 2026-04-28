@@ -1,0 +1,12 @@
+# Adapted from ocm_handoff_translation/conversion-rules.md
+# aws_source_id = {{ aws_source_id | default('plan-level') }}
+resource "oci_cloud_migrations_migration_plan" "{{ label }}" {
+  compartment_id = {{ compartment_id }}
+  migration_id   = {{ migration_id }}
+  display_name   = "{{ display_name }}"
+
+  strategies {
+    strategy_type = "{{ strategy_type | default('AS_IS') }}"
+    resource_type = "{{ resource_type | default('VM') }}"
+  }
+}

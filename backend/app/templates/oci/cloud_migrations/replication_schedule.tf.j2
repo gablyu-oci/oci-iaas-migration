@@ -1,0 +1,7 @@
+# Adapted from ocm_handoff_translation/conversion-rules.md
+# aws_source_id = {{ aws_source_id | default('schedule-level') }}
+resource "oci_cloud_migrations_replication_schedule" "{{ label }}" {
+  compartment_id        = {{ compartment_id }}
+  display_name          = "{{ display_name }}"
+  execution_recurrences = "{{ execution_recurrences }}"
+}

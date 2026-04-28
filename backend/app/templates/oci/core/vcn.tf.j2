@@ -1,0 +1,18 @@
+# Adapted from ai-accelerator-tf/network.tf and cfn output/web-app-stack-terraform/main.tf
+# aws_source_id = {{ aws_source_id }}
+resource "oci_core_vcn" "{{ label }}" {
+  compartment_id = {{ compartment_id }}
+  cidr_blocks    = {{ cidr_blocks | tojson }}
+  display_name   = "{{ display_name }}"
+{% if dns_label is defined and dns_label %}
+  dns_label      = "{{ dns_label }}"
+{% endif %}
+
+{% if freeform_tags is defined and freeform_tags %}
+  freeform_tags = {
+{% for key, value in freeform_tags.items() %}
+    {{ key }} = "{{ value }}"
+{% endfor %}
+  }
+{% endif %}
+}

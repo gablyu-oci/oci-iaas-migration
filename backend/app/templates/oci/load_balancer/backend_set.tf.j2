@@ -1,0 +1,21 @@
+# Adapted from cfn output/web-app-stack-terraform/main.tf
+# aws_source_id = {{ aws_source_id }}
+resource "oci_load_balancer_backend_set" "{{ label }}" {
+  load_balancer_id = {{ load_balancer_id }}
+  name             = "{{ name }}"
+  policy           = "{{ policy | default('ROUND_ROBIN') }}"
+
+  health_checker {
+    protocol          = "{{ health_checker.protocol }}"
+    port              = {{ health_checker.port }}
+{% if health_checker.url_path is defined and health_checker.url_path %}
+    url_path          = "{{ health_checker.url_path }}"
+{% endif %}
+    interval_ms       = {{ health_checker.interval_ms }}
+    timeout_in_millis = {{ health_checker.timeout_in_millis }}
+    retries           = {{ health_checker.retries }}
+{% if health_checker.return_code is defined %}
+    return_code       = {{ health_checker.return_code }}
+{% endif %}
+  }
+}

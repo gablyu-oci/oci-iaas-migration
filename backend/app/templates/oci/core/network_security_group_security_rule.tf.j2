@@ -1,0 +1,47 @@
+# Adapted from cfn output/web-app-stack-terraform/main.tf
+# aws_source_id = {{ aws_source_id }}
+resource "oci_core_network_security_group_security_rule" "{{ label }}" {
+  network_security_group_id = {{ network_security_group_id }}
+  direction                 = "{{ direction }}"
+  protocol                  = "{{ protocol }}"
+{% if direction == "INGRESS" %}
+{% if source is defined and source %}
+  source                    = {{ source }}
+  source_type               = "{{ source_type | default('CIDR_BLOCK') }}"
+{% endif %}
+{% elif direction == "EGRESS" %}
+{% if destination is defined and destination %}
+  destination               = {{ destination }}
+  destination_type          = "{{ destination_type | default('CIDR_BLOCK') }}"
+{% endif %}
+{% endif %}
+  stateless                 = {{ stateless | default(false) | lower }}
+{% if description is defined and description %}
+  description               = "{{ description }}"
+{% endif %}
+
+{% if tcp_options is defined and tcp_options %}
+  tcp_options {
+    destination_port_range {
+      min = {{ tcp_options.destination_port_range.min }}
+      max = {{ tcp_options.destination_port_range.max }}
+    }
+  }
+{% endif %}
+{% if udp_options is defined and udp_options %}
+  udp_options {
+    destination_port_range {
+      min = {{ udp_options.destination_port_range.min }}
+      max = {{ udp_options.destination_port_range.max }}
+    }
+  }
+{% endif %}
+{% if icmp_options is defined and icmp_options %}
+  icmp_options {
+    type = {{ icmp_options.type }}
+{% if icmp_options.code is defined %}
+    code = {{ icmp_options.code }}
+{% endif %}
+  }
+{% endif %}
+}

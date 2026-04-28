@@ -1,0 +1,79 @@
+# Adapted from ai-accelerator-tf/network.tf
+# aws_source_id = {{ aws_source_id }}
+resource "oci_core_security_list" "{{ label }}" {
+  compartment_id = {{ compartment_id }}
+  vcn_id         = {{ vcn_id }}
+  display_name   = "{{ display_name }}"
+
+{% for rule in ingress_security_rules %}
+  ingress_security_rules {
+{% if rule.description is defined and rule.description %}
+    description = "{{ rule.description }}"
+{% endif %}
+    source      = "{{ rule.source }}"
+    source_type = "{{ rule.source_type | default('CIDR_BLOCK') }}"
+    protocol    = "{{ rule.protocol }}"
+    stateless   = {{ rule.stateless | default(false) | lower }}
+{% if rule.tcp_options is defined and rule.tcp_options %}
+    tcp_options {
+      min = {{ rule.tcp_options.min }}
+      max = {{ rule.tcp_options.max }}
+    }
+{% endif %}
+{% if rule.udp_options is defined and rule.udp_options %}
+    udp_options {
+      min = {{ rule.udp_options.min }}
+      max = {{ rule.udp_options.max }}
+    }
+{% endif %}
+{% if rule.icmp_options is defined and rule.icmp_options %}
+    icmp_options {
+      type = {{ rule.icmp_options.type }}
+{% if rule.icmp_options.code is defined %}
+      code = {{ rule.icmp_options.code }}
+{% endif %}
+    }
+{% endif %}
+  }
+
+{% endfor %}
+{% for rule in egress_security_rules %}
+  egress_security_rules {
+{% if rule.description is defined and rule.description %}
+    description      = "{{ rule.description }}"
+{% endif %}
+    destination      = "{{ rule.destination }}"
+    destination_type = "{{ rule.destination_type | default('CIDR_BLOCK') }}"
+    protocol         = "{{ rule.protocol }}"
+    stateless        = {{ rule.stateless | default(false) | lower }}
+{% if rule.tcp_options is defined and rule.tcp_options %}
+    tcp_options {
+      min = {{ rule.tcp_options.min }}
+      max = {{ rule.tcp_options.max }}
+    }
+{% endif %}
+{% if rule.udp_options is defined and rule.udp_options %}
+    udp_options {
+      min = {{ rule.udp_options.min }}
+      max = {{ rule.udp_options.max }}
+    }
+{% endif %}
+{% if rule.icmp_options is defined and rule.icmp_options %}
+    icmp_options {
+      type = {{ rule.icmp_options.type }}
+{% if rule.icmp_options.code is defined %}
+      code = {{ rule.icmp_options.code }}
+{% endif %}
+    }
+{% endif %}
+  }
+
+{% endfor %}
+{% if freeform_tags is defined and freeform_tags %}
+  freeform_tags = {
+{% for key, value in freeform_tags.items() %}
+    {{ key }} = "{{ value }}"
+{% endfor %}
+  }
+{% endif %}
+}

@@ -1,0 +1,7 @@
+# Adapted from OCI provider documentation
+# aws_source_id = {{ aws_source_id }}
+resource "oci_load_balancer_hostname" "{{ label }}" {
+  load_balancer_id = {{ load_balancer_id }}
+  hostname         = "{{ hostname }}"
+  name             = "{{ name }}"
+}

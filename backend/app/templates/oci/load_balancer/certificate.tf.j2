@@ -1,0 +1,26 @@
+# Adapted from OCI provider documentation
+# aws_source_id = {{ aws_source_id }}
+resource "oci_load_balancer_certificate" "{{ label }}" {
+  load_balancer_id = {{ load_balancer_id }}
+  certificate_name = "{{ certificate_name }}"
+
+{% if public_certificate is defined and public_certificate %}
+  public_certificate = <<-EOT
+{{ public_certificate }}
+  EOT
+{% endif %}
+{% if private_key is defined and private_key %}
+  private_key = <<-EOT
+{{ private_key }}
+  EOT
+{% endif %}
+{% if ca_certificate is defined and ca_certificate %}
+  ca_certificate = <<-EOT
+{{ ca_certificate }}
+  EOT
+{% endif %}
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}

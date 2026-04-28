@@ -1,0 +1,22 @@
+# Adapted from OCI provider documentation
+# aws_source_id = {{ aws_source_id }}
+resource "oci_load_balancer_rule_set" "{{ label }}" {
+  load_balancer_id = {{ load_balancer_id }}
+  name             = "{{ name }}"
+
+{% for item in items %}
+  items {
+    action = "{{ item.action }}"
+{% if item.header is defined and item.header %}
+    header = "{{ item.header }}"
+{% endif %}
+{% if item.value is defined and item.value %}
+    value  = "{{ item.value }}"
+{% endif %}
+{% if item.description is defined and item.description %}
+    description = "{{ item.description }}"
+{% endif %}
+  }
+
+{% endfor %}
+}

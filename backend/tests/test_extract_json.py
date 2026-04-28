@@ -31,9 +31,11 @@ class TestExtractJson:
         result = _extract_json('{}')
         assert result == {}
 
-    def test_non_dict_falls_back(self):
+    def test_json_array_wrapped_as_specs(self):
+        """JSON arrays are wrapped in {"specs": [...]} for structured output support."""
         result = _extract_json('[1, 2, 3]')
-        assert "raw" in result
+        assert "specs" in result
+        assert result["specs"] == [1, 2, 3]
 
     def test_non_string_input(self):
         result = _extract_json(None)

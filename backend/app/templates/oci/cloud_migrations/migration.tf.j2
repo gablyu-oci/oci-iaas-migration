@@ -1,0 +1,14 @@
+# Adapted from ocm_handoff_translation/conversion-rules.md
+# aws_source_id = {{ aws_source_id | default('migration-level') }}
+resource "oci_cloud_migrations_migration" "{{ label }}" {
+  compartment_id = {{ compartment_id }}
+  display_name   = "{{ display_name }}"
+
+{% if freeform_tags is defined and freeform_tags %}
+  freeform_tags = {
+{% for key, value in freeform_tags.items() %}
+    {{ key }} = "{{ value }}"
+{% endfor %}
+  }
+{% endif %}
+}

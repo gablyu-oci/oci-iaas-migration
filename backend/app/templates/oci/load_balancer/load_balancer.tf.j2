@@ -1,0 +1,29 @@
+# Adapted from cfn output/web-app-stack-terraform/main.tf
+# aws_source_id = {{ aws_source_id }}
+resource "oci_load_balancer_load_balancer" "{{ label }}" {
+  compartment_id = {{ compartment_id }}
+  display_name   = "{{ display_name }}"
+  shape          = "{{ shape | default('flexible') }}"
+  is_private     = {{ is_private | default(false) | lower }}
+
+{% if shape_details is defined and shape_details %}
+  shape_details {
+    minimum_bandwidth_in_mbps = {{ shape_details.minimum_bandwidth_in_mbps }}
+    maximum_bandwidth_in_mbps = {{ shape_details.maximum_bandwidth_in_mbps }}
+  }
+{% endif %}
+
+  subnet_ids = [{{ subnet_ids | join(', ') }}]
+
+{% if network_security_group_ids is defined and network_security_group_ids %}
+  network_security_group_ids = [{{ network_security_group_ids | join(', ') }}]
+{% endif %}
+
+{% if freeform_tags is defined and freeform_tags %}
+  freeform_tags = {
+{% for key, value in freeform_tags.items() %}
+    {{ key }} = "{{ value }}"
+{% endfor %}
+  }
+{% endif %}
+}
