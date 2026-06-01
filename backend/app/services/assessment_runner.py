@@ -325,14 +325,14 @@ def run_assessment(assessment_id: str) -> None:
                     from app.skills.dependency_discovery.orchestrator import (
                         run_graph_only as run_discovery_graph,
                     )
-                    from app.gateway.model_gateway import get_anthropic_client
+                    from app.gateway.model_gateway import get_llm_client
 
-                    anthropic_client = get_anthropic_client()
+                    llm_client = get_llm_client()
 
                     dd_result = run_discovery_graph(
                         input_content=cloudtrail_json,
                         flowlog_content=flowlog_text,
-                        anthropic_client=anthropic_client,
+                        llm_client=llm_client,
                     )
 
                     # Parse the dependency graph JSON for per-workload rendering
@@ -376,15 +376,15 @@ def run_assessment(assessment_id: str) -> None:
         # ================================================================
         _update_step(session, assessment_id, "grouping")
         try:
-            # Get anthropic client for LLM grouping review
+            # Get LLM client for grouping review
             grouping_client = None
             try:
-                from app.gateway.model_gateway import get_anthropic_client
-                grouping_client = get_anthropic_client()
+                from app.gateway.model_gateway import get_llm_client
+                grouping_client = get_llm_client()
             except Exception:
-                logger.info("No anthropic client available, skipping LLM grouping review")
+                logger.info("No LLM client available, skipping LLM grouping review")
             app_groups_result = compute_app_groups(
-                resource_dicts, dependency_edges, anthropic_client=grouping_client,
+                resource_dicts, dependency_edges, llm_client=grouping_client,
             )
         except Exception as exc:
             logger.warning("App grouping failed: %s", exc)
@@ -449,8 +449,8 @@ def run_assessment(assessment_id: str) -> None:
         # ================================================================
         _update_step(session, assessment_id, "classifying")
         try:
-            from app.gateway.model_gateway import get_anthropic_client
-            client = get_anthropic_client()
+            from app.gateway.model_gateway import get_llm_client
+            client = get_llm_client()
 
             # Build data for the classifier
             groups_for_classification = []

@@ -903,8 +903,8 @@ def fix_terraform(migration_id: str, workload_name: str) -> None:
                                log_line=f"Sending {len(tf_files)} .tf files + error to LLM (fix #{fix_count})…")
 
         # Call LLM
-        from app.gateway.model_gateway import get_anthropic_client
-        client = get_anthropic_client()
+        from app.gateway.model_gateway import get_llm_client
+        client = get_llm_client()
 
         user_prompt = (
             f"## Terraform {failed_step} error\n"
@@ -919,17 +919,19 @@ def fix_terraform(migration_id: str, workload_name: str) -> None:
         )
 
         from app.gateway.model_gateway import get_model
-        resp = client.messages.create(
+        from app.gateway.reasoning import call_chat_completion
+        resp = call_chat_completion(
+            client,
             model=get_model("migration_execution", "generate"),
             max_tokens=32768,
-            system=[{"type": "text", "text": _TF_FIX_SYSTEM}],
+            system=_TF_FIX_SYSTEM,
             messages=[
                 {"role": "user", "content": user_prompt},
                 {"role": "assistant", "content": "{"},
             ],
         )
 
-        raw = "{" + (resp.content[0].text if resp.content else "")
+        raw = "{" + ((resp.choices[0].message.content or "") if resp.choices else "")
         start, end = raw.find("{"), raw.rfind("}") + 1
         candidate = raw[start:end] if (start != -1 and end > start) else raw
         try:
