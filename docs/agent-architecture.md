@@ -5,7 +5,7 @@ agents can and cannot reach.
 
 > **Single source of truth:** every claim in this doc is backed by the
 > machine-readable registry at [`backend/app/agents/registry.py`](../backend/app/agents/registry.py).
-> If you add a tool or change the orchestrator workflow, update the registry
+> If you add a tool or change the dispatch workflow, update the registry
 > and regenerate this doc via `python3 scripts/render_agent_docs.py`.
 
 ---
@@ -13,13 +13,15 @@ agents can and cannot reach.
 ## Runtime layers
 
 ```
-                    ┌───────────────────────────────────────┐
-                    │  MigrationOrchestrator (Python)        │
-                    │  - Python code, no LLM call itself     │
-                    │  - Reads DEPENDENCY_WAVES              │
-                    │  - asyncio.gather within each wave     │
-                    └──────────────┬────────────────────────┘
-                                   │ spawns per applicable skill
+                    ┌────────────────────────────────────────────────────┐
+                    │  PlanOrchestrator (Python child process)            │
+                    │  app/services/plan_orchestrator.py                  │
+                    │  - Deterministic dispatcher, no LLM call itself     │
+                    │  - Spawned by the plans API per Generate Plan       │
+                    │  - Reads DEPENDENCY_WAVES (canonical guidance) and  │
+                    │    the workload's resource graph                    │
+                    └───────────────────────┬────────────────────────────┘
+                                            │ spawns per applicable skill
          ┌─────────────────────────┼────────────────────────┐
          ▼                         ▼                        ▼
     ┌─────────┐              ┌─────────┐              ┌─────────┐
@@ -36,6 +38,11 @@ agents can and cannot reach.
     └─────────┘              └─────────┘              └─────────┘
 ```
 
+The production orchestrator is the deterministic Python dispatcher in
+`app/services/plan_orchestrator.py`. There is no LLM agent at the
+orchestrator layer today; the only LLM calls happen inside each
+`SkillGroup`'s writer + reviewer loop.
+
 ## Per-skill review-edit loop
 
 Each `SkillGroup.run()` drives a bounded iteration loop:
@@ -50,36 +57,25 @@ Each `SkillGroup.run()` drives a bounded iteration loop:
 4. **Otherwise** — repeat until `max_iterations` (user-configurable on the
    skill-run form, default 3).
 
-## Parallel dispatch across dependency waves
+## Dispatch across dependency waves
 
-The orchestrator runs **waves sequentially** but runs **skills within a wave
-in parallel** via `asyncio.gather`. Dependencies between OCI resources
-determine the waves — you can't create instances before the VCN they live
-in, you can't fully synthesize before everything else has produced an
-artifact.
+The plan orchestrator dispatches per-skill work according to the
+workload's resource graph. The canonical wave ordering lives in
+`DEPENDENCY_WAVES` in [`skill_group.py`](../backend/app/agents/skill_group.py)
+— VCN before subnets before instances, IAM before everything that
+references roles, etc. The dispatcher honours these dependencies; the
+LLM agents themselves see only one skill's input at a time.
 
 <!-- BEGIN AUTO-GENERATED REGISTRY -->
 ## Tool registry
 
 | Tool | Scope | Used by | Context-scoped | Read-only | Description |
 |---|---|---|:---:|:---:|---|
-| `lookup_aws_mapping` | shared | writer, reviewer, orchestrator | — | ✅ | Resolve an AWS CloudFormation type to its canonical OCI target from data/mappings/resources.yaml. |
-| `list_resources_for_skill` | shared | writer, orchestrator | — | ✅ | Enumerate every AWS type a given skill is allowed to translate. |
-| `terraform_validate` | shared | writer, orchestrator | — | ✅ | Run `terraform init -backend=false && terraform validate -json` on the supplied HCL inside a bubblewrap sandbox. Writer agents use this to self-check correctness before returning; the orchestrator uses it at end-of-run to sanity-check the synthesized bundle. |
-| `list_discovered_resources` | orchestrator | orchestrator | ✅ | ✅ | List AWS resources already discovered for the current migration. Reads ``migration_id`` from the trusted MigrationContext — the LLM cannot target a different migration. |
-| `count_resources_by_type` | orchestrator | orchestrator | ✅ | ✅ | Count discovered AWS resources for the current migration, grouped by ``aws_type``. Also reads ``migration_id`` from MigrationContext. |
-| `get_skill_catalog` | orchestrator | orchestrator | — | ✅ | List every registered skill: skill_type, display_name, description, input_shape_hint, claimed AWS types, and whether it calls terraform_validate. The orchestrator calls this once to learn its arsenal. |
-| `classify_resource_type` | orchestrator | orchestrator | — | ✅ | Determine which skill (if any) claims a given AWS CFN type. Returns a hint with the canonical YAML mapping row for novel/unclaimed types so the orchestrator can decide how to route them. |
-| `get_dependency_guidance` | orchestrator | orchestrator | — | ✅ | Return the canonical IaaS dependency-wave ordering (VCN before subnets before instances, etc.) as guidance the orchestrator can follow or deviate from. |
-| `run_skill_group` | orchestrator | orchestrator | ✅ | — | Spawn a writer+reviewer pair for one skill and wait for its bounded review-edit loop to finish. Records a structured invocation entry on MigrationContext.run_state so the Python composer can assemble the final OrchestratorResult. |
-| `run_skills_parallel` | orchestrator | orchestrator | ✅ | — | Run multiple skill groups concurrently via asyncio.gather. Preferred for skills in the same dependency wave (e.g., storage + database + data_migration_planning). |
+| `lookup_aws_mapping` | shared | writer, reviewer | — | ✅ | Resolve an AWS CloudFormation type to its canonical OCI target from data/mappings/resources.yaml. |
+| `list_resources_for_skill` | shared | writer | — | ✅ | Enumerate every AWS type a given skill is allowed to translate. |
+| `terraform_validate` | shared | writer | — | ✅ | Run `terraform init -backend=false && terraform validate -json` on the supplied HCL inside a bubblewrap sandbox. Writer agents use this to self-check correctness before returning. |
 
 ## Agent roles
-
-### orchestrator
-- **Model:** settings.LLM_ORCHESTRATOR_MODEL
-- **Tools:** lookup_aws_mapping, list_resources_for_skill, terraform_validate, list_discovered_resources, count_resources_by_type, get_skill_catalog, classify_resource_type, get_dependency_guidance, run_skill_group, run_skills_parallel
-- Top-level LLM agent with full dispatch authority. Inspects the discovered inventory via tools, classifies novel resource types, spawns writer+reviewer skill groups (serial via run_skill_group or parallel via run_skills_parallel), and runs terraform_validate at end-of-run. The dependency-wave ordering is guidance, not enforcement — the orchestrator can deviate when an inventory calls for it. Python only wraps the agent: seeds MigrationContext, invokes the Runner, and composes OrchestratorResult from the shared run_state accumulator.
 
 ### writer
 - **Model:** settings.LLM_WRITER_MODEL
@@ -91,15 +87,14 @@ artifact.
 - **Tools:** lookup_aws_mapping
 - Per skill-group, runs on the user-selected reviewer model. Scores drafts against the skill's contract and the canonical YAML + workflow prose. Returns decision + confidence + issues, never HCL.
 
-## Orchestrator workflow
+## Dispatch workflow
 
-- **Type:** LLM-driven agent with tool-based dispatch
-- **Concurrency:** Orchestrator agent chooses dispatch; run_skills_parallel fans a wave out via asyncio.gather. Waves are guidance — orchestrator may deviate.
+- **Type:** Deterministic Python dispatcher (app/services/plan_orchestrator.py) spawned as a child process from the plans API. No LLM call at the orchestrator layer — only the writer/reviewer skill loops invoke LLMs.
+- **Concurrency:** plan_orchestrator dispatches skills derived from the resource graph; the DEPENDENCY_WAVES list above is canonical guidance for ordering.
 - **Loop policy:**
   - per_skill_loop: writer → reviewer → (revise) → review, bounded
   - max_iterations: user-configurable (default 3)
   - early_stop: reviewer returns APPROVED/APPROVED_WITH_NOTES and confidence >= confidence_threshold (default 0.90)
-  - orchestrator_turn_cap: 60 turns (safety cap on agent loops)
 
 ### Dependency waves
 
@@ -118,7 +113,7 @@ artifact.
 
 ### Skill → AWS resource-type routing
 
-Single source of truth: `SKILL_TO_AWS_TYPES` in [`skill_group.py`](../backend/app/agents/skill_group.py). Any AWS type NOT on this list shows up in `OrchestratorResult.unknown_resource_types` so the user sees exactly what didn't get translated.
+Single source of truth: `SKILL_TO_AWS_TYPES` in [`skill_group.py`](../backend/app/agents/skill_group.py). Any AWS type NOT on this list is reported back from the plan orchestrator as an unknown / unmapped resource so the user sees exactly what didn't get translated.
 
 | Skill | AWS types claimed |
 |---|---|
@@ -132,6 +127,7 @@ Single source of truth: `SKILL_TO_AWS_TYPES` in [`skill_group.py`](../backend/ap
 | `serverless_translation` | `AWS::ApiGateway::RestApi`, `AWS::ApiGateway::Stage`, `AWS::ApiGatewayV2::Api`, `AWS::ECR::Repository`, `AWS::ECS::Cluster`, `AWS::ECS::Service`, `AWS::ECS::TaskDefinition`, `AWS::EKS::Cluster`, `AWS::EKS::Nodegroup`, `AWS::Events::EventBus`, `AWS::Events::Rule`, `AWS::Kinesis::Stream`, `AWS::KinesisFirehose::DeliveryStream`, `AWS::Lambda::EventSourceMapping`, `AWS::Lambda::Function`, `AWS::Lambda::LayerVersion`, `AWS::StepFunctions::StateMachine` |
 | `observability_translation` | `AWS::CloudTrail::Trail`, `AWS::CloudWatch::Alarm`, `AWS::CloudWatch::Dashboard`, `AWS::Logs::LogGroup`, `AWS::Logs::LogStream`, `AWS::Logs::SubscriptionFilter`, `AWS::SNS::Subscription`, `AWS::SNS::Topic`, `AWS::SQS::Queue`, `AWS::SQS::QueuePolicy` |
 | `cfn_terraform` | `AWS::CloudFormation::Stack`, `AWS::CloudFront::Distribution` |
+| `ocm_handoff_translation` | `AWS::EC2::Instance` |
 | `data_migration_planning` | _(consumes skill outputs / assessment context)_ |
 | `synthesis` | _(consumes skill outputs / assessment context)_ |
 | `workload_planning` | _(consumes skill outputs / assessment context)_ |
@@ -152,8 +148,9 @@ Anything else in a migration inventory (e.g., `AWS::Lambda::Function`, `AWS::Dyn
   `terraform_validate`.
 
 ### What agents explicitly cannot do
-- **Spoof migration scope.** Orchestrator tools read `migration_id` from
-  `RunContextWrapper[MigrationContext]`, not from LLM-supplied arguments.
+- **Spoof migration scope.** The plan orchestrator selects which skill
+  runs on which input — the LLM never picks its own migration. Skill
+  agents only see the input the orchestrator hands them.
 - **Break out of the terraform sandbox.** `terraform_validate` wraps every
   subprocess in `bwrap --unshare-all --cap-drop ALL --clearenv`, with
   read-only binds for `/usr /lib /bin /etc/ssl` and a writable scope of
@@ -188,9 +185,9 @@ Anything else in a migration inventory (e.g., `AWS::Lambda::Function`, `AWS::Dyn
 ## Extension checklist — adding a new skill group
 
 1. Add a `SkillSpec` entry to `SKILL_SPECS` in `skill_group.py`.
-2. Place it in the correct wave in `DEPENDENCY_WAVES` in `orchestrator.py`.
-3. Teach `_build_input_for()` how to turn resources into the skill's
-   expected input shape.
+2. Place it in the correct wave in `DEPENDENCY_WAVES` in `skill_group.py`.
+3. Teach the plan orchestrator (`app/services/plan_orchestrator.py`) how
+   to turn discovered resources into the skill's expected input shape.
 4. Add an entry to `ORCHESTRATOR_WORKFLOW["resource_routing"]` in
    `registry.py` so the docs reflect which AWS types the skill handles.
 5. Create `backend/app/skills/<skill_type>/workflows/*.md` for the
