@@ -48,7 +48,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 | `LLM_API_KEY` | no | *(empty)* | API key — leave blank for anonymous endpoints (e.g., the internal Llama Stack) |
 | `LLM_WRITER_MODEL` | no | `oci/openai.gpt-5.4` | Writer model used by agent runtime |
 | `LLM_REVIEWER_MODEL` | no | `oci/openai.gpt-5.4-mini` | Reviewer model used by agent runtime |
-| `LLM_ORCHESTRATOR_MODEL` | no | `oci/openai.gpt-5.4` | Model for the top-level orchestrator agent (inventory classification + skill dispatch); benefits from a reasoning-capable model |
+| `LLM_ORCHESTRATOR_MODEL` | no | `oci/openai.gpt-5.4` | **Reserved / currently unused.** The production orchestrator is the deterministic Python dispatcher in `app/services/plan_orchestrator.py` and does not make an LLM call. Config field is preserved for forward compatibility (settings API, UI, model gateway still accept it). |
 | `JWT_SECRET` | **yes** | `change-me-in-production` | Secret for JWT signing — `openssl rand -hex 32` |
 | `JWT_EXPIRE_MINUTES` | no | `1440` | JWT TTL (24h) |
 

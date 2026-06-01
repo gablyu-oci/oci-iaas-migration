@@ -79,7 +79,7 @@ and `app/config.py`.
 - Templated skill writers -> fast non-reasoning model (configurable via `LLM_TEMPLATED_WRITER_MODEL`)
 - Free-form writers (cfn_terraform) -> reasoning model (configurable via `LLM_FREEFORM_WRITER_MODEL`)
 - Reviewers -> smaller reasoning model (`LLM_REVIEWER_MODEL`)
-- Orchestrator -> reasoning model (`LLM_ORCHESTRATOR_MODEL`)
+- Orchestrator -> the production orchestrator (`app/services/plan_orchestrator.py`) is a deterministic Python child-process dispatcher and does not call an LLM. `LLM_ORCHESTRATOR_MODEL` is reserved / currently unused.
 
 ## Reference
 

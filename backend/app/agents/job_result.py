@@ -14,8 +14,7 @@ import asyncio
 import json
 from typing import Any
 
-from app.agents.orchestrator import run_skill as _run_agent_skill
-from app.agents.skill_group import SKILL_SPECS
+from app.agents.skill_group import SKILL_SPECS, run_skill as _run_agent_skill
 from app.config import settings
 
 
