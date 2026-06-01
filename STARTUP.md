@@ -109,6 +109,22 @@ Without the ARQ worker, jobs run in child processes per request — fine for dev
 | Dropdown shows "— unknown —" model | Run `python3 scripts/probe_llm_models.py` to refresh the catalog from the live endpoint. |
 | Frontend can't reach backend | Check `VITE_API_URL` in `frontend/.env`; defaults to `http://localhost:8001`. Behind nginx, use the vhost URL. |
 
+## Deployment (hosted)
+
+The hosted instance runs behind nginx at `migration.oci-incubations.com`
+(`/etc/nginx/sites-available/oci-migration`), which proxies:
+
+- `/api`, `/docs`, `/openapi.json`, `/health` → `127.0.0.1:8001` (uvicorn backend); buffering is disabled so SSE streams pass through.
+- `/` → `127.0.0.1:5173` (frontend), with WebSocket upgrade for Vite HMR.
+
+The backend (`uvicorn app.main:app --port 8001`) and frontend (`npm run dev`) are
+currently started by hand using the steps above. To run this as a durable service:
+
+- Put uvicorn and the ARQ worker under a process manager (e.g. systemd units) so they restart on failure and start on boot.
+- Serve a built frontend bundle (`npm run build` → static files via nginx) instead of the Vite dev server.
+- Terminate TLS at nginx — the current vhost listens on port 80 only.
+- Set a strong `JWT_SECRET`, and encrypt AWS credentials at rest (they are currently stored as plaintext in the `aws_connections` table).
+
 ## Re-probing the model catalog
 
 ```bash

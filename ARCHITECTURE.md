@@ -7,6 +7,34 @@ auto-generated from the code and is the authoritative reference.
 
 ---
 
+## Design principles
+
+The decisions that shape the codebase, and the reasoning behind them:
+
+- **One source of truth for mappings.** Every AWS→OCI mapping lives in
+  `backend/data/mappings/*.yaml` (resource types, instance shapes, IAM verbs,
+  pricing). Both the Python services and the LLM prompts read the same files, so a
+  mapping is changed in exactly one place and never drifts between code and prompts.
+- **Structured output over free-form generation.** Most translation skills emit
+  structured JSON specs that render to HCL through Pydantic-validated Jinja2
+  templates, rather than asking the model to write Terraform directly. This keeps
+  generated HCL schema-correct and deterministic; only `cfn_terraform` produces
+  free-form HCL, and it self-validates with `terraform validate`.
+- **Read-only and sandboxed.** Every tool an agent can call is read-only — no AWS
+  writes, no `terraform apply`, no arbitrary code execution — and `terraform_validate`
+  runs inside a `bwrap` sandbox. The blast radius of a misbehaving model is bounded
+  by design (see "Security posture" below).
+- **Provider-agnostic LLM access.** The app targets any OpenAI-compatible
+  chat-completions endpoint and reaches it through a single client factory
+  (`app/gateway/`). The endpoint and per-role models are swappable at runtime from
+  the Settings page, so it is not tied to one provider or model.
+- **Deterministic where it counts.** The model handles judgement (classification,
+  drafting, review); templates and validators handle correctness. The writer↔reviewer
+  loop and per-skill/post-merge `terraform validate` checkpoints keep the
+  non-deterministic parts honest.
+
+---
+
 ## Component map
 
 ```
