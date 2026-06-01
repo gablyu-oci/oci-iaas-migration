@@ -49,6 +49,27 @@ DEFAULT_MAX_ITERATIONS = 3
 DEFAULT_CONFIDENCE_THRESHOLD = 0.90
 
 
+# ─── Canonical dependency-wave ordering ──────────────────────────────────────
+# Kept here (rather than in a removed orchestrator module) because the
+# registry + docs reference it as the canonical skill-dispatch ordering.
+# The production dispatcher (``services/plan_orchestrator.py``) does not
+# read this directly — it derives ordering from the resource graph — but
+# the agent registry exposes it as guidance for documentation and any
+# future LLM orchestrator.
+DEPENDENCY_WAVES: list[tuple[str, ...]] = [
+    ("iam_translation", "security_translation"),
+    ("network_translation",),
+    ("storage_translation", "database_translation", "data_migration_planning"),
+    ("ec2_translation",),
+    ("loadbalancer_translation",),
+    ("serverless_translation",),
+    ("observability_translation",),
+    ("cfn_terraform",),
+    ("workload_planning", "dependency_discovery"),
+    ("synthesis",),
+]
+
+
 # ─── Skill specs ───────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -1142,3 +1163,29 @@ def get_skill_group(
             f"Unknown skill {skill_type!r}. Registered: {sorted(SKILL_SPECS)}"
         )
     return SkillGroup(spec, max_iterations, confidence_threshold)
+
+
+async def run_skill(
+    skill_type: str,
+    input_content: str,
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
+    confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
+    migration_id: str | None = None,
+) -> dict:
+    """Run a single skill group standalone.
+
+    This is the public async entry point every sync wrapper
+    (``job_result.run_skill_sync``, the plan orchestrator's per-app-group
+    path, the single-skill-run API route) dispatches through. There is no
+    LLM-driven orchestrator above this — the production dispatcher
+    (``app/services/plan_orchestrator.py``) selects the skill + input
+    deterministically and calls down here.
+    """
+    group = get_skill_group(
+        skill_type,
+        max_iterations=max_iterations,
+        confidence_threshold=confidence_threshold,
+    )
+    ctx = MigrationContext(migration_id=migration_id) if migration_id else MigrationContext()
+    res = await group.run(input_content, ctx)
+    return res.as_dict()

@@ -1,15 +1,14 @@
 """
 Tests for reasoning-model parameter translation, client timeout configuration,
-synthesis composition isolation, and skill-group synthesis rejection.
+and synthesis composition isolation.
 
-Covers three bug fixes and one shared heuristic:
+Covers two bug fixes and one shared heuristic:
 
 1. _ReasoningAwareCompletions translates max_tokens -> max_completion_tokens
    and strips temperature for reasoning models (gpt-5.x, o1/o3/o4, xai -reasoning).
 2. build_client() sets a 1200s read timeout for long reasoning calls.
-3. run_skill_group rejects skill_type="synthesis" with a descriptive error.
-4. is_reasoning_model heuristic correctly classifies model IDs.
-5. compose_terraform runs without invoking any LLM.
+3. is_reasoning_model heuristic correctly classifies model IDs.
+4. compose_terraform runs without invoking any LLM.
 """
 
 import asyncio
@@ -238,42 +237,3 @@ class TestIsReasoningModel:
         assert is_reasoning_model("GPT-4O") is False
 
 
-# ---------------------------------------------------------------------------
-# Test 6: run_skill_group rejects synthesis
-# ---------------------------------------------------------------------------
-
-def test_run_skill_group_rejects_synthesis():
-    """run_skill_group should reject synthesis skill type with a descriptive error."""
-    from app.agents.tools import run_skill_group
-
-    # run_skill_group is an async @function_tool.  The decorated object
-    # exposes the underlying coroutine via .on_invoke_tool() or we can
-    # call the inner function directly. However the simplest approach is
-    # to build a minimal RunContextWrapper mock and call the async fn.
-    mock_ctx = MagicMock()
-    mock_ctx.context = MagicMock()
-    mock_ctx.context.run_state = {}
-
-    # The @function_tool decorator wraps the function; the raw coroutine
-    # is available via the .on_invoke_tool or by accessing the underlying
-    # function.  We call the tool's on_invoke_tool which expects
-    # (ctx, json_str_of_args) -> str.
-    result_json = asyncio.run(
-        run_skill_group.on_invoke_tool(
-            mock_ctx,
-            json.dumps({
-                "skill_type": "synthesis",
-                "input_content": "{}",
-            }),
-        )
-    )
-
-    result = json.loads(result_json)
-    assert "error" in result, "synthesis rejection must include an 'error' key"
-    assert result["skill_type"] == "synthesis"
-    assert "compose_terraform" in result["error"], (
-        "Error message should mention compose_terraform as the correct path"
-    )
-    assert "deterministically" in result["error"].lower() or "deterministic" in result["error"].lower(), (
-        "Error message should indicate synthesis is deterministic, not LLM-driven"
-    )

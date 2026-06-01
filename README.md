@@ -24,7 +24,7 @@ with `terraform validate`.
 
 1. **Discover** — extract AWS resources region-wide or scoped to a specific EC2 instance (picks up only that instance's subnet, security group, EBS volumes, and ENIs — not the entire VPC).
 2. **Assess** — classify resources with 6R, group into workloads, right-size, compare AWS vs OCI cost.
-3. **Generate plan** — the [Migration Orchestrator](docs/agent-architecture.md) dispatches writer+reviewer agents per resource type across dependency waves; each writer calls tools (`terraform_validate`, `lookup_aws_mapping`) to self-check output before returning.
+3. **Generate plan** — the deterministic [Plan Orchestrator](backend/app/services/plan_orchestrator.py) (a Python child-process dispatcher spawned by the plans API, no LLM call at the orchestrator layer) dispatches writer+reviewer agent pairs per resource type across dependency waves; each writer calls tools (`terraform_validate`, `lookup_aws_mapping`) to self-check output before returning. See [docs/agent-architecture.md](docs/agent-architecture.md) for the agent layer.
 4. **Download** — `.tf` files, migration guides, and runbooks as artifacts.
 
 ### Translation skills (agent-runtime)
@@ -167,7 +167,7 @@ Then open http://localhost:5173 locally.
 oci-iaas-migration/
 ├── backend/
 │   ├── app/
-│   │   ├── agents/           ← openai-agents SDK runtime (orchestrator, skill groups, tools)
+│   │   ├── agents/           ← openai-agents SDK runtime (writer/reviewer skill groups, tools)
 │   │   ├── api/              ← FastAPI route handlers
 │   │   ├── db/               ← SQLAlchemy models + async engine
 │   │   ├── gateway/          ← LLM client (OpenAI SDK → any OpenAI-compat endpoint)
@@ -202,8 +202,7 @@ oci-iaas-migration/
 cd backend
 python3 -c "
 import sys; sys.path.insert(0, '.')
-from app.agents.orchestrator import DEPENDENCY_WAVES
-from app.agents.skill_group import SKILL_SPECS, SKILL_TO_AWS_TYPES, KNOWN_AWS_TYPES
+from app.agents.skill_group import DEPENDENCY_WAVES, SKILL_SPECS, SKILL_TO_AWS_TYPES, KNOWN_AWS_TYPES
 print(f'waves: {len(DEPENDENCY_WAVES)}, skills: {len(SKILL_SPECS)}, known types: {len(KNOWN_AWS_TYPES)}')
 "
 ```
