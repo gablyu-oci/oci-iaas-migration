@@ -414,12 +414,12 @@ Include ALL original entries (improved) plus any NEW entries you want to add.
 def review_mapping_with_llm(
     entries: list[ResourceMappingEntry],
     workload_name: str,
-    anthropic_client,
+    llm_client,
 ) -> list[ResourceMappingEntry]:
     """LLM review pass over the deterministic mapping.
 
-    Takes the draft mapping entries, sends them to Claude for review
-    and enrichment, and returns the improved list.
+    Takes the draft mapping entries, sends them to the configured LLM
+    gateway for review and enrichment, and returns the improved list.
     """
     import json
     import time
@@ -438,7 +438,9 @@ def review_mapping_with_llm(
     try:
         start = time.perf_counter()
         from app.gateway.model_gateway import get_model
-        response = anthropic_client.messages.create(
+        from app.gateway.reasoning import call_chat_completion
+        response = call_chat_completion(
+            llm_client,
             model=get_model("resource_mapping", "map"),
             max_tokens=4096,
             system=_REVIEW_SYSTEM,
@@ -447,7 +449,7 @@ def review_mapping_with_llm(
         duration = time.perf_counter() - start
         logger.info("Resource mapping LLM review took %.1fs", duration)
 
-        raw = response.content[0].text.strip()
+        raw = ((response.choices[0].message.content or "") if response.choices else "").strip()
         # Extract JSON from possible markdown code block
         if "```" in raw:
             parts = raw.split("```")

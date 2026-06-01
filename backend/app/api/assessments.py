@@ -724,8 +724,8 @@ async def _refresh_mapping_review(
         entries = compute_resource_mapping(resource_dicts, ra_map, inv_map)
 
         try:
-            from app.gateway.model_gateway import get_anthropic_client
-            client = get_anthropic_client()
+            from app.gateway.model_gateway import get_llm_client
+            client = get_llm_client()
             entries = review_mapping_with_llm(entries, ag_name, client)
             review_payload = [e.to_dict() for e in entries]
             new_status = "ready"

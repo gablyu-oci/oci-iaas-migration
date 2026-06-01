@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 
 from app.config import settings
 from app.db.models import TranslationJob, Resource, Artifact, TranslationJobInteraction, Migration
-from app.gateway.model_gateway import get_anthropic_client
+from app.gateway.model_gateway import get_llm_client
 
 
 def _extract_input_content(raw_config: dict | list, skill_type: str) -> str:
@@ -391,7 +391,7 @@ async def run_translation_job(ctx, translation_job_id: str):
                     _write_phase(phase, iteration, confidence)
 
                 # 5. Get client
-                client = get_anthropic_client()
+                client = get_llm_client()
                 config = job.config or {}
                 max_iterations = config.get("max_iterations", 3)
 

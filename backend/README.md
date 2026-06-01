@@ -8,20 +8,15 @@ cp .env.example .env  # configure LLM endpoint + DB
 uvicorn app.main:app --reload
 ```
 
-## Architecture
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the 5-layer pipeline overview.
-
 ## Documentation
 
 | Document | Description |
 |----------|-------------|
-| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Pipeline overview and component map |
-| [PHASE_1_TEMPLATES.md](docs/PHASE_1_TEMPLATES.md) | Structured output + template rendering |
-| [PHASE_2_GRAPH.md](docs/PHASE_2_GRAPH.md) | ResourceGraph typed nodes + edges |
-| [PHASE_3_VALIDATION.md](docs/PHASE_3_VALIDATION.md) | Per-skill + post-merge validation |
-| [PHASE_4_REMAINING_SKILLS.md](docs/PHASE_4_REMAINING_SKILLS.md) | Remaining skills migration |
-| [PHASE_5_MODEL_ROUTING.md](docs/PHASE_5_MODEL_ROUTING.md) | Model routing + provider pinning |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | The plan-generation pipeline (skill writers → graph → templates → synthesis → bundle) + component map |
+| [docs/skill-coverage.md](docs/skill-coverage.md) | Which AWS resource types each skill covers, and known gaps |
+| [../docs/agent-architecture.md](../docs/agent-architecture.md) | Authoritative agent-runtime reference (tools, roles, dependency waves) — auto-generated from `app/agents/registry.py` |
+| [../ARCHITECTURE.md](../ARCHITECTURE.md) | Whole-system component map, runtime data flow, API surface, security posture |
+| [../STARTUP.md](../STARTUP.md) | Local setup, environment variables, troubleshooting |
 
 ## Testing
 
@@ -34,12 +29,15 @@ python -m pytest tests/ -v
 
 ```
 app/
-  agents/          -- LLM skill agents (skill_group.py)
+  agents/          -- openai-agents runtime: orchestrator agent, skill groups, tools, registry
+  api/             -- FastAPI route handlers (auth, aws, assessments, plans, migrate, settings)
   gateway/         -- LLM client, model routing, guardrails
-  services/        -- Core pipeline services
+  services/        -- Core pipeline services (extractor, assessment, plan orchestrator, synthesis)
   templates/       -- Jinja2 HCL templates + Pydantic schemas
-  db/              -- SQLAlchemy models + migrations
-tests/             -- pytest test suite
-  fixtures/        -- Captured regression test data
-docs/              -- Architecture deep-dives
+  skills/          -- Per-skill workflow prompts + OCI reference docs
+  mappings/        -- Typed accessors over data/mappings/*.yaml
+  db/              -- SQLAlchemy models + async engine
+data/mappings/     -- Single source of truth for AWS→OCI mappings (YAML)
+tests/             -- pytest test suite (fixtures/ holds captured regression data)
+docs/              -- Architecture + skill-coverage reference
 ```

@@ -61,30 +61,28 @@ The OCI IaaS Migration pipeline converts AWS infrastructure into OCI-native Terr
 | Synthesis Validator | `app/services/synthesis_validator.py` | Post-merge validation |
 | Model Gateway | `app/gateway/model_gateway.py` | Model selection + routing |
 
-## Structured Output Skills (Phases 1 + 4)
+## Structured Output Skills
 
-9 of 10 skill writers emit structured JSON specs that flow through the graph + template path:
+9 of the 10 translation skill writers emit structured JSON specs that flow through the graph + template path:
 - network_translation, ec2_translation, storage_translation, loadbalancer_translation
 - iam_translation, security_translation, serverless_translation, observability_translation
 - ocm_handoff_translation
 
 The remaining skill (`cfn_terraform`) generates free-form HCL and bypasses the template layer.
 
-## Model Routing (Phase 5)
+## Model Routing
 
-See [PHASE_5_MODEL_ROUTING.md](PHASE_5_MODEL_ROUTING.md) for model selection strategy.
+Models are selected per agent role in `app/gateway/model_gateway.py`. Defaults
+and env-var overrides are documented in [STARTUP.md](../../STARTUP.md#environment-variables)
+and `app/config.py`.
 
 - Templated skill writers -> fast non-reasoning model (configurable via `LLM_TEMPLATED_WRITER_MODEL`)
 - Free-form writers (cfn_terraform) -> reasoning model (configurable via `LLM_FREEFORM_WRITER_MODEL`)
 - Reviewers -> smaller reasoning model (`LLM_REVIEWER_MODEL`)
 - Orchestrator -> reasoning model (`LLM_ORCHESTRATOR_MODEL`)
 
-## Phase History
+## Reference
 
-| Phase | Focus | Doc |
-|-------|-------|-----|
-| 1 | Template-based structured output for 3 skills | [PHASE_1_TEMPLATES.md](PHASE_1_TEMPLATES.md) |
-| 2 | ResourceGraph typed nodes + edges | [PHASE_2_GRAPH.md](PHASE_2_GRAPH.md) |
-| 3 | Per-skill + post-merge validation | [PHASE_3_VALIDATION.md](PHASE_3_VALIDATION.md) |
-| 4 | Remaining 6 skills migrated to templates | [PHASE_4_REMAINING_SKILLS.md](PHASE_4_REMAINING_SKILLS.md) |
-| 5 | E2E fixtures, model routing, provider pinning | [PHASE_5_MODEL_ROUTING.md](PHASE_5_MODEL_ROUTING.md) |
+- AWS→OCI type mappings: single source of truth is `backend/data/mappings/resources.yaml`.
+- Live agent/tool/wave reference: [`docs/agent-architecture.md`](../../docs/agent-architecture.md),
+  auto-generated from `app/agents/registry.py` via `scripts/render_agent_docs.py`.
