@@ -50,3 +50,7 @@ backend/docs/oci-reference/
 # Dev team run logs
 logs/
 backend/logs/
+
+# Generated skill run artifacts (example outputs, translation reports, run DBs)
+backend/app/skills/*/output/
+backend/app/skills/*/translation-logs/

@@ -5,10 +5,6 @@ writer/reviewer loop, dependency waves, security posture) see
 [`docs/agent-architecture.md`](docs/agent-architecture.md) — that doc is
 auto-generated from the code and is the authoritative reference.
 
-For historical design context (pre-agent-runtime, pre-Llama-Stack) see
-[`design-docs/`](design-docs/) — those are kept as reference but don't
-describe the current system.
-
 ---
 
 ## Component map
@@ -104,5 +100,4 @@ for the agent-runtime-specific threat model.
 - **How the agents work, end-to-end** → [`docs/agent-architecture.md`](docs/agent-architecture.md)
 - **Which LLM models actually work** → [`docs/llm-models.md`](docs/llm-models.md)
 - **How to run locally** → [`STARTUP.md`](STARTUP.md)
-- **Historical planning** → [`design-docs/`](design-docs/) (pre-agent architecture; kept for context, not current)
-- **Product requirements** → [`reference/`](reference/)
+- **Product requirements / market analysis** → [`reference/`](reference/)
