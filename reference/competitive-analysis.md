@@ -87,79 +87,50 @@
 
 ---
 
-## 4. Oracle Cloud Migrations (Current OCI Offering)
-
-**Overview:** Free, managed VM migration service for VMware and AWS EC2 to OCI. Part of a broader but fragmented ecosystem.
-
-### Strengths
-- **Free service** — no charge for migration; only temporary resources billed
-- **VMware and AWS EC2 support** with automated discovery and replication
-- **Configuration Recommendation Engine** — maps source assets to OCI shapes based on utilization
-- **Terraform/Resource Manager integration** — auto-generates OCI Resource Manager stacks for deployment
-- **Multi-plan comparison** — create and compare migration plans with different sizing strategies
-- **Cloud Lift Services** — free, dedicated Oracle engineers for migration support (strong GTM differentiator)
-- **Database ecosystem is mature** — ZDM, DMS (free 6 months), GoldenGate for Oracle DB migrations
-- **Competitive OCI pricing** — 50% less compute, 70% less block storage, 80% less networking vs competitors
-
-### Weaknesses
-- **Fragmented tooling** — VMs, databases, and apps use separate tools with no unified dashboard
-- **No dependency mapping** — no native application dependency visualization
-- **No Hyper-V or physical server support** (requires partner tools)
-- **No Azure/GCP VM source support**
-- **x86 only** — no ARM/AARCH64 support
-- **No application-aware migration** — VM-level only
-- **No built-in post-migration validation**
-- **Network migration is manual** — no automated network topology translation
-- **No software inventory discovery**
-- **No business case / TCO engine**
-- **No test migration capability**
-
----
-
 ## Feature Comparison Matrix
 
-| Capability | Matilda Cloud | Azure Migrate | AWS Transform | OCI Cloud Migrations | **Our Product (Current)** |
-|---|---|---|---|---|---|
-| **Discovery** | | | | | |
-| Agentless discovery | Yes (SNMP/WMI) | Yes (appliance) | Yes (on-prem tool) | Yes (appliance/agentless) | Partial (API-based) |
-| Software inventory | Yes | Yes (apps, SQL, web) | Yes (code analysis) | No | No |
-| OS compatibility check | Partial | Yes | Yes | Partial | No |
-| Performance data collection | Yes (continuous) | Yes (5-50 min intervals) | Yes | Yes | No (static config only) |
-| **Assessment** | | | | | |
-| Dependency mapping | Yes (real-time) | Yes (agentless TCP) | Yes (network mapping) | No | Partial (file upload) |
-| Resource mapping to target | Yes (multi-cloud) | Yes (Azure only) | Yes (AWS only) | Yes (OCI shapes) | Yes (AWS→OCI) |
-| Performance-based rightsizing | Yes | Yes (1-30 day) | Yes | Yes (utilization-based) | No |
-| 5R/6R classification | Yes (5R + AI) | Yes (6R business case) | Yes (modernization focus) | No | No |
-| Migration readiness score | Yes | Yes (confidence rating) | Yes | No | No |
-| Business case / TCO | Yes (cost projections) | Yes (5-year, sustainability) | Yes (Migration Evaluator) | No | No |
-| **Planning** | | | | | |
-| Wave planning | Yes (wave groups) | Yes (assessment groups) | Yes (dependency-aware) | No | Yes (7 phases) |
-| Multi-plan comparison | No | Yes (per group) | No | Yes | No |
-| Landing zone IaC | Yes (Terraform/Ansible) | No (manual) | Yes (CDK/Terraform/LZA) | Yes (Resource Manager) | Partial (skill output) |
-| Network topology translation | Partial | No | Yes (80x faster) | No | Yes (skill) |
-| Golden image recommendation | No | No | No | No | No |
-| **Migration Execution** | | | | | |
-| VM migration (disk replication) | Yes (async replication) | Yes (agent/agentless) | Via MGN (replication) | Yes (snapshot + hydration) | No |
-| Database migration | Partial | Yes (DMA, DMS) | Yes (DMS, SCT) | Yes (ZDM, DMS, GoldenGate) | No (translation only) |
-| Storage migration | Partial | Yes (Data Box) | Yes (DataSync, S3) | Partial (block volumes) | No |
-| IAM migration | No | Partial | No | No | Yes (translation only) |
-| Network migration | Partial | Partial | Yes (automated) | No | Yes (translation only) |
-| Serverless migration | No | Yes (App Service) | Yes (Lambda) | No | No |
-| Live progress dashboard | Yes | Yes (portal) | Yes (chat-based) | Yes (console) | Yes (SSE streaming) |
-| **Validation** | | | | | |
-| Test migration | No | Yes (non-destructive) | Via MGN | No | No |
-| Post-migration validation | Yes (monitoring) | Yes (checklist) | Via MGN | No | No |
-| Rollback plan | No | Partial | No | No | No |
-| Compliance validation | Yes (real-time) | Yes (Defender) | Partial | No | Partial (guardrails) |
-| Performance comparison | Yes (optimize) | Partial | Partial | No | No |
-| **AI / Agent Features** | | | | | |
-| AI-powered recommendations | Yes (GenAI 5R) | No (rule-based) | Yes (agentic AI) | No | Yes (Claude AI) |
-| Specialized domain agents | No | No | Yes (5 agent types) | No | Yes (8 skills) |
-| Natural language interface | No | No | Yes (chat) | No | No |
-| Code modernization | Yes (.NET) | No | Yes (full-stack) | No | No |
-| **Ecosystem** | | | | | |
-| Partner integrations | Limited | Strong (8+ ISVs) | Growing (6+ SIs) | Moderate (5+ tools) | None |
-| Free service | No (subscription) | Yes | Mostly free | Yes | N/A |
+| Capability | Matilda Cloud | Azure Migrate | AWS Transform | **Our Product (Current)** |
+|---|---|---|---|---|
+| **Discovery** | | | | |
+| Agentless discovery | Yes (SNMP/WMI) | Yes (appliance) | Yes (on-prem tool) | Partial (API-based) |
+| Software inventory | Yes | Yes (apps, SQL, web) | Yes (code analysis) | No |
+| OS compatibility check | Partial | Yes | Yes | No |
+| Performance data collection | Yes (continuous) | Yes (5-50 min intervals) | Yes | No (static config only) |
+| **Assessment** | | | | |
+| Dependency mapping | Yes (real-time) | Yes (agentless TCP) | Yes (network mapping) | Partial (file upload) |
+| Resource mapping to target | Yes (multi-cloud) | Yes (Azure only) | Yes (AWS only) | Yes (AWS→OCI) |
+| Performance-based rightsizing | Yes | Yes (1-30 day) | Yes | No |
+| 5R/6R classification | Yes (5R + AI) | Yes (6R business case) | Yes (modernization focus) | No |
+| Migration readiness score | Yes | Yes (confidence rating) | Yes | No |
+| Business case / TCO | Yes (cost projections) | Yes (5-year, sustainability) | Yes (Migration Evaluator) | No |
+| **Planning** | | | | |
+| Wave planning | Yes (wave groups) | Yes (assessment groups) | Yes (dependency-aware) | Yes (7 phases) |
+| Multi-plan comparison | No | Yes (per group) | No | No |
+| Landing zone IaC | Yes (Terraform/Ansible) | No (manual) | Yes (CDK/Terraform/LZA) | Partial (skill output) |
+| Network topology translation | Partial | No | Yes (80x faster) | Yes (skill) |
+| Golden image recommendation | No | No | No | No |
+| **Migration Execution** | | | | |
+| VM migration (disk replication) | Yes (async replication) | Yes (agent/agentless) | Via MGN (replication) | No |
+| Database migration | Partial | Yes (DMA, DMS) | Yes (DMS, SCT) | No (translation only) |
+| Storage migration | Partial | Yes (Data Box) | Yes (DataSync, S3) | No |
+| IAM migration | No | Partial | No | Yes (translation only) |
+| Network migration | Partial | Partial | Yes (automated) | Yes (translation only) |
+| Serverless migration | No | Yes (App Service) | Yes (Lambda) | No |
+| Live progress dashboard | Yes | Yes (portal) | Yes (chat-based) | Yes (SSE streaming) |
+| **Validation** | | | | |
+| Test migration | No | Yes (non-destructive) | Via MGN | No |
+| Post-migration validation | Yes (monitoring) | Yes (checklist) | Via MGN | No |
+| Rollback plan | No | Partial | No | No |
+| Compliance validation | Yes (real-time) | Yes (Defender) | Partial | Partial (guardrails) |
+| Performance comparison | Yes (optimize) | Partial | Partial | No |
+| **AI / Agent Features** | | | | |
+| AI-powered recommendations | Yes (GenAI 5R) | No (rule-based) | Yes (agentic AI) | Yes (Claude AI) |
+| Specialized domain agents | No | No | Yes (5 agent types) | Yes (8 skills) |
+| Natural language interface | No | No | Yes (chat) | No |
+| Code modernization | Yes (.NET) | No | Yes (full-stack) | No |
+| **Ecosystem** | | | | |
+| Partner integrations | Limited | Strong (8+ ISVs) | Growing (6+ SIs) | None |
+| Free service | No (subscription) | Yes | Mostly free | N/A |
 
 ---
 

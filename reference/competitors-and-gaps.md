@@ -36,22 +36,6 @@ What stands out:
 
 ---
 
-### OCI / internal competitor landscape
-
-**Oracle Cloud Migrations**  
-Link: [https://docs.oracle.com/en-us/iaas/Content/cloud-migration/home.htm](https://docs.oracle.com/en-us/iaas/Content/cloud-migration/home.htm)  
-Current OCI offerings mentioned:
-- Oracle Cloud Migrations for VMware and AWS EC2 VM migration
-- Zero Downtime Migration (ZDM) for Oracle Database migration
-- OCI GoldenGate for replication and cutover
-- Cloud Lift / Adoption and Migration Program / partner services
-- Oracle Cloud VMware Solution + HCX-based workloads
-
-How OCI is perceived in the feedback:
-- OCI has multiple migration-related tools and programs
-- But they feel like **separate guides / point solutions**, not a unified migration product
-
----
 ## Gaps
 
 ### Gap in OCI today
