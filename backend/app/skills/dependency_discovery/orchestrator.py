@@ -128,8 +128,10 @@ def _call_review(
         cycle_strs = "; ".join(" → ".join(c) for c in cycles[:5])
         summary += f"- Cycle details: {cycle_strs}\n"
 
+    from app.gateway.reasoning import call_chat_completion, get_cached_tokens
     start = time.perf_counter()
-    response = client.messages.create(
+    response = call_chat_completion(
+        client,
         model=get_model(_SKILL, "review"),
         max_tokens=2048,
         system=REVIEW_SYSTEM,
@@ -147,14 +149,17 @@ def _call_review(
 
     u = response.usage
     usage = {
-        "tokens_input": u.input_tokens,
-        "tokens_output": u.output_tokens,
-        "tokens_cache_read": getattr(u, "cache_read_input_tokens", 0) or 0,
-        "tokens_cache_write": getattr(u, "cache_creation_input_tokens", 0) or 0,
+        "tokens_input": getattr(u, "prompt_tokens", 0) or 0,
+        "tokens_output": getattr(u, "completion_tokens", 0) or 0,
+        "tokens_cache_read": get_cached_tokens(u),
+        # OpenAI's chat.completions API doesn't surface cache-creation
+        # tokens (only cache-read via prompt_tokens_details). Treat as 0
+        # — this matches the previous adapter, which hard-coded 0 too.
+        "tokens_cache_write": 0,
         "duration_seconds": duration,
     }
 
-    raw = response.content[0].text.strip()
+    raw = ((response.choices[0].message.content or "") if response.choices else "").strip()
     if "```" in raw:
         parts = raw.split("```", 2)
         raw = parts[1][4:] if parts[1].startswith("json") else parts[1]
@@ -211,8 +216,10 @@ def _call_runbook(
         f"Generate a comprehensive migration runbook for moving this AWS infrastructure to OCI."
     )
 
+    from app.gateway.reasoning import call_chat_completion, get_cached_tokens
     start = time.perf_counter()
-    response = client.messages.create(
+    response = call_chat_completion(
+        client,
         model=get_model(_SKILL, "review"),
         max_tokens=8192,
         system=RUNBOOK_SYSTEM,
@@ -222,14 +229,14 @@ def _call_runbook(
 
     u = response.usage
     usage = {
-        "tokens_input": u.input_tokens,
-        "tokens_output": u.output_tokens,
-        "tokens_cache_read": getattr(u, "cache_read_input_tokens", 0) or 0,
-        "tokens_cache_write": getattr(u, "cache_creation_input_tokens", 0) or 0,
+        "tokens_input": getattr(u, "prompt_tokens", 0) or 0,
+        "tokens_output": getattr(u, "completion_tokens", 0) or 0,
+        "tokens_cache_read": get_cached_tokens(u),
+        "tokens_cache_write": 0,
         "duration_seconds": duration,
     }
 
-    runbook_md = response.content[0].text.strip()
+    runbook_md = ((response.choices[0].message.content or "") if response.choices else "").strip()
     return runbook_md, usage
 
 
@@ -277,8 +284,10 @@ def _call_anomaly(
     context += f"## Dependency Report (excerpt)\n\n{report_md[:4000]}\n\n"
     context += "Analyze this infrastructure for anomalies, risks, and migration concerns."
 
+    from app.gateway.reasoning import call_chat_completion, get_cached_tokens
     start = time.perf_counter()
-    response = client.messages.create(
+    response = call_chat_completion(
+        client,
         model=get_model(_SKILL, "review"),
         max_tokens=6144,
         system=ANOMALY_SYSTEM,
@@ -288,14 +297,14 @@ def _call_anomaly(
 
     u = response.usage
     usage = {
-        "tokens_input": u.input_tokens,
-        "tokens_output": u.output_tokens,
-        "tokens_cache_read": getattr(u, "cache_read_input_tokens", 0) or 0,
-        "tokens_cache_write": getattr(u, "cache_creation_input_tokens", 0) or 0,
+        "tokens_input": getattr(u, "prompt_tokens", 0) or 0,
+        "tokens_output": getattr(u, "completion_tokens", 0) or 0,
+        "tokens_cache_read": get_cached_tokens(u),
+        "tokens_cache_write": 0,
         "duration_seconds": duration,
     }
 
-    anomaly_md = response.content[0].text.strip()
+    anomaly_md = ((response.choices[0].message.content or "") if response.choices else "").strip()
     return anomaly_md, usage
 
 
@@ -528,7 +537,7 @@ def run(
     input_content: str,
     flowlog_content: str | None,
     progress_callback,
-    anthropic_client,
+    llm_client,
     max_iterations: int = 3,
 ) -> dict:
     """
@@ -538,7 +547,8 @@ def run(
         input_content: CloudTrail JSON events (array or Records wrapper)
         flowlog_content: Optional VPC flow log text content
         progress_callback: Called with (phase, iteration, confidence, decision)
-        anthropic_client: Anthropic client instance (used for LLM review)
+        llm_client: ``openai.OpenAI`` instance used for the LLM review,
+            runbook, and anomaly passes.
         max_iterations: Unused (single review pass)
 
     Returns dict with keys: artifacts, confidence, decision, iterations, cost, interactions
@@ -625,7 +635,7 @@ def run(
         # LLM Review step
         progress_callback("review", 1, 0.5, None)
         review, review_usage = _call_review(
-            client=anthropic_client,
+            client=llm_client,
             node_count=len(nodes_data),
             edge_count=len(edges_data),
             step_count=len(migration_steps),
@@ -662,7 +672,7 @@ def run(
         # LLM Runbook Agent
         progress_callback("enhancement", 1, final_confidence, None)
         runbook_md, runbook_usage = _call_runbook(
-            client=anthropic_client,
+            client=llm_client,
             nodes_data=nodes_data,
             edges_data=edges_data,
             migration_steps=migration_steps,
@@ -682,7 +692,7 @@ def run(
 
         # LLM Anomaly Agent
         anomaly_md, anomaly_usage = _call_anomaly(
-            client=anthropic_client,
+            client=llm_client,
             nodes_data=nodes_data,
             edges_data=edges_data,
             event_count=event_count,
@@ -809,7 +819,7 @@ def run(
 def run_graph_only(
     input_content: str,
     flowlog_content: str | None,
-    anthropic_client,
+    llm_client,
 ) -> dict:
     """Run dependency discovery pipeline: graph + LLM review only.
 
@@ -887,7 +897,7 @@ def run_graph_only(
 
         # LLM Review agent only (no runbook, no anomaly)
         review, review_usage = _call_review(
-            client=anthropic_client,
+            client=llm_client,
             node_count=len(nodes_data),
             edge_count=len(edges_data),
             step_count=len(migration_steps),

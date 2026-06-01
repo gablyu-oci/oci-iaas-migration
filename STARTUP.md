@@ -48,7 +48,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 | `LLM_API_KEY` | no | *(empty)* | API key — leave blank for anonymous endpoints (e.g., the internal Llama Stack) |
 | `LLM_WRITER_MODEL` | no | `oci/openai.gpt-5.4` | Writer model used by agent runtime |
 | `LLM_REVIEWER_MODEL` | no | `oci/openai.gpt-5.4-mini` | Reviewer model used by agent runtime |
-| `LLM_ORCHESTRATOR_MODEL` | no | `oci/openai.gpt-5.4` | *(reserved — orchestrator is Python today; no LLM call)* |
+| `LLM_ORCHESTRATOR_MODEL` | no | `oci/openai.gpt-5.4` | Model for the top-level orchestrator agent (inventory classification + skill dispatch); benefits from a reasoning-capable model |
 | `JWT_SECRET` | **yes** | `change-me-in-production` | Secret for JWT signing — `openssl rand -hex 32` |
 | `JWT_EXPIRE_MINUTES` | no | `1440` | JWT TTL (24h) |
 
@@ -108,6 +108,22 @@ Without the ARQ worker, jobs run in child processes per request — fine for dev
 | `terraform: command not found` in agent logs | Install terraform, or accept that `terraform_validate` will skip-with-warning (the agent handles this gracefully). |
 | Dropdown shows "— unknown —" model | Run `python3 scripts/probe_llm_models.py` to refresh the catalog from the live endpoint. |
 | Frontend can't reach backend | Check `VITE_API_URL` in `frontend/.env`; defaults to `http://localhost:8001`. Behind nginx, use the vhost URL. |
+
+## Deployment (hosted)
+
+The hosted instance runs behind nginx at `migration.oci-incubations.com`
+(`/etc/nginx/sites-available/oci-migration`), which proxies:
+
+- `/api`, `/docs`, `/openapi.json`, `/health` → `127.0.0.1:8001` (uvicorn backend); buffering is disabled so SSE streams pass through.
+- `/` → `127.0.0.1:5173` (frontend), with WebSocket upgrade for Vite HMR.
+
+The backend (`uvicorn app.main:app --port 8001`) and frontend (`npm run dev`) are
+currently started by hand using the steps above. To run this as a durable service:
+
+- Put uvicorn and the ARQ worker under a process manager (e.g. systemd units) so they restart on failure and start on boot.
+- Serve a built frontend bundle (`npm run build` → static files via nginx) instead of the Vite dev server.
+- Terminate TLS at nginx — the current vhost listens on port 80 only.
+- Set a strong `JWT_SECRET`, and encrypt AWS credentials at rest (they are currently stored as plaintext in the `aws_connections` table).
 
 ## Re-probing the model catalog
 

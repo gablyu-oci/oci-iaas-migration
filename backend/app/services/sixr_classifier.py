@@ -1,9 +1,9 @@
-"""6R migration strategy classifier using Claude AI.
+"""6R migration strategy classifier.
 
 Classifies application groups into one of the six canonical migration
 strategies (Rehost, Replatform, Refactor, Repurchase, Retire, Retain)
-by sending a structured prompt to the Anthropic API and parsing the
-JSON response.
+by sending a structured prompt to the configured OpenAI-compatible
+chat-completions endpoint and parsing the JSON response.
 """
 from __future__ import annotations
 
@@ -86,9 +86,9 @@ def _validate_classification(entry: dict) -> dict[str, str]:
 
 async def classify_workloads(
     app_groups_data: list[dict],
-    anthropic_client: Any,
+    llm_client: Any,
 ) -> dict[str, dict]:
-    """Classify application groups into 6R strategies using Claude.
+    """Classify application groups into 6R strategies via the LLM gateway.
 
     Parameters
     ----------
@@ -96,9 +96,9 @@ async def classify_workloads(
         List of dicts describing each application group.  Expected keys:
         ``name``, ``resource_types``, ``resource_count``, ``avg_readiness``,
         ``os_compat_summary``, ``avg_cpu``, ``avg_memory``.
-    anthropic_client:
-        An Anthropic client instance (or compatible adapter) as returned by
-        ``model_gateway.get_anthropic_client()``.
+    llm_client:
+        An ``openai.OpenAI`` client as returned by
+        ``model_gateway.get_llm_client()``.
 
     Returns
     -------
@@ -115,20 +115,19 @@ async def classify_workloads(
 
     try:
         from app.gateway.model_gateway import get_model
-        response = anthropic_client.messages.create(
+        from app.gateway.reasoning import call_chat_completion
+        response = call_chat_completion(
+            llm_client,
             model=get_model("sixr_classification", "classify"),
             max_tokens=4096,
             messages=[{"role": "user", "content": prompt_text}],
         )
 
         # Extract text content from the response
-        raw_text = ""
-        for block in response.content:
-            if hasattr(block, "text"):
-                raw_text += block.text
+        raw_text = (response.choices[0].message.content or "") if response.choices else ""
 
         if not raw_text.strip():
-            logger.error("Empty response from Claude for 6R classification")
+            logger.error("Empty response from LLM for 6R classification")
             return {name: _build_default_classification(name) for name in group_names}
 
         # Strip markdown code fences if present
@@ -153,7 +152,7 @@ async def classify_workloads(
         return results
 
     except json.JSONDecodeError as exc:
-        logger.error("Failed to parse Claude JSON response for 6R classification: %s", exc)
+        logger.error("Failed to parse LLM JSON response for 6R classification: %s", exc)
         return {name: _build_default_classification(name) for name in group_names}
 
     except Exception as exc:

@@ -11,10 +11,12 @@ python-jose[cryptography]
 passlib[bcrypt]
 boto3
 openai>=1.40.0
+openai-agents>=0.14.4
 networkx>=3.0
 pyyaml
 python-dotenv
 pydantic-settings
 python-multipart
 email-validator
+jinja2>=3.0
 json-repair>=0.30.0

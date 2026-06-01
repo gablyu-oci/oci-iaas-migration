@@ -1380,7 +1380,7 @@ def test_cfn_runner_bisects_on_failure_and_reports_missing():
             completed_artifacts=completed,
             _progress=no_progress,
             _progress_cb=no_progress,
-            anthropic_client=None,
+            llm_client=None,
             max_iterations=1,
         )
 
@@ -1437,7 +1437,7 @@ def test_cfn_runner_succeeds_without_bisect_when_chunks_fit():
             completed_artifacts=completed,
             _progress=no_progress,
             _progress_cb=no_progress,
-            anthropic_client=None,
+            llm_client=None,
             max_iterations=1,
         )
 

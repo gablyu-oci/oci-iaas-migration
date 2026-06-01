@@ -1,7 +1,8 @@
 """Application grouping engine -- groups resources into logical applications.
 
-Includes an optional LLM review pass that uses Claude to refine grouping
-results based on resource context, dependency edges, and CloudTrail data.
+Includes an optional LLM review pass that uses the configured LLM
+gateway to refine grouping results based on resource context,
+dependency edges, and CloudTrail data.
 
 The grouping pipeline:
 
@@ -9,8 +10,9 @@ The grouping pipeline:
   2. Network-based grouping -- ungrouped resources that share VPC + subnet
   3. Traffic-based merging  -- merge groups with heavy cross-group traffic
   4. Attachment / CFN matching -- EBS volumes, CFN stacks
-  5. LLM review (optional) -- Claude reviews groups + ungrouped resources and
-     suggests merges, moves, and new groups based on full context
+  5. LLM review (optional) -- the LLM reviews groups + ungrouped
+     resources and suggests merges, moves, and new groups based on
+     full context
 """
 from __future__ import annotations
 
@@ -360,9 +362,9 @@ def _llm_review_groups(
     groups: dict[str, list[str]],
     resource_by_id: dict[str, dict],
     dependency_edges: list[dict],
-    anthropic_client: Any,
+    llm_client: Any,
 ) -> dict[str, list[str]]:
-    """Pass 5: Use Claude to review and refine the grouping results.
+    """Pass 5: Use the configured LLM to review and refine the grouping results.
 
     Sends the current groups, ungrouped singletons, resource context, and
     dependency edges to the LLM for review. Applies suggested moves/merges.
@@ -409,16 +411,15 @@ def _llm_review_groups(
 
     try:
         from app.gateway.model_gateway import get_model
-        response = anthropic_client.messages.create(
+        from app.gateway.reasoning import call_chat_completion
+        response = call_chat_completion(
+            llm_client,
             model=get_model("app_grouping", "group"),
             max_tokens=4096,
             messages=[{"role": "user", "content": prompt}],
         )
 
-        raw_text = ""
-        for block in response.content:
-            if hasattr(block, "text"):
-                raw_text += block.text
+        raw_text = (response.choices[0].message.content or "") if response.choices else ""
 
         if not raw_text.strip():
             logger.warning("Empty LLM response for grouping review")
@@ -625,7 +626,7 @@ def _validate_group_membership(
 def compute_app_groups(
     resources: list[dict],
     dependency_edges: list[dict],
-    anthropic_client: Any = None,
+    llm_client: Any = None,
 ) -> list[dict]:
     """Compute application groups from a flat list of resources.
 
@@ -747,10 +748,10 @@ def compute_app_groups(
         logger.info("Created %d singleton groups for ungrouped resources", ungrouped_counter)
 
     # --- 5. LLM review pass (if client available) ---
-    if anthropic_client is not None:
+    if llm_client is not None:
         logger.info("Running LLM grouping review pass")
         all_groups = _llm_review_groups(
-            all_groups, resource_by_id, dependency_edges, anthropic_client,
+            all_groups, resource_by_id, dependency_edges, llm_client,
         )
         # Update strategy_map for any new groups created by LLM
         for gname in all_groups:

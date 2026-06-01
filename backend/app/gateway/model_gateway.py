@@ -24,9 +24,10 @@ and every call site picks up the new model on next ``get_model`` invocation.
 """
 
 import re
+from typing import Any
 
 from app.config import settings
-from app.gateway.llm_client import LLMClient
+from app.gateway.llm_client import make_openai_client
 
 
 def _writer() -> str:
@@ -190,26 +191,22 @@ def scrub_secrets(text: str) -> str:
     return text
 
 
-def get_llm_client(api_key: str | None = None) -> LLMClient:
-    """Build an LLM client pointed at the configured endpoint.
+def get_llm_client(api_key: str | None = None) -> Any:
+    """Build an ``openai.OpenAI`` client pointed at the configured endpoint.
 
     Anonymous endpoints (like the internal Llama Stack gateway) are
     supported: an empty API key becomes a placeholder string since the
     OpenAI SDK requires a non-empty value.
+
+    Callers should use :func:`app.gateway.reasoning.call_chat_completion`
+    to invoke ``chat.completions.create`` — it folds an optional
+    ``system`` payload into the messages list and selects between
+    ``max_tokens`` / ``max_completion_tokens`` based on the model.
     """
-    return LLMClient(
+    return make_openai_client(
         api_key=api_key or settings.LLM_API_KEY,
         base_url=settings.LLM_BASE_URL,
     )
-
-
-# Legacy aliases — kept so older call sites keep working. Prefer ``get_llm_client``.
-def get_anthropic_client(api_key: str | None = None) -> LLMClient:
-    return get_llm_client(api_key)
-
-
-def get_genai_client(api_key: str | None = None) -> LLMClient:
-    return get_llm_client(api_key)
 
 
 def guard_input(text: str, skill_type: str = "unknown") -> str:

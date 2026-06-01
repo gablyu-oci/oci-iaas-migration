@@ -338,7 +338,7 @@ def _run_pipeline(
     max_iterations: int = 3,
 ) -> None:
     import time
-    from app.gateway.model_gateway import get_anthropic_client
+    from app.gateway.model_gateway import get_llm_client
 
     pipeline_start = time.time()
     assess_id = UUID(assessment_id)
@@ -422,7 +422,7 @@ def _run_pipeline(
 
     _progress("init", f"Starting plan for '{ag.name}' ({len(resources)} resources)")
 
-    anthropic_client = get_anthropic_client()
+    llm_client = get_llm_client()
     completed_artifacts: dict[str, str] = {}
 
     # ── Step 1: Resource Mapping (deterministic + LLM review) ──────────
@@ -441,7 +441,7 @@ def _run_pipeline(
 
     mapping_entries = compute_resource_mapping(resources, ra_map, software_inventory)
     try:
-        mapping_entries = review_mapping_with_llm(mapping_entries, ag.name, anthropic_client)
+        mapping_entries = review_mapping_with_llm(mapping_entries, ag.name, llm_client)
     except Exception as exc:
         logger.warning("LLM mapping review failed: %s", exc)
 
@@ -602,7 +602,7 @@ def _run_pipeline(
             if skill_type == "network_translation":
                 _run_network_chunked(
                     skill_resources[skill_type], completed_artifacts,
-                    _progress, _progress_cb, anthropic_client, max_iterations,
+                    _progress, _progress_cb, llm_client, max_iterations,
                     _collect_gaps,
                 )
                 # Per-skill validate for network_translation
@@ -622,7 +622,7 @@ def _run_pipeline(
                         logger.warning("Per-skill validate for network_translation failed: %s", exc)
                 continue
             skill_input = _build_skill_input(skill_type, skill_resources[skill_type])
-            result = _run_skill(skill_type, skill_input, _progress_cb, anthropic_client, max_iterations)
+            result = _run_skill(skill_type, skill_input, _progress_cb, llm_client, max_iterations)
             if result:
                 for name, content in result.get("artifacts", {}).items():
                     completed_artifacts[f"{skill_type}/{name}"] = content
@@ -646,7 +646,7 @@ def _run_pipeline(
                                 # Trigger ONE retry of the skill with validate error context
                                 _progress(skill_type, f"Retrying {skill_label} with terraform validate errors in context")
                                 retry_input = skill_input + f"\n\n## TERRAFORM VALIDATE ERRORS FROM PREVIOUS ATTEMPT\nFix these errors:\n{vr.errors_text}\n"
-                                retry_result = _run_skill(skill_type, retry_input, _progress_cb, anthropic_client, max_iterations=1)
+                                retry_result = _run_skill(skill_type, retry_input, _progress_cb, llm_client, max_iterations=1)
                                 if retry_result:
                                     retry_tf = {}
                                     for art_name, art_content in (retry_result.get("artifacts") or {}).items():
@@ -676,7 +676,7 @@ def _run_pipeline(
             completed_artifacts=completed_artifacts,
             _progress=_progress,
             _progress_cb=_progress_cb,
-            anthropic_client=anthropic_client,
+            llm_client=llm_client,
             max_iterations=max_iterations,
         )
 
@@ -1076,7 +1076,7 @@ def _run_skill(
     skill_type: str,
     input_content: str,
     progress_callback,      # kept for signature compatibility; unused below
-    anthropic_client,       # kept for signature compatibility; unused below
+    llm_client,       # kept for signature compatibility; unused below
     max_iterations: int = 3,
     migration_id: str | None = None,
 ) -> dict | None:
@@ -1084,7 +1084,7 @@ def _run_skill(
 
     Thin wrapper over ``app.agents.job_result.run_skill_sync`` so this
     module's original sync call site keeps working. The ``progress_callback``
-    / ``anthropic_client`` args are accepted but ignored — the agent runtime
+    / ``llm_client`` args are accepted but ignored — the agent runtime
     has its own logging and its own client.
     """
     try:
@@ -1110,7 +1110,7 @@ def _run_network_chunked(
     completed_artifacts: dict[str, str],
     _progress,
     _progress_cb,
-    anthropic_client,
+    llm_client,
     max_iterations: int,
     _collect_gaps,
     migration_id: str | None = None,
@@ -1160,7 +1160,7 @@ def _run_network_chunked(
         try:
             result = _run_skill(
                 "network_translation", chunk.to_input(),
-                _progress_cb, anthropic_client,
+                _progress_cb, llm_client,
                 max_iterations=iters,
                 migration_id=migration_id,
             )
@@ -1205,7 +1205,7 @@ def _run_cfn_chunked(
     completed_artifacts: dict[str, str],
     _progress,
     _progress_cb,
-    anthropic_client,
+    llm_client,
     max_iterations: int,
     migration_id: str | None = None,
 ) -> None:
@@ -1293,7 +1293,7 @@ def _run_cfn_chunked(
                 result = _run_skill(
                     "cfn_terraform",
                     spec.to_input(reference_hcl=reference_hcl),
-                    _progress_cb, anthropic_client,
+                    _progress_cb, llm_client,
                     max_iterations=1,
                     migration_id=migration_id,
                 )
