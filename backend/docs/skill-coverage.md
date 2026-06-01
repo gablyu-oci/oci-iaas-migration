@@ -1,41 +1,55 @@
 # Translation Skill Coverage
 
-## Implemented Skills
+The authoritative skill registry is `app/agents/skill_group.py` (`SKILL_SPECS`)
+and the auto-generated [`docs/agent-architecture.md`](../../docs/agent-architecture.md).
+AWS→OCI type mappings live in `backend/data/mappings/resources.yaml`. This page
+is a human-readable summary of what each skill covers.
 
-| Resource Type | Skill | OCI Target | Output |
+## Translation skills (produce Terraform / artifacts)
+
+| Skill | AWS source | OCI target | Output |
 |---|---|---|---|
-| EC2 Instance / ASG | `ec2_translation` | OCI Compute (Flex shapes) | Terraform HCL |
-| VPC / Subnet / SG / ENI | `network_translation` | OCI VCN / Subnet / NSG / VNIC | Terraform HCL |
-| EBS Volume | `storage_translation` | OCI Block Volume | Terraform HCL |
-| RDS / Aurora | `database_translation` | OCI DB System / MySQL HeatWave / Autonomous DB | Terraform HCL |
-| ALB / NLB | `loadbalancer_translation` | OCI Load Balancer / Network LB | Terraform HCL |
-| CloudFormation Stack | `cfn_terraform` | Terraform for OCI provider | Terraform HCL |
-| IAM Policy / Role | `iam_translation` | OCI IAM Policy (verb-based) | OCI policy JSON |
-| Database data (RDS or local) | `data_migration_planning` | Migration procedures | Markdown |
-| Per-workload runbook | `workload_planning` | Runbook + anomaly analysis | Markdown |
-| Cross-skill synthesis | `migration_synthesis` | Unified Terraform + runbook | Combined artifacts |
+| `network_translation` | VPC, subnets, SGs, gateways, route tables, ENIs, EIPs, NACLs | OCI VCN family (VCN, subnets, NSGs, gateways, route tables, VNICs) | Terraform HCL |
+| `ec2_translation` | EC2 instances, data EBS volumes, ASGs, launch templates | OCI Compute + Block Volumes + Instance Pools | Terraform HCL |
+| `storage_translation` | Standalone / data EBS volumes | OCI Block Volumes | Terraform HCL |
+| `database_translation` | RDS instances / clusters | OCI Database Systems / MySQL HeatWave / Autonomous DB | Terraform HCL |
+| `loadbalancer_translation` | ALB (L7) / NLB (L4) + target groups + listeners | OCI Load Balancer / Network Load Balancer | Terraform HCL |
+| `iam_translation` | IAM policies / roles | OCI verb-based policy statements | OCI policy HCL |
+| `security_translation` | KMS, Secrets Manager, SSM Parameter Store, ACM, WAFv2 | OCI Vault (keys + secrets), Certificate Service, WAF | Terraform HCL |
+| `serverless_translation` | Lambda, API Gateway, Step Functions, EventBridge, Kinesis, ECS, EKS, ECR | OCI Functions, API Gateway, Events, Streaming, Container Instances, OKE, OCIR | Terraform HCL |
+| `observability_translation` | CloudWatch alarms/dashboards/logs, SNS, SQS, CloudTrail | OCI Monitoring, Logging, Notifications, Queue, Audit | Terraform HCL |
+| `ocm_handoff_translation` | OCM-compatible EC2 instances (hybrid path, replaces `ec2_translation`) | Oracle Cloud Migrations (`oci_cloud_migrations_*`) | Terraform HCL + handoff runbook |
+| `cfn_terraform` | CloudFormation templates | OCI Terraform (self-validated with `terraform validate`) | Terraform HCL |
 
-## Missing Skills (Future)
+## Planning & meta skills
 
-| Resource Type | Extracted? | OCI Target | Priority |
-|---|---|---|---|
-| Lambda Function | Yes (no skill) | OCI Functions (Fn Project) | High |
-| S3 Bucket | No | OCI Object Storage | High |
-| ECS / EKS / Fargate | No | OCI Container Engine (OKE) | High |
-| DynamoDB | No | OCI NoSQL Database | Medium |
-| ElastiCache / Redis | No | OCI Cache with Redis | Medium |
-| SageMaker | No | OCI Data Science | Medium |
-| SNS / SQS | No | OCI Notifications / Queue | Medium |
-| Redshift | No | OCI Autonomous Data Warehouse | Low |
-| EMR | No | OCI Data Flow (Spark) | Low |
-| Glue | No | OCI Data Integration | Low |
-| Batch | No | OCI Container Instances | Low |
+| Skill | Role | Output |
+|---|---|---|
+| `data_migration_planning` | DB data cutover runbook (tool selection, phase plan, rollback, downtime estimate) | Markdown runbook |
+| `workload_planning` | Per-workload migration runbook + anomaly analysis | Markdown runbook |
+| `dependency_discovery` | CloudTrail / VPC flow-log dependency graph analysis | Dependency graph + report |
+| `synthesis` | Compose per-skill artifacts into one unified workload Terraform package | Combined artifacts |
 
-## Known Gaps in Existing Skills
+## Not yet covered
 
-- **SQL Server on RDS**: No managed OCI equivalent; recommend self-hosted on Compute
-- **Lambda layers**: Not supported in OCI Functions
-- **Lambda event source mappings**: Require manual reconfiguration for OCI
-- **SSL certificates on ALB/NLB**: Must be imported to OCI Certificate Service manually
-- **IAM cross-account roles**: Map to OCI tenancy federation (not automated)
-- **Local databases on EC2**: Detected via SSM inventory; data_migration_planning handles procedure but database size unknown until disk check
+These AWS services have no dedicated skill and are not yet mapped:
+
+| Resource Type | OCI Target | Priority |
+|---|---|---|
+| S3 Bucket | OCI Object Storage | High |
+| DynamoDB | OCI NoSQL Database | Medium |
+| ElastiCache / Redis | OCI Cache with Redis | Medium |
+| SageMaker | OCI Data Science | Medium |
+| Route 53 / CloudFront | OCI DNS / CDN | Medium |
+| Redshift | OCI Autonomous Data Warehouse | Low |
+| EMR | OCI Data Flow (Spark) | Low |
+| Glue | OCI Data Integration | Low |
+| Batch | OCI Container Instances | Low |
+
+## Known gaps within existing skills
+
+- **SQL Server on RDS**: no managed OCI equivalent; recommend self-hosted on Compute.
+- **Lambda layers / Step Functions state machines / WebSocket APIs**: flagged by `serverless_translation` as not 1:1 translatable; require manual rework.
+- **SSL certificates on ALB/NLB**: must be imported to OCI Certificate Service manually.
+- **IAM cross-account roles**: map to OCI tenancy federation (not automated).
+- **Local databases on EC2**: detected via SSM inventory; `data_migration_planning` produces the procedure, but database size is unknown until a disk check.
